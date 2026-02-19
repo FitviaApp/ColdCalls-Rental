@@ -3,7 +3,6 @@ Database models
 """
 import enum
 from datetime import datetime
-from decimal import Decimal
 
 from sqlalchemy import (
     Column, Integer, String, Float, Boolean, DateTime,
@@ -40,6 +39,11 @@ class PaymentStatus(str, enum.Enum):
     FAILED = "failed"
 
 
+class RentalStatus(str, enum.Enum):
+    ACTIVE = "active"
+    EXPIRED = "expired"
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -48,7 +52,6 @@ class User(Base):
     password_hash = Column(String(255), nullable=False)
     is_admin = Column(Boolean, default=False)
     is_active = Column(Boolean, default=True)
-    credits = Column(Float, default=0.0)
 
     # Transfer number (3CX) for call transfers
     transfer_number = Column(String(20), nullable=True)
@@ -58,7 +61,16 @@ class User(Base):
 
     # Relationships
     campaigns = relationship("Campaign", back_populates="user", cascade="all, delete-orphan")
-    payments = relationship("Payment", back_populates="user", cascade="all, delete-orphan")
+    rental_payments = relationship("RentalPayment", cascade="all, delete-orphan")
+    rentals = relationship("UserRental", cascade="all, delete-orphan")
+    caller_ids = relationship("CallerID", back_populates="user", cascade="all, delete-orphan")
+    audios = relationship("Audio", back_populates="user", cascade="all, delete-orphan")
+    twilio_credentials = relationship(
+        "UserTwilioCredential",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        uselist=False
+    )
 
     def __repr__(self):
         return f"<User {self.email}>"
@@ -68,6 +80,7 @@ class CallerID(Base):
     __tablename__ = "caller_ids"
 
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     phone_number = Column(String(20), unique=True, nullable=False)
     country_code = Column(String(5), nullable=False, index=True)
     description = Column(String(255), default="")
@@ -75,6 +88,7 @@ class CallerID(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     # Relationships
+    user = relationship("User", back_populates="caller_ids")
     campaigns = relationship("Campaign", back_populates="caller_id")
 
     def __repr__(self):
@@ -101,6 +115,7 @@ class Audio(Base):
     __tablename__ = "audios"
 
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     name = Column(String(255), nullable=False)
     r2_key = Column(String(500), nullable=False)
     r2_url = Column(String(500), nullable=False)
@@ -109,6 +124,7 @@ class Audio(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     # Relationships
+    user = relationship("User", back_populates="audios")
     campaigns = relationship("Campaign", back_populates="audio")
 
     def __repr__(self):
@@ -132,7 +148,6 @@ class Campaign(Base):
     successful_calls = Column(Integer, default=0)
     failed_calls = Column(Integer, default=0)
     total_cost = Column(Float, default=0.0)
-    reserved_credits = Column(Float, default=0.0)  # Credits reserved when campaign starts
 
     created_at = Column(DateTime, default=datetime.utcnow)
     started_at = Column(DateTime, nullable=True)
@@ -181,33 +196,81 @@ class CampaignNumber(Base):
         return f"<CampaignNumber {self.phone_number}>"
 
 
-class Payment(Base):
-    __tablename__ = "payments"
+class UserTwilioCredential(Base):
+    __tablename__ = "user_twilio_credentials"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, unique=True, index=True)
+    account_sid_encrypted = Column(Text, nullable=False)
+    auth_token_encrypted = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    user = relationship("User", back_populates="twilio_credentials")
+
+    def __repr__(self):
+        return f"<UserTwilioCredential user_id={self.user_id}>"
+
+
+class RentalPlan(Base):
+    __tablename__ = "rental_plans"
+
+    id = Column(Integer, primary_key=True, index=True)
+    code = Column(String(30), unique=True, nullable=False, index=True)
+    name = Column(String(100), nullable=False)
+    duration_days = Column(Integer, nullable=False)
+    price_usdt = Column(Float, nullable=False)
+    is_active = Column(Boolean, default=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    rentals = relationship("UserRental", back_populates="plan")
+    payments = relationship("RentalPayment", back_populates="plan")
+
+    def __repr__(self):
+        return f"<RentalPlan {self.code}>"
+
+
+class UserRental(Base):
+    __tablename__ = "user_rentals"
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    plan_id = Column(Integer, ForeignKey("rental_plans.id"), nullable=False, index=True)
+    starts_at = Column(DateTime, nullable=False, index=True)
+    expires_at = Column(DateTime, nullable=False, index=True)
+    status = Column(Enum(RentalStatus), default=RentalStatus.ACTIVE, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("User")
+    plan = relationship("RentalPlan", back_populates="rentals")
+    payment = relationship("RentalPayment", back_populates="rental", uselist=False)
+
+    __table_args__ = (
+        Index("ix_user_rentals_user_status_expires", "user_id", "status", "expires_at"),
+    )
+
+    def __repr__(self):
+        return f"<UserRental user_id={self.user_id} expires_at={self.expires_at}>"
+
+
+class RentalPayment(Base):
+    __tablename__ = "rental_payments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    plan_id = Column(Integer, ForeignKey("rental_plans.id"), nullable=False, index=True)
+    rental_id = Column(Integer, ForeignKey("user_rentals.id"), nullable=True, index=True)
     tx_hash = Column(String(100), unique=True, nullable=False)
-    amount_usdt = Column(Float, nullable=False)
-    credits_added = Column(Float, nullable=False)
-    status = Column(Enum(PaymentStatus), default=PaymentStatus.PENDING)
+    amount_usdt = Column(Float, nullable=False, default=0.0)
+    status = Column(Enum(PaymentStatus), default=PaymentStatus.PENDING, index=True)
     error_message = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     verified_at = Column(DateTime, nullable=True)
 
-    # Relationships
-    user = relationship("User", back_populates="payments")
+    user = relationship("User")
+    plan = relationship("RentalPlan", back_populates="payments")
+    rental = relationship("UserRental", back_populates="payment")
 
     def __repr__(self):
-        return f"<Payment {self.tx_hash[:10]}...>"
-
-
-class SystemSetting(Base):
-    __tablename__ = "system_settings"
-
-    id = Column(Integer, primary_key=True, index=True)
-    key = Column(String(100), unique=True, nullable=False, index=True)
-    value = Column(Text, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-    def __repr__(self):
-        return f"<SystemSetting {self.key}>"
+        return f"<RentalPayment {self.tx_hash[:10]}...>"

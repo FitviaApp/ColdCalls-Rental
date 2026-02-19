@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Optional, List
 from pydantic import BaseModel, EmailStr, Field
 
-from app.models import CampaignStatus, CallStatus, PaymentStatus
+from app.models import CampaignStatus, CallStatus
 
 
 # ============== User Schemas ==============
@@ -30,7 +30,6 @@ class UserResponse(UserBase):
     id: int
     is_admin: bool
     is_active: bool
-    credits: float
     transfer_number: Optional[str]
     transfer_configured: bool = False
     created_at: datetime
@@ -188,28 +187,9 @@ class CampaignNumberResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
-# ============== Payment Schemas ==============
-
-class PaymentVerify(BaseModel):
-    tx_hash: str = Field(..., min_length=64, max_length=70)
-
-
-class PaymentResponse(BaseModel):
-    id: int
-    tx_hash: str
-    amount_usdt: float
-    credits_added: float
-    status: PaymentStatus
-    created_at: datetime
-    verified_at: Optional[datetime]
-
-    model_config = {"from_attributes": True}
-
-
 # ============== Stats Schemas ==============
 
 class DashboardStats(BaseModel):
-    credits: float
     total_campaigns: int
     active_campaigns: int
     total_calls: int

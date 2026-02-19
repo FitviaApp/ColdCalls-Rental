@@ -9,6 +9,8 @@ from sqlalchemy.orm import Session
 from app.auth import decode_access_token
 from app.database import get_db
 from app.models import User
+from app.services.rental_service import has_active_rental
+from app.services.user_twilio_service import has_user_twilio_credentials
 
 
 async def get_current_user(
@@ -80,14 +82,37 @@ async def get_admin_user(
 
 
 async def require_transfer_configured(
-    user: User = Depends(get_current_user)
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
 ) -> User:
-    """Require user to have transfer number configured"""
+    """Require user to have transfer number and Twilio credentials configured."""
     if not user.transfer_number:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Please configure your Transfer Number (3CX) in Settings first"
         )
+    if not has_user_twilio_credentials(db, user.id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Please configure your Twilio Account SID and Auth Token in Settings first"
+        )
+    return user
+
+
+async def require_active_rental(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+) -> User:
+    """Require an active rental period for non-admin users."""
+    if user.is_admin:
+        return user
+
+    if not has_active_rental(db, user.id):
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail="Active rental required. Please renew your daily/weekly plan."
+        )
+
     return user
 
 

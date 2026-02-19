@@ -15,6 +15,8 @@ from app.models import (
     CampaignStatus, CallStatus
 )
 from app.services.twilio_service import TwilioService
+from app.services.rental_service import has_active_rental
+from app.services.user_twilio_service import get_user_twilio_credentials
 
 # Configure logging
 logging.basicConfig(
@@ -55,9 +57,9 @@ class CampaignWorker:
         user = campaign.user
         logger.info(f"Processing campaign {campaign.id}: {campaign.name}")
 
-        # Check user has credits
-        if user.credits <= 0:
-            logger.warning(f"Campaign {campaign.id}: User has no credits, pausing")
+        # Check user has active rental.
+        if not has_active_rental(self.db, user.id):
+            logger.warning(f"Campaign {campaign.id}: Rental expired or inactive, pausing")
             campaign.status = CampaignStatus.PAUSED
             self.db.commit()
             return
@@ -69,9 +71,17 @@ class CampaignWorker:
             self.db.commit()
             return
 
-        # Initialize Twilio service (uses global credentials)
+        # Enforce tenant ownership for resources.
+        if campaign.caller_id.user_id != user.id or campaign.audio.user_id != user.id:
+            logger.warning(f"Campaign {campaign.id}: Resource ownership mismatch, pausing")
+            campaign.status = CampaignStatus.PAUSED
+            self.db.commit()
+            return
+
+        # Initialize Twilio service with campaign owner's credentials.
         try:
-            twilio_service = TwilioService()
+            account_sid, auth_token = get_user_twilio_credentials(self.db, user.id)
+            twilio_service = TwilioService(account_sid=account_sid, auth_token=auth_token)
         except Exception as e:
             logger.error(f"Campaign {campaign.id}: Failed to init Twilio: {e}")
             campaign.status = CampaignStatus.PAUSED
@@ -103,9 +113,9 @@ class CampaignWorker:
                 logger.info(f"Campaign {campaign.id} no longer running, stopping")
                 break
 
-            # Check credits before each call
-            if user.credits <= 0:
-                logger.warning(f"Campaign {campaign.id}: Credits exhausted")
+            # Re-check active rental before each call.
+            if not has_active_rental(self.db, user.id):
+                logger.warning(f"Campaign {campaign.id}: Rental expired mid-run")
                 campaign.status = CampaignStatus.PAUSED
                 self.db.commit()
                 break
@@ -166,9 +176,6 @@ class CampaignWorker:
                 cost = 0.0
 
             number.cost = cost
-
-            # Deduct from user credits
-            user.credits -= cost
 
             # Update campaign stats
             campaign.processed_numbers += 1

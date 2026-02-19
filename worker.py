@@ -11,7 +11,7 @@ The worker will:
 1. Check for campaigns with status=RUNNING every 10 seconds
 2. Process pending numbers for each campaign
 3. Make calls using the user's Twilio credentials
-4. Update campaign progress and deduct credits
+4. Update campaign progress and enforce active rental access
 5. Handle graceful shutdown on SIGTERM/SIGINT
 """
 import sys

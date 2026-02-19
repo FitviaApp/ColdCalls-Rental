@@ -150,18 +150,5 @@ class PaymentService:
         except Exception:
             return 0
 
-    def calculate_credits(self, usdt_amount: float) -> float:
-        """
-        Convert USDT to credits
-
-        Args:
-            usdt_amount: Amount in USDT
-
-        Returns:
-            Credits to add (with markup)
-        """
-        return usdt_amount * settings.USDT_TO_CREDITS_RATE
-
-
 # Singleton instance
 payment_service = PaymentService()

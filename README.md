@@ -8,7 +8,7 @@ Plataforma web para gerenciamento de campanhas de cold calls via Twilio.
 - **Database**: SQLite (SQLAlchemy ORM)
 - **Frontend**: HTML + TailwindCSS + Alpine.js (Jinja2 templates)
 - **Audios**: Cloudflare R2
-- **Pagamentos**: USDT (ERC-20) via Etherscan API
+- **Billing**: Aluguel via USDT (ERC-20) com verificacao on-chain
 
 ## Estrutura do Projeto
 
@@ -26,7 +26,7 @@ coldcalls/
 │   │   ├── auth.py          # Login/registro
 │   │   ├── dashboard.py     # Dashboard do usuario
 │   │   ├── campaigns.py     # CRUD campanhas
-│   │   ├── payments.py      # Depositos USDT
+│   │   ├── billing.py       # Aluguel e verificacao USDT
 │   │   ├── admin.py         # Gerenciamento admin
 │   │   └── api.py           # API JSON
 │   ├── services/
@@ -111,6 +111,31 @@ python worker.py
 
 O worker processa campanhas com status "running" a cada 10 segundos.
 
+### Migracao de Assets Legados (opcional)
+
+Se houver Caller IDs/Audios antigos sem `user_id`, associe-os a um usuario:
+
+```bash
+python3 scripts/assign_orphan_assets.py --email user@example.com --dry-run
+python3 scripts/assign_orphan_assets.py --email user@example.com
+```
+
+Para migrar campanhas legadas que apontam para assets sem ownership correto:
+
+```bash
+python3 scripts/migrate_campaign_assets_to_owners.py --dry-run
+python3 scripts/migrate_campaign_assets_to_owners.py
+```
+
+### Limpeza de Schema Legado (opcional)
+
+Para arquivar/remover tabelas antigas de creditos e tentar remover colunas obsoletas:
+
+```bash
+python3 scripts/cleanup_legacy_schema.py
+python3 scripts/cleanup_legacy_schema.py --apply
+```
+
 ## Uso
 
 ### 1. Primeiro Acesso
@@ -122,16 +147,17 @@ O worker processa campanhas com status "running" a cada 10 segundos.
 ### 2. Configuracao Admin
 
 1. Acesse `/admin`
-2. Configure credenciais **Twilio** globais
-3. Adicione **Paises** com precos por minuto
-4. Adicione **Caller IDs** (numeros de origem)
-5. Faca upload de **Audios** para o R2
+2. Adicione **Paises** com precos por minuto
+3. Gerencie **planos de aluguel** (daily/weekly)
+4. Crie usuarios
 
 ### 3. Usuarios
 
 1. Admin cria usuarios em `/admin/users` (max 4 usuarios)
-2. Configuram numero de transferencia em `/dashboard/settings`
-3. Adicionam creditos via deposito USDT em `/payments/deposit`
+2. Cada usuario configura suas credenciais **Twilio** em `/dashboard/settings`
+3. Cada usuario configura numero de transferencia em `/dashboard/settings`
+4. Cada usuario gerencia seus **Caller IDs** e **Audios** em `/assets`
+5. Cada usuario paga o aluguel (daily/weekly) em `/billing`
 
 ### 4. Campanhas
 
@@ -160,10 +186,9 @@ O worker processa campanhas com status "running" a cada 10 segundos.
 - `POST /campaigns/{id}/pause` - Pausar
 - `POST /campaigns/{id}/cancel` - Cancelar
 
-### Pagamentos
-- `GET /payments` - Historico
-- `GET /payments/deposit` - Instrucoes de deposito
-- `POST /payments/verify` - Verificar TX
+### Billing (Aluguel do Software)
+- `GET /billing` - Status do aluguel + planos ativos
+- `POST /billing/verify` - Verificar TX e ativar/estender aluguel
 
 ### API JSON
 - `GET /api/stats` - Estatisticas do usuario

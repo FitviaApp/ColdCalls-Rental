@@ -28,8 +28,11 @@
                         <a href="/campaigns" class="{% if '/campaigns' in request.url.path %}border-indigo-500 text-gray-900{% else %}border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700{% endif %} inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">
                             Campaigns
                         </a>
-                        <a href="/payments" class="{% if '/payments' in request.url.path %}border-indigo-500 text-gray-900{% else %}border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700{% endif %} inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">
-                            Payments
+                        <a href="/assets/caller-ids" class="{% if '/assets' in request.url.path %}border-indigo-500 text-gray-900{% else %}border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700{% endif %} inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">
+                            Assets
+                        </a>
+                        <a href="/billing" class="{% if '/billing' in request.url.path %}border-indigo-500 text-gray-900{% else %}border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700{% endif %} inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">
+                            Billing
                         </a>
                         {% if user.is_admin %}
                         <a href="/admin" class="{% if '/admin' in request.url.path %}border-indigo-500 text-gray-900{% else %}border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700{% endif %} inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">
@@ -39,9 +42,6 @@
                     </div>
                 </div>
                 <div class="hidden sm:ml-6 sm:flex sm:items-center space-x-4">
-                    <span class="text-sm text-gray-500">
-                        Credits: <span class="font-medium text-green-600">${{ "%.2f"|format(user.credits) }}</span>
-                    </span>
                     <div class="relative" x-data="{ open: false }">
                         <button @click="open = !open" class="flex items-center text-sm font-medium text-gray-500 hover:text-gray-700">
                             {{ user.email }}
@@ -71,7 +71,8 @@
             <div class="pt-2 pb-3 space-y-1">
                 <a href="/dashboard" class="block pl-3 pr-4 py-2 text-base font-medium text-gray-700 hover:bg-gray-50">Dashboard</a>
                 <a href="/campaigns" class="block pl-3 pr-4 py-2 text-base font-medium text-gray-700 hover:bg-gray-50">Campaigns</a>
-                <a href="/payments" class="block pl-3 pr-4 py-2 text-base font-medium text-gray-700 hover:bg-gray-50">Payments</a>
+                <a href="/assets/caller-ids" class="block pl-3 pr-4 py-2 text-base font-medium text-gray-700 hover:bg-gray-50">Assets</a>
+                <a href="/billing" class="block pl-3 pr-4 py-2 text-base font-medium text-gray-700 hover:bg-gray-50">Billing</a>
                 {% if user.is_admin %}
                 <a href="/admin" class="block pl-3 pr-4 py-2 text-base font-medium text-gray-700 hover:bg-gray-50">Admin</a>
                 {% endif %}

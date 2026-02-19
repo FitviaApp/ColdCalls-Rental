@@ -2,7 +2,8 @@
 FastAPI Application Entry Point
 """
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -18,6 +19,7 @@ async def lifespan(app: FastAPI):
     # Startup
     init_db()
     create_admin_user()
+    ensure_default_data()
     yield
     # Shutdown
     pass
@@ -46,6 +48,18 @@ def create_admin_user():
         db.close()
 
 
+def ensure_default_data():
+    """Ensure default plans and baseline data exist."""
+    from app.database import SessionLocal
+    from app.services.rental_service import ensure_default_rental_plans
+
+    db = SessionLocal()
+    try:
+        ensure_default_rental_plans(db)
+    finally:
+        db.close()
+
+
 app = FastAPI(
     title=settings.APP_NAME,
     description="Cold Calls Platform - Multi-user campaign management",
@@ -61,12 +75,13 @@ templates = Jinja2Templates(directory="app/templates")
 
 
 # Include routers
-from app.routers import auth, dashboard, campaigns, payments, admin, api  # noqa: E402
+from app.routers import auth, dashboard, campaigns, admin, api, assets, billing  # noqa: E402
 
 app.include_router(auth.router)
 app.include_router(dashboard.router)
 app.include_router(campaigns.router)
-app.include_router(payments.router)
+app.include_router(billing.router)
+app.include_router(assets.router)
 app.include_router(admin.router)
 app.include_router(api.router)
 
@@ -74,7 +89,6 @@ app.include_router(api.router)
 @app.get("/")
 async def root():
     """Redirect to dashboard or login"""
-    from fastapi.responses import RedirectResponse
     return RedirectResponse(url="/auth/login")
 
 
@@ -82,3 +96,16 @@ async def root():
 async def health():
     """Health check endpoint"""
     return {"status": "healthy"}
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """Redirect browser traffic to billing when rental is required."""
+    if exc.status_code == 402 and "text/html" in request.headers.get("accept", ""):
+        return RedirectResponse(url="/billing", status_code=302)
+
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+        headers=exc.headers
+    )

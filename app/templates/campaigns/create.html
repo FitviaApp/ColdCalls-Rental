@@ -15,6 +15,15 @@
     </div>
     {% endif %}
 
+    {% if caller_ids|length == 0 or audios|length == 0 %}
+    <div class="mb-6 bg-yellow-50 border border-yellow-200 text-yellow-800 px-4 py-3 rounded">
+        You need at least one active Caller ID and one active Audio before creating campaigns.
+        <a href="/assets/caller-ids" class="underline font-medium">Manage Caller IDs</a>
+        and
+        <a href="/assets/audios" class="underline font-medium">Manage Audios</a>.
+    </div>
+    {% endif %}
+
     <form action="/campaigns/create" method="POST" enctype="multipart/form-data" class="space-y-6" x-data="campaignForm()">
         <div class="bg-white shadow rounded-lg">
             <div class="px-4 py-5 sm:px-6">

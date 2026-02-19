@@ -2,14 +2,15 @@
 API Router - JSON endpoints for AJAX calls and TwiML
 """
 import logging
-from fastapi import APIRouter, Depends, HTTPException, Request, Form
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.dependencies import get_current_user
+from app.dependencies import require_active_rental
 from app.models import User, Campaign, CampaignNumber, CallerID, Country, Audio, CampaignStatus
 from app.schemas import DashboardStats, CampaignProgress, DropdownCallerID, DropdownCountry, DropdownAudio
+from app.services.rental_service import has_active_rental
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +54,10 @@ async def twiml_handler(
         twiml = '<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>'
         return Response(content=twiml, media_type="application/xml")
 
+    if not has_active_rental(db, campaign.user_id):
+        twiml = '<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>'
+        return Response(content=twiml, media_type="application/xml")
+
     # Get transfer number from user settings
     transfer_number = campaign.user.transfer_number
 
@@ -87,14 +92,13 @@ async def twiml_handler(
 
 @router.get("/stats", response_model=DashboardStats)
 async def get_stats(
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_active_rental),
     db: Session = Depends(get_db)
 ):
     """Get dashboard statistics"""
     campaigns = db.query(Campaign).filter(Campaign.user_id == user.id).all()
 
     return DashboardStats(
-        credits=user.credits,
         total_campaigns=len(campaigns),
         active_campaigns=len([c for c in campaigns if c.status == CampaignStatus.RUNNING]),
         total_calls=sum(c.processed_numbers for c in campaigns),
@@ -106,7 +110,7 @@ async def get_stats(
 @router.get("/campaigns/{campaign_id}/progress", response_model=CampaignProgress)
 async def get_campaign_progress(
     campaign_id: int,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_active_rental),
     db: Session = Depends(get_db)
 ):
     """Get campaign progress for real-time updates"""
@@ -134,7 +138,7 @@ async def get_campaign_numbers(
     campaign_id: int,
     page: int = 1,
     per_page: int = 50,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_active_rental),
     db: Session = Depends(get_db)
 ):
     """Get paginated list of campaign numbers"""
@@ -180,11 +184,14 @@ async def get_campaign_numbers(
 @router.get("/data/caller-ids", response_model=list[DropdownCallerID])
 async def get_caller_ids(
     country: str = None,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_active_rental),
     db: Session = Depends(get_db)
 ):
     """Get active caller IDs, optionally filtered by country"""
-    query = db.query(CallerID).filter(CallerID.is_active == True)
+    query = db.query(CallerID).filter(
+        CallerID.is_active == True,
+        CallerID.user_id == user.id
+    )
 
     if country:
         query = query.filter(CallerID.country_code == country.upper())
@@ -194,7 +201,7 @@ async def get_caller_ids(
 
 @router.get("/data/countries", response_model=list[DropdownCountry])
 async def get_countries(
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_active_rental),
     db: Session = Depends(get_db)
 ):
     """Get active countries"""
@@ -205,10 +212,11 @@ async def get_countries(
 
 @router.get("/data/audios", response_model=list[DropdownAudio])
 async def get_audios(
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_active_rental),
     db: Session = Depends(get_db)
 ):
     """Get active audios"""
     return db.query(Audio).filter(
-        Audio.is_active == True
+        Audio.is_active == True,
+        Audio.user_id == user.id
     ).order_by(Audio.name).all()

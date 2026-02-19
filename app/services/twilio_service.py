@@ -8,30 +8,21 @@ from typing import Optional
 
 from twilio.rest import Client
 
-from app.database import SessionLocal
-from app.services.system_settings_service import get_twilio_credentials
-
 logger = logging.getLogger(__name__)
 
 
 class TwilioService:
     """Service for making Twilio calls with machine detection"""
 
-    def __init__(self):
+    def __init__(self, account_sid: str, auth_token: str):
         """
-        Initialize Twilio client with global credentials from settings
+        Initialize Twilio client with explicit user credentials.
         """
-        db = SessionLocal()
-        try:
-            sid, token = get_twilio_credentials(db)
-        finally:
-            db.close()
-
-        if not sid or not token:
+        if not account_sid or not auth_token:
             raise ValueError("Twilio credentials not configured")
 
-        self.account_sid = sid
-        self.auth_token = token
+        self.account_sid = account_sid
+        self.auth_token = auth_token
         self.client = Client(self.account_sid, self.auth_token)
 
     def make_call(

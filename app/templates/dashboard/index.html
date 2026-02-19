@@ -28,29 +28,33 @@
     </div>
     {% endif %}
 
-    <!-- Stats -->
-    <div class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4 mb-8" x-data="dashboardStats()" x-init="fetchStats()">
-        <div class="bg-white overflow-hidden shadow rounded-lg">
-            <div class="p-5">
-                <div class="flex items-center">
-                    <div class="flex-shrink-0">
-                        <svg class="h-6 w-6 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
-                        </svg>
-                    </div>
-                    <div class="ml-5 w-0 flex-1">
-                        <dl>
-                            <dt class="text-sm font-medium text-gray-500 truncate">Credits</dt>
-                            <dd class="text-lg font-semibold text-gray-900" x-text="'$' + stats.credits.toFixed(2)">$0.00</dd>
-                        </dl>
-                    </div>
-                </div>
+    {% if not stats.rental_active %}
+    <div class="mb-6 bg-red-50 border border-red-200 rounded-lg p-4">
+        <div class="flex">
+            <div class="flex-shrink-0">
+                <svg class="h-5 w-5 text-red-400" viewBox="0 0 20 20" fill="currentColor">
+                    <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm-1-7a1 1 0 112 0v2a1 1 0 11-2 0v-2zm1-6a1.5 1.5 0 100 3 1.5 1.5 0 000-3z" clip-rule="evenodd"/>
+                </svg>
             </div>
-            <div class="bg-gray-50 px-5 py-3">
-                <a href="/payments/deposit" class="text-sm font-medium text-indigo-600 hover:text-indigo-500">Add credits</a>
+            <div class="ml-3">
+                <h3 class="text-sm font-medium text-red-800">Rental Access Required</h3>
+                <p class="mt-1 text-sm text-red-700">
+                    Your software rental is inactive. Renew access to run campaigns.
+                    <a href="/billing" class="font-medium underline">Go to Billing</a>
+                </p>
             </div>
         </div>
+    </div>
+    {% elif active_rental %}
+    <div class="mb-6 bg-green-50 border border-green-200 rounded-lg p-4">
+        <p class="text-sm text-green-800">
+            Rental active until {{ active_rental.expires_at.strftime('%Y-%m-%d %H:%M UTC') }}.
+        </p>
+    </div>
+    {% endif %}
 
+    <!-- Stats -->
+    <div class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3 mb-8" x-data="dashboardStats()" x-init="fetchStats()">
         <div class="bg-white overflow-hidden shadow rounded-lg">
             <div class="p-5">
                 <div class="flex items-center">
@@ -120,8 +124,8 @@
     <!-- Quick Actions -->
     <div class="mb-8">
         <h2 class="text-lg font-medium text-gray-900 mb-4">Quick Actions</h2>
-        <div class="grid grid-cols-1 gap-4 sm:grid-cols-3">
-            <a href="/campaigns/create" class="relative rounded-lg border border-gray-300 bg-white px-6 py-5 shadow-sm hover:border-indigo-500 hover:ring-1 hover:ring-indigo-500 {% if not stats.transfer_configured %}opacity-50 pointer-events-none{% endif %}">
+        <div class="grid grid-cols-1 gap-4 sm:grid-cols-4">
+            <a href="/campaigns/create" class="relative rounded-lg border border-gray-300 bg-white px-6 py-5 shadow-sm hover:border-indigo-500 hover:ring-1 hover:ring-indigo-500 {% if not stats.transfer_configured or not stats.rental_active %}opacity-50 pointer-events-none{% endif %}">
                 <div class="flex items-center space-x-3">
                     <svg class="h-6 w-6 text-indigo-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"/>
@@ -129,12 +133,20 @@
                     <span class="text-gray-900 font-medium">New Campaign</span>
                 </div>
             </a>
-            <a href="/payments/deposit" class="relative rounded-lg border border-gray-300 bg-white px-6 py-5 shadow-sm hover:border-indigo-500 hover:ring-1 hover:ring-indigo-500">
+            <a href="/billing" class="relative rounded-lg border border-gray-300 bg-white px-6 py-5 shadow-sm hover:border-indigo-500 hover:ring-1 hover:ring-indigo-500">
                 <div class="flex items-center space-x-3">
-                    <svg class="h-6 w-6 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                    <svg class="h-6 w-6 text-indigo-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0 8V4m8 8a8 8 0 11-16 0 8 8 0 0116 0z"/>
                     </svg>
-                    <span class="text-gray-900 font-medium">Add Credits</span>
+                    <span class="text-gray-900 font-medium">Rental Billing</span>
+                </div>
+            </a>
+            <a href="/assets/caller-ids" class="relative rounded-lg border border-gray-300 bg-white px-6 py-5 shadow-sm hover:border-indigo-500 hover:ring-1 hover:ring-indigo-500">
+                <div class="flex items-center space-x-3">
+                    <svg class="h-6 w-6 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5V4H2v16h5m10 0v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6m10 0H7"/>
+                    </svg>
+                    <span class="text-gray-900 font-medium">Manage Assets</span>
                 </div>
             </a>
             <a href="/dashboard/settings" class="relative rounded-lg border border-gray-300 bg-white px-6 py-5 shadow-sm hover:border-indigo-500 hover:ring-1 hover:ring-indigo-500">
@@ -201,7 +213,6 @@
 function dashboardStats() {
     return {
         stats: {
-            credits: {{ stats.credits }},
             total_campaigns: {{ stats.total_campaigns }},
             active_campaigns: {{ stats.active_campaigns }},
             total_calls: {{ stats.total_calls }},

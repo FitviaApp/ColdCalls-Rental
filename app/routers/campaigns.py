@@ -11,8 +11,9 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.dependencies import get_current_user, require_twilio_configured
+from app.dependencies import require_active_rental
 from app.models import User, Campaign, CampaignNumber, CallerID, Country, Audio, CampaignStatus, CallStatus
+from app.services.user_twilio_service import has_user_twilio_credentials
 
 router = APIRouter(prefix="/campaigns", tags=["campaigns"])
 templates = Jinja2Templates(directory="app/templates")
@@ -32,7 +33,7 @@ def validate_phone_number(number: str) -> Optional[str]:
 @router.get("", response_class=HTMLResponse)
 async def list_campaigns(
     request: Request,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_active_rental),
     db: Session = Depends(get_db)
 ):
     """List user's campaigns"""
@@ -53,13 +54,25 @@ async def list_campaigns(
 @router.get("/create", response_class=HTMLResponse)
 async def create_campaign_page(
     request: Request,
-    user: User = Depends(require_twilio_configured),
+    user: User = Depends(require_active_rental),
     db: Session = Depends(get_db)
 ):
     """Display campaign creation form"""
-    caller_ids = db.query(CallerID).filter(CallerID.is_active == True).all()
+    caller_ids = db.query(CallerID).filter(
+        CallerID.is_active == True,
+        CallerID.user_id == user.id
+    ).all()
     countries = db.query(Country).filter(Country.is_active == True).all()
-    audios = db.query(Audio).filter(Audio.is_active == True).all()
+    audios = db.query(Audio).filter(
+        Audio.is_active == True,
+        Audio.user_id == user.id
+    ).all()
+
+    setup_error = None
+    if not user.transfer_number:
+        setup_error = "Please configure your Transfer Number (3CX) in Settings before creating a campaign."
+    elif not has_user_twilio_credentials(db, user.id):
+        setup_error = "Please configure your Twilio Account SID and Auth Token in Settings before creating a campaign."
 
     return templates.TemplateResponse(
         "campaigns/create.html",
@@ -69,7 +82,7 @@ async def create_campaign_page(
             "caller_ids": caller_ids,
             "countries": countries,
             "audios": audios,
-            "error": None
+            "error": setup_error
         }
     )
 
@@ -83,15 +96,21 @@ async def create_campaign(
     audio_id: int = Form(...),
     numbers_text: str = Form(default=""),
     numbers_file: Optional[UploadFile] = File(default=None),
-    user: User = Depends(require_twilio_configured),
+    user: User = Depends(require_active_rental),
     db: Session = Depends(get_db)
 ):
     """Create a new campaign"""
     # Check if user has transfer number configured
     if not user.transfer_number:
-        caller_ids = db.query(CallerID).filter(CallerID.is_active == True).all()
+        caller_ids = db.query(CallerID).filter(
+            CallerID.is_active == True,
+            CallerID.user_id == user.id
+        ).all()
         countries = db.query(Country).filter(Country.is_active == True).all()
-        audios = db.query(Audio).filter(Audio.is_active == True).all()
+        audios = db.query(Audio).filter(
+            Audio.is_active == True,
+            Audio.user_id == user.id
+        ).all()
 
         return templates.TemplateResponse(
             "campaigns/create.html",
@@ -102,6 +121,29 @@ async def create_campaign(
                 "countries": countries,
                 "audios": audios,
                 "error": "Please configure your Transfer Number (3CX) in Settings before creating a campaign."
+            },
+            status_code=400
+        )
+    if not has_user_twilio_credentials(db, user.id):
+        caller_ids = db.query(CallerID).filter(
+            CallerID.is_active == True,
+            CallerID.user_id == user.id
+        ).all()
+        countries = db.query(Country).filter(Country.is_active == True).all()
+        audios = db.query(Audio).filter(
+            Audio.is_active == True,
+            Audio.user_id == user.id
+        ).all()
+
+        return templates.TemplateResponse(
+            "campaigns/create.html",
+            {
+                "request": request,
+                "user": user,
+                "caller_ids": caller_ids,
+                "countries": countries,
+                "audios": audios,
+                "error": "Please configure your Twilio Account SID and Auth Token in Settings before creating a campaign."
             },
             status_code=400
         )
@@ -134,9 +176,15 @@ async def create_campaign(
             invalid_count += 1
 
     if not valid_numbers:
-        caller_ids = db.query(CallerID).filter(CallerID.is_active == True).all()
+        caller_ids = db.query(CallerID).filter(
+            CallerID.is_active == True,
+            CallerID.user_id == user.id
+        ).all()
         countries = db.query(Country).filter(Country.is_active == True).all()
-        audios = db.query(Audio).filter(Audio.is_active == True).all()
+        audios = db.query(Audio).filter(
+            Audio.is_active == True,
+            Audio.user_id == user.id
+        ).all()
 
         return templates.TemplateResponse(
             "campaigns/create.html",
@@ -152,9 +200,17 @@ async def create_campaign(
         )
 
     # Verify foreign keys exist
-    caller_id = db.query(CallerID).filter(CallerID.id == caller_id_id, CallerID.is_active == True).first()
+    caller_id = db.query(CallerID).filter(
+        CallerID.id == caller_id_id,
+        CallerID.is_active == True,
+        CallerID.user_id == user.id
+    ).first()
     country = db.query(Country).filter(Country.id == country_id, Country.is_active == True).first()
-    audio = db.query(Audio).filter(Audio.id == audio_id, Audio.is_active == True).first()
+    audio = db.query(Audio).filter(
+        Audio.id == audio_id,
+        Audio.is_active == True,
+        Audio.user_id == user.id
+    ).first()
 
     if not caller_id or not country or not audio:
         raise HTTPException(status_code=400, detail="Invalid caller ID, country, or audio selection")
@@ -190,7 +246,7 @@ async def create_campaign(
 async def campaign_detail(
     request: Request,
     campaign_id: int,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_active_rental),
     db: Session = Depends(get_db)
 ):
     """View campaign details"""
@@ -220,7 +276,7 @@ async def campaign_detail(
 @router.post("/{campaign_id}/start")
 async def start_campaign(
     campaign_id: int,
-    user: User = Depends(require_twilio_configured),
+    user: User = Depends(require_active_rental),
     db: Session = Depends(get_db)
 ):
     """Start a campaign"""
@@ -235,18 +291,18 @@ async def start_campaign(
     if campaign.status not in [CampaignStatus.DRAFT, CampaignStatus.PAUSED]:
         raise HTTPException(status_code=400, detail="Campaign cannot be started")
 
-    # Estimate cost and check credits
-    country = campaign.country
-    estimated_cost = campaign.total_numbers * country.price_per_minute * 2  # Assume 2 min avg
+    if not user.transfer_number:
+        raise HTTPException(status_code=400, detail="Please configure your Transfer Number (3CX) in Settings first")
 
-    if user.credits < estimated_cost:
+    if not has_user_twilio_credentials(db, user.id):
+        raise HTTPException(status_code=400, detail="Please configure your Twilio Account SID and Auth Token in Settings first")
+
+    if campaign.caller_id.user_id != user.id or campaign.audio.user_id != user.id:
         raise HTTPException(
             status_code=400,
-            detail=f"Insufficient credits. Estimated cost: ${estimated_cost:.2f}, Available: ${user.credits:.2f}"
+            detail="Campaign resources ownership mismatch. Please create a new campaign with your own assets."
         )
 
-    # Reserve credits
-    campaign.reserved_credits = estimated_cost
     campaign.status = CampaignStatus.RUNNING
     campaign.started_at = datetime.utcnow()
     db.commit()
@@ -257,7 +313,7 @@ async def start_campaign(
 @router.post("/{campaign_id}/pause")
 async def pause_campaign(
     campaign_id: int,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_active_rental),
     db: Session = Depends(get_db)
 ):
     """Pause a running campaign"""
@@ -281,7 +337,7 @@ async def pause_campaign(
 @router.post("/{campaign_id}/cancel")
 async def cancel_campaign(
     campaign_id: int,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_active_rental),
     db: Session = Depends(get_db)
 ):
     """Cancel a campaign"""

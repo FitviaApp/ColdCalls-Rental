@@ -27,10 +27,6 @@ class Settings(BaseSettings):
     ADMIN_EMAIL: str = "admin@example.com"
     ADMIN_PASSWORD: str = "change-me"
 
-    # Twilio (global credentials - configured by admin)
-    TWILIO_ACCOUNT_SID: str = ""
-    TWILIO_AUTH_TOKEN: str = ""
-
     # Cloudflare R2
     R2_ACCOUNT_ID: str = ""
     R2_ACCESS_KEY_ID: str = ""
@@ -42,10 +38,6 @@ class Settings(BaseSettings):
     ETHERSCAN_API_KEY: str = ""
     USDT_CONTRACT: str = "0xdAC17F958D2ee523a2206206994597C13D831ec7"
     USDT_WALLET_ADDRESS: str = ""
-
-    # Pricing
-    USDT_TO_CREDITS_RATE: float = 1.2  # 1 USDT = 1.2 credits (20% markup)
-    CREDIT_COST_PER_MINUTE: float = 0.05  # Cost in credits per minute
 
     # User limits
     MAX_USERS: int = 4
