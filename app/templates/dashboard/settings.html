@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+
+{% block title %}Settings - ColdCalls Platform{% endblock %}
+
+{% block content %}
+<div class="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8">
+    <div class="mb-8">
+        <h1 class="text-2xl font-bold text-gray-900">Settings</h1>
+        <p class="text-gray-500">Manage your account settings</p>
+    </div>
+
+    {% if saved %}
+    <div class="mb-6 bg-green-50 border border-green-200 text-green-700 px-4 py-3 rounded">
+        Settings saved successfully!
+    </div>
+    {% endif %}
+
+    {% if error %}
+    <div class="mb-6 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded">
+        {{ error }}
+    </div>
+    {% endif %}
+
+    <!-- Account Info -->
+    <div class="bg-white shadow rounded-lg mb-6">
+        <div class="px-4 py-5 sm:px-6">
+            <h3 class="text-lg font-medium text-gray-900">Account Information</h3>
+        </div>
+        <div class="border-t border-gray-200 px-4 py-5 sm:px-6">
+            <dl class="grid grid-cols-1 gap-x-4 gap-y-6 sm:grid-cols-2">
+                <div>
+                    <dt class="text-sm font-medium text-gray-500">Email</dt>
+                    <dd class="mt-1 text-sm text-gray-900">{{ user.email }}</dd>
+                </div>
+                <div>
+                    <dt class="text-sm font-medium text-gray-500">Credits</dt>
+                    <dd class="mt-1 text-sm text-gray-900">${{ "%.2f"|format(user.credits) }}</dd>
+                </div>
+                <div>
+                    <dt class="text-sm font-medium text-gray-500">Account created</dt>
+                    <dd class="mt-1 text-sm text-gray-900">{{ user.created_at.strftime('%Y-%m-%d %H:%M') }}</dd>
+                </div>
+                <div>
+                    <dt class="text-sm font-medium text-gray-500">Transfer Number</dt>
+                    <dd class="mt-1 text-sm">
+                        {% if user.transfer_number %}
+                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                            {{ user.transfer_number }}
+                        </span>
+                        {% else %}
+                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">
+                            Not configured
+                        </span>
+                        {% endif %}
+                    </dd>
+                </div>
+            </dl>
+        </div>
+    </div>
+
+    <!-- Transfer Number Configuration -->
+    <div class="bg-white shadow rounded-lg" id="transfer">
+        <div class="px-4 py-5 sm:px-6">
+            <h3 class="text-lg font-medium text-gray-900">Transfer Number (3CX)</h3>
+            <p class="mt-1 text-sm text-gray-500">
+                Configure the number where calls will be transferred when answered by a human.
+            </p>
+        </div>
+        <div class="border-t border-gray-200 px-4 py-5 sm:px-6">
+            <form action="/dashboard/settings/transfer" method="POST" class="space-y-4">
+                <div>
+                    <label for="transfer_number" class="block text-sm font-medium text-gray-700">Transfer Number</label>
+                    <input type="text" name="transfer_number" id="transfer_number" required
+                        placeholder="+15551234567"
+                        value="{{ user.transfer_number or '' }}"
+                        class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border px-3 py-2">
+                    <p class="mt-1 text-xs text-gray-500">E.164 format (e.g., +15551234567)</p>
+                </div>
+
+                <div class="pt-4">
+                    <button type="submit"
+                        class="inline-flex justify-center py-2 px-4 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+                        {% if user.transfer_number %}Update{% else %}Save{% endif %}
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}

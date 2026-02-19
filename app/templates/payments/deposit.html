@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+
+{% block title %}Add Credits - ColdCalls Platform{% endblock %}
+
+{% block content %}
+<div class="max-w-2xl mx-auto px-4 sm:px-6 lg:px-8">
+    <div class="mb-8">
+        <h1 class="text-2xl font-bold text-gray-900">Add Credits</h1>
+        <p class="text-gray-500">Deposit USDT to add credits to your account</p>
+    </div>
+
+    {% if error %}
+    <div class="mb-6 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded">
+        {{ error }}
+    </div>
+    {% endif %}
+
+    <!-- Instructions -->
+    <div class="bg-white shadow rounded-lg mb-6">
+        <div class="px-4 py-5 sm:px-6">
+            <h3 class="text-lg font-medium text-gray-900">How to add credits</h3>
+        </div>
+        <div class="border-t border-gray-200 px-4 py-5 sm:px-6">
+            <ol class="list-decimal list-inside space-y-3 text-sm text-gray-700">
+                <li>Send USDT (ERC-20) to the address below</li>
+                <li>Wait for at least 6 blockchain confirmations</li>
+                <li>Paste the transaction hash in the form below</li>
+                <li>Credits will be added automatically after verification</li>
+            </ol>
+
+            <div class="mt-6 p-4 bg-gray-50 rounded-lg">
+                <p class="text-sm font-medium text-gray-700 mb-2">Deposit address (USDT ERC-20):</p>
+                {% if wallet_address %}
+                <div class="flex items-center space-x-2">
+                    <code class="flex-1 p-2 bg-white border rounded text-sm font-mono break-all">{{ wallet_address }}</code>
+                    <button onclick="navigator.clipboard.writeText('{{ wallet_address }}')" class="px-3 py-2 bg-indigo-600 text-white text-sm rounded hover:bg-indigo-700">
+                        Copy
+                    </button>
+                </div>
+                {% else %}
+                <p class="text-red-600 text-sm">Deposit address not configured. Contact the administrator.</p>
+                {% endif %}
+            </div>
+
+            <div class="mt-4 p-4 bg-green-50 rounded-lg">
+                <p class="text-sm text-green-800">
+                    <strong>Conversion rate:</strong> 1 USDT = {{ rate }} credits
+                </p>
+            </div>
+
+            <div class="mt-4 p-4 bg-yellow-50 rounded-lg">
+                <p class="text-sm text-yellow-800">
+                    <strong>Important:</strong> Send only USDT on the Ethereum network (ERC-20).
+                    Other networks (BSC, Polygon, etc) are not supported.
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Verification Form -->
+    <div class="bg-white shadow rounded-lg">
+        <div class="px-4 py-5 sm:px-6">
+            <h3 class="text-lg font-medium text-gray-900">Verify Transaction</h3>
+        </div>
+        <div class="border-t border-gray-200 px-4 py-5 sm:px-6">
+            <form action="/payments/verify" method="POST" class="space-y-4">
+                <div>
+                    <label for="tx_hash" class="block text-sm font-medium text-gray-700">Transaction Hash (TX Hash)</label>
+                    <input type="text" name="tx_hash" id="tx_hash" required
+                        pattern="0x[a-fA-F0-9]{64}"
+                        class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border px-3 py-2 font-mono"
+                        placeholder="0x...">
+                    <p class="mt-1 text-xs text-gray-500">
+                        Paste the transaction hash from Etherscan. Example: 0x1234...abcd
+                    </p>
+                </div>
+
+                <div class="pt-4">
+                    <button type="submit"
+                        class="w-full inline-flex justify-center py-2 px-4 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+                        Verify and Add Credits
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div class="mt-6 text-center">
+        <a href="/payments" class="text-sm text-indigo-600 hover:text-indigo-500">Back to payments</a>
+    </div>
+</div>
+{% endblock %}

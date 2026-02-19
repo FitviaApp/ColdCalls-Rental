@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+
+{% block title %}New Country - Admin{% endblock %}
+
+{% block content %}
+<div class="max-w-2xl mx-auto px-4 sm:px-6 lg:px-8">
+    <div class="mb-8">
+        <h1 class="text-2xl font-bold text-gray-900">New Country</h1>
+    </div>
+
+    {% if error %}
+    <div class="mb-6 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded">{{ error }}</div>
+    {% endif %}
+
+    <div class="bg-white shadow rounded-lg">
+        <form action="/admin/countries/create" method="POST" class="px-4 py-5 sm:px-6 space-y-4">
+            <div>
+                <label for="code" class="block text-sm font-medium text-gray-700">Country Code</label>
+                <input type="text" name="code" id="code" required maxlength="5"
+                    class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border px-3 py-2"
+                    placeholder="BR">
+                <p class="mt-1 text-xs text-gray-500">ISO code (e.g.: BR, US, PT)</p>
+            </div>
+
+            <div>
+                <label for="name" class="block text-sm font-medium text-gray-700">Name</label>
+                <input type="text" name="name" id="name" required
+                    class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border px-3 py-2"
+                    placeholder="Brazil">
+            </div>
+
+            <div>
+                <label for="price_per_minute" class="block text-sm font-medium text-gray-700">Price per Minute (USD)</label>
+                <input type="number" name="price_per_minute" id="price_per_minute" required step="0.001" min="0"
+                    class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border px-3 py-2"
+                    placeholder="0.050">
+            </div>
+
+            <div class="flex justify-end space-x-3 pt-4">
+                <a href="/admin/countries" class="px-4 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 bg-white hover:bg-gray-50">Cancel</a>
+                <button type="submit" class="px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700">Create</button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}

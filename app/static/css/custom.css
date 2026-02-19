@@ -1,0 +1,17 @@
+/* Custom CSS - Add any additional styles here */
+/* TailwindCSS is loaded via CDN in base.html */
+
+/* Loading spinner */
+.spinner {
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+/* Smooth transitions */
+.transition-all {
+    transition: all 0.2s ease-in-out;
+}

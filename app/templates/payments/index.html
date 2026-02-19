@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+
+{% block title %}Payments - ColdCalls Platform{% endblock %}
+
+{% block content %}
+<div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
+    <div class="mb-8 flex justify-between items-center">
+        <div>
+            <h1 class="text-2xl font-bold text-gray-900">Payments</h1>
+            <p class="text-gray-500">Manage your credits and deposits</p>
+        </div>
+        <a href="/payments/deposit"
+            class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-green-600 hover:bg-green-700">
+            <svg class="-ml-1 mr-2 h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"/>
+            </svg>
+            Add Credits
+        </a>
+    </div>
+
+    <!-- Current Balance -->
+    <div class="bg-white shadow rounded-lg mb-8">
+        <div class="px-4 py-5 sm:p-6">
+            <div class="flex items-center justify-between">
+                <div>
+                    <dt class="text-sm font-medium text-gray-500">Current Balance</dt>
+                    <dd class="mt-1 text-3xl font-semibold text-green-600">${{ "%.2f"|format(user.credits) }}</dd>
+                </div>
+                <div class="text-right">
+                    <p class="text-sm text-gray-500">USDT Deposit Wallet (ERC-20)</p>
+                    <p class="text-sm font-mono text-gray-900 break-all">{{ wallet_address or 'Not configured' }}</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Payment History -->
+    <div class="bg-white shadow rounded-lg">
+        <div class="px-4 py-5 sm:px-6">
+            <h3 class="text-lg font-medium text-gray-900">Payment History</h3>
+        </div>
+        <div class="border-t border-gray-200">
+            {% if payments %}
+            <table class="min-w-full divide-y divide-gray-200">
+                <thead class="bg-gray-50">
+                    <tr>
+                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            Date
+                        </th>
+                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            TX Hash
+                        </th>
+                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            USDT Amount
+                        </th>
+                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            Credits
+                        </th>
+                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            Status
+                        </th>
+                    </tr>
+                </thead>
+                <tbody class="bg-white divide-y divide-gray-200">
+                    {% for payment in payments %}
+                    <tr>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                            {{ payment.created_at.strftime('%Y-%m-%d %H:%M') }}
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm font-mono text-gray-900">
+                            <a href="https://etherscan.io/tx/{{ payment.tx_hash }}" target="_blank" class="text-indigo-600 hover:text-indigo-500">
+                                {{ payment.tx_hash[:10] }}...{{ payment.tx_hash[-6:] }}
+                            </a>
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                            ${{ "%.2f"|format(payment.amount_usdt) }}
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-green-600 font-medium">
+                            +${{ "%.2f"|format(payment.credits_added) }}
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap">
+                            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium
+                                {% if payment.status.value == 'pending' %}bg-yellow-100 text-yellow-800
+                                {% elif payment.status.value == 'confirmed' %}bg-green-100 text-green-800
+                                {% elif payment.status.value == 'failed' %}bg-red-100 text-red-800
+                                {% endif %}">
+                                {{ payment.status.value }}
+                            </span>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <div class="px-4 py-12 text-center text-gray-500">
+                <p>No payments recorded.</p>
+                <a href="/payments/deposit" class="mt-2 inline-block text-indigo-600 hover:text-indigo-500">Make your first deposit</a>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,244 @@
+{% extends "base.html" %}
+
+{% block title %}{{ campaign.name }} - ColdCalls Platform{% endblock %}
+
+{% block content %}
+<div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8" x-data="campaignDetail()" x-init="init()">
+    <div class="mb-8 flex justify-between items-start">
+        <div>
+            <div class="flex items-center space-x-3">
+                <a href="/campaigns" class="text-gray-400 hover:text-gray-500">
+                    <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/>
+                    </svg>
+                </a>
+                <h1 class="text-2xl font-bold text-gray-900">{{ campaign.name }}</h1>
+                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium
+                    {% if campaign.status.value == 'draft' %}bg-gray-100 text-gray-800
+                    {% elif campaign.status.value == 'running' %}bg-green-100 text-green-800
+                    {% elif campaign.status.value == 'paused' %}bg-yellow-100 text-yellow-800
+                    {% elif campaign.status.value == 'completed' %}bg-blue-100 text-blue-800
+                    {% elif campaign.status.value == 'cancelled' %}bg-red-100 text-red-800
+                    {% endif %}" x-text="progress.status">
+                    {{ campaign.status.value }}
+                </span>
+            </div>
+            <p class="text-gray-500 mt-1">Created on {{ campaign.created_at.strftime('%Y-%m-%d %H:%M') }}</p>
+        </div>
+        <div class="flex space-x-3">
+            {% if campaign.status.value == 'draft' or campaign.status.value == 'paused' %}
+            <form action="/campaigns/{{ campaign.id }}/start" method="POST">
+                <button type="submit" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-green-600 hover:bg-green-700">
+                    <svg class="-ml-1 mr-2 h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/>
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                    </svg>
+                    Start
+                </button>
+            </form>
+            {% endif %}
+            {% if campaign.status.value == 'running' %}
+            <form action="/campaigns/{{ campaign.id }}/pause" method="POST">
+                <button type="submit" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-yellow-600 hover:bg-yellow-700">
+                    <svg class="-ml-1 mr-2 h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                    </svg>
+                    Pause
+                </button>
+            </form>
+            {% endif %}
+            {% if campaign.status.value != 'completed' and campaign.status.value != 'cancelled' %}
+            <form action="/campaigns/{{ campaign.id }}/cancel" method="POST" onsubmit="return confirm('Are you sure you want to cancel this campaign?')">
+                <button type="submit" class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md shadow-sm text-gray-700 bg-white hover:bg-gray-50">
+                    Cancel Campaign
+                </button>
+            </form>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Progress Stats -->
+    <div class="grid grid-cols-1 gap-5 sm:grid-cols-4 mb-8">
+        <div class="bg-white overflow-hidden shadow rounded-lg">
+            <div class="p-5">
+                <div class="flex items-center">
+                    <div class="w-0 flex-1">
+                        <dl>
+                            <dt class="text-sm font-medium text-gray-500 truncate">Progress</dt>
+                            <dd class="flex items-baseline">
+                                <div class="text-2xl font-semibold text-gray-900" x-text="progress.progress_percent.toFixed(1) + '%'">{{ campaign.progress_percent|round(1) }}%</div>
+                            </dd>
+                        </dl>
+                        <div class="mt-2 w-full bg-gray-200 rounded-full h-2">
+                            <div class="bg-indigo-600 h-2 rounded-full transition-all" :style="'width: ' + progress.progress_percent + '%'" style="width: {{ campaign.progress_percent }}%"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="bg-white overflow-hidden shadow rounded-lg">
+            <div class="p-5">
+                <dl>
+                    <dt class="text-sm font-medium text-gray-500 truncate">Processed</dt>
+                    <dd class="mt-1 text-2xl font-semibold text-gray-900">
+                        <span x-text="progress.processed">{{ campaign.processed_numbers }}</span> / <span x-text="progress.total">{{ campaign.total_numbers }}</span>
+                    </dd>
+                </dl>
+            </div>
+        </div>
+
+        <div class="bg-white overflow-hidden shadow rounded-lg">
+            <div class="p-5">
+                <dl>
+                    <dt class="text-sm font-medium text-gray-500 truncate">Success / Failed</dt>
+                    <dd class="mt-1 text-2xl font-semibold">
+                        <span class="text-green-600" x-text="progress.successful">{{ campaign.successful_calls }}</span>
+                        /
+                        <span class="text-red-600" x-text="progress.failed">{{ campaign.failed_calls }}</span>
+                    </dd>
+                </dl>
+            </div>
+        </div>
+
+        <div class="bg-white overflow-hidden shadow rounded-lg">
+            <div class="p-5">
+                <dl>
+                    <dt class="text-sm font-medium text-gray-500 truncate">Total Cost</dt>
+                    <dd class="mt-1 text-2xl font-semibold text-gray-900" x-text="'$' + progress.cost.toFixed(2)">${{ "%.2f"|format(campaign.total_cost) }}</dd>
+                </dl>
+            </div>
+        </div>
+    </div>
+
+    <!-- Campaign Info -->
+    <div class="grid grid-cols-1 gap-6 lg:grid-cols-3 mb-8">
+        <div class="bg-white shadow rounded-lg">
+            <div class="px-4 py-5 sm:px-6">
+                <h3 class="text-lg font-medium text-gray-900">Configuration</h3>
+            </div>
+            <div class="border-t border-gray-200 px-4 py-5 sm:px-6">
+                <dl class="space-y-3">
+                    <div>
+                        <dt class="text-sm font-medium text-gray-500">Country</dt>
+                        <dd class="text-sm text-gray-900">{{ campaign.country.name }} ({{ campaign.country.code }})</dd>
+                    </div>
+                    <div>
+                        <dt class="text-sm font-medium text-gray-500">Price per minute</dt>
+                        <dd class="text-sm text-gray-900">${{ "%.3f"|format(campaign.country.price_per_minute) }}</dd>
+                    </div>
+                    <div>
+                        <dt class="text-sm font-medium text-gray-500">Caller ID</dt>
+                        <dd class="text-sm text-gray-900">{{ campaign.caller_id.phone_number }}</dd>
+                    </div>
+                    <div>
+                        <dt class="text-sm font-medium text-gray-500">Audio</dt>
+                        <dd class="text-sm text-gray-900">{{ campaign.audio.name }}</dd>
+                    </div>
+                    <div>
+                        <dt class="text-sm font-medium text-gray-500">Transfer to (3CX)</dt>
+                        <dd class="text-sm text-gray-900 font-mono">{{ campaign.transfer_number }}</dd>
+                    </div>
+                </dl>
+            </div>
+        </div>
+
+        <div class="lg:col-span-2 bg-white shadow rounded-lg">
+            <div class="px-4 py-5 sm:px-6 flex justify-between items-center">
+                <h3 class="text-lg font-medium text-gray-900">Numbers ({{ numbers|length }})</h3>
+            </div>
+            <div class="border-t border-gray-200 max-h-96 overflow-y-auto">
+                <table class="min-w-full divide-y divide-gray-200">
+                    <thead class="bg-gray-50 sticky top-0">
+                        <tr>
+                            <th scope="col" class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Number</th>
+                            <th scope="col" class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                            <th scope="col" class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Duration</th>
+                            <th scope="col" class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Cost</th>
+                        </tr>
+                    </thead>
+                    <tbody class="bg-white divide-y divide-gray-200">
+                        {% for number in numbers %}
+                        <tr>
+                            <td class="px-4 py-2 whitespace-nowrap text-sm font-mono text-gray-900">{{ number.phone_number }}</td>
+                            <td class="px-4 py-2 whitespace-nowrap">
+                                <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium
+                                    {% if number.status.value == 'pending' %}bg-gray-100 text-gray-800
+                                    {% elif number.status.value == 'queued' %}bg-blue-100 text-blue-800
+                                    {% elif number.status.value == 'ringing' %}bg-yellow-100 text-yellow-800
+                                    {% elif number.status.value == 'in_progress' %}bg-green-100 text-green-800
+                                    {% elif number.status.value == 'completed' %}bg-green-100 text-green-800
+                                    {% elif number.status.value == 'no_answer' %}bg-orange-100 text-orange-800
+                                    {% elif number.status.value == 'busy' %}bg-red-100 text-red-800
+                                    {% elif number.status.value == 'failed' %}bg-red-100 text-red-800
+                                    {% elif number.status.value == 'cancelled' %}bg-gray-100 text-gray-800
+                                    {% endif %}">
+                                    {{ number.status.value }}
+                                </span>
+                                {% if number.answered_by %}
+                                <span class="ml-1 text-xs text-gray-500">({{ number.answered_by }})</span>
+                                {% endif %}
+                            </td>
+                            <td class="px-4 py-2 whitespace-nowrap text-sm text-gray-500">
+                                {% if number.duration_seconds %}{{ number.duration_seconds }}s{% else %}-{% endif %}
+                            </td>
+                            <td class="px-4 py-2 whitespace-nowrap text-sm text-gray-500">
+                                {% if number.cost %}${{ "%.3f"|format(number.cost) }}{% else %}-{% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function campaignDetail() {
+    return {
+        progress: {
+            status: '{{ campaign.status.value }}',
+            total: {{ campaign.total_numbers }},
+            processed: {{ campaign.processed_numbers }},
+            successful: {{ campaign.successful_calls }},
+            failed: {{ campaign.failed_calls }},
+            cost: {{ campaign.total_cost }},
+            progress_percent: {{ campaign.progress_percent }}
+        },
+        polling: null,
+        init() {
+            if (this.progress.status === 'running') {
+                this.startPolling();
+            }
+        },
+        startPolling() {
+            this.polling = setInterval(() => this.fetchProgress(), 5000);
+        },
+        stopPolling() {
+            if (this.polling) {
+                clearInterval(this.polling);
+                this.polling = null;
+            }
+        },
+        async fetchProgress() {
+            try {
+                const response = await fetch('/api/campaigns/{{ campaign.id }}/progress');
+                if (response.ok) {
+                    this.progress = await response.json();
+                    if (this.progress.status !== 'running') {
+                        this.stopPolling();
+                        // Reload page to update UI
+                        window.location.reload();
+                    }
+                }
+            } catch (e) {
+                console.error('Failed to fetch progress:', e);
+            }
+        }
+    }
+}
+</script>
+{% endblock %}

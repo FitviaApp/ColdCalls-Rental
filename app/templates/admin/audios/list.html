@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+
+{% block title %}Audios - Admin{% endblock %}
+
+{% block content %}
+<div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+    <div class="mb-8 flex justify-between items-center">
+        <div>
+            <h1 class="text-2xl font-bold text-gray-900">Audios</h1>
+            <p class="text-gray-500">Audio files for campaigns</p>
+        </div>
+        <div class="flex space-x-3">
+            <a href="/admin" class="text-sm text-gray-500 hover:text-gray-700">Back</a>
+            <a href="/admin/audios/upload" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700">
+                Upload Audio
+            </a>
+        </div>
+    </div>
+
+    <div class="bg-white shadow overflow-hidden rounded-lg">
+        {% if error %}
+        <div class="m-4 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded">
+            {{ error }}
+        </div>
+        {% endif %}
+
+        {% if audios %}
+        <table class="min-w-full divide-y divide-gray-200">
+            <thead class="bg-gray-50">
+                <tr>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Duration</th>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">URL</th>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Created</th>
+                    <th scope="col" class="relative px-6 py-3"><span class="sr-only">Actions</span></th>
+                </tr>
+            </thead>
+            <tbody class="bg-white divide-y divide-gray-200">
+                {% for audio in audios %}
+                <tr>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{{ audio.name }}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                        {% if audio.duration_seconds %}{{ audio.duration_seconds }}s{% else %}-{% endif %}
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                        <a href="{{ audio.r2_url }}" target="_blank" class="text-indigo-600 hover:text-indigo-900">
+                            {{ audio.r2_key[:30] }}...
+                        </a>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        {% if audio.is_active %}
+                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">Active</span>
+                        {% else %}
+                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">Inactive</span>
+                        {% endif %}
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{ audio.created_at.strftime('%Y-%m-%d') }}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                        <a href="/admin/audios/{{ audio.id }}/edit" class="text-indigo-600 hover:text-indigo-900">Edit</a>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <div class="px-4 py-12 text-center text-gray-500">
+            <p>No audios registered.</p>
+            <a href="/admin/audios/upload" class="mt-2 inline-block text-indigo-600 hover:text-indigo-500">Upload first</a>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
