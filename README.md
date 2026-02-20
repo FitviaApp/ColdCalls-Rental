@@ -1,288 +1,189 @@
 # ColdCalls Platform
 
-Plataforma web para gerenciamento de campanhas de cold calls via Twilio.
+Plataforma web para gerenciamento de campanhas de cold calls multiusuario com:
 
-## Stack Tecnologica
+- FastAPI + Jinja2
+- SQLAlchemy + SQLite
+- Twilio (discagem + TwiML)
+- Cloudflare R2 (audios)
+- Cobranca de aluguel via USDT (verificacao on-chain)
 
-- **Backend**: Python + FastAPI
-- **Database**: SQLite (SQLAlchemy ORM)
-- **Frontend**: HTML + TailwindCSS + Alpine.js (Jinja2 templates)
-- **Audios**: Cloudflare R2
-- **Billing**: Aluguel via USDT (ERC-20) com verificacao on-chain
+## Stack
 
-## Estrutura do Projeto
+- Backend: Python 3.11+ / FastAPI
+- Frontend: Jinja2 templates + TailwindCSS + Alpine.js
+- Banco: SQLite (`coldcalls.db`)
+- Processamento: worker separado (`worker.py`)
 
+## Estrutura do projeto
+
+```text
+app/
+  main.py                   # App FastAPI e startup
+  config.py                 # Configuracoes via .env
+  database.py               # Engine, sessao e init de schema
+  models.py                 # Modelos SQLAlchemy
+  routers/
+    auth.py                 # Login/logout
+    dashboard.py            # Dashboard e settings do usuario
+    campaigns.py            # CRUD e controle de campanhas
+    assets.py               # Caller IDs e audios por usuario
+    billing.py              # Pagamentos e aluguel
+    admin.py                # Painel admin
+    api.py                  # Endpoints JSON e TwiML
+  services/
+    campaign_worker.py      # Loop do worker
+    twilio_service.py       # Integracao Twilio
+    payment_service.py      # Verificacao da transacao USDT
+    rental_service.py       # Regras de aluguel
+    r2_service.py           # Upload/delete no R2
+    user_twilio_service.py  # Credenciais Twilio por usuario
+worker.py                   # Entry point do worker
+scripts/                    # Scripts de migracao/limpeza legado
+requirements.txt
+README.md
 ```
-coldcalls/
-├── app/
-│   ├── main.py              # FastAPI application
-│   ├── config.py            # Pydantic settings
-│   ├── database.py          # SQLAlchemy setup
-│   ├── models.py            # Database models
-│   ├── schemas.py           # Pydantic schemas
-│   ├── auth.py              # JWT, bcrypt, encryption
-│   ├── dependencies.py      # FastAPI dependencies
-│   ├── routers/
-│   │   ├── auth.py          # Login/registro
-│   │   ├── dashboard.py     # Dashboard do usuario
-│   │   ├── campaigns.py     # CRUD campanhas
-│   │   ├── billing.py       # Aluguel e verificacao USDT
-│   │   ├── admin.py         # Gerenciamento admin
-│   │   └── api.py           # API JSON
-│   ├── services/
-│   │   ├── twilio_service.py    # Logica de chamadas
-│   │   ├── payment_service.py   # Verificacao Etherscan
-│   │   ├── r2_service.py        # Upload de audios
-│   │   └── campaign_worker.py   # Worker de processamento
-│   ├── templates/           # Templates Jinja2
-│   └── static/              # CSS/JS
-├── worker.py                # Entry point do worker
-├── requirements.txt
-└── .env.example
-```
+
+## Requisitos
+
+- Python 3.11+
+- Conta Twilio (Account SID + Auth Token)
+- Bucket Cloudflare R2 (para audios)
+- Chave Etherscan (verificacao de pagamento)
 
 ## Instalacao
 
 ```bash
-# 1. Clonar repositorio
 git clone <repo-url>
-cd coldcalls
+cd ColdCalls-Rental
 
-# 2. Criar ambiente virtual
-python3 -m venv venv
-source venv/bin/activate  # Linux/Mac
-# ou: venv\Scripts\activate  # Windows
+python3 -m venv .venv
+source .venv/bin/activate   # Linux/Mac
+# .venv\Scripts\activate   # Windows
 
-# 3. Instalar dependencias
 pip install -r requirements.txt
-
-# 4. Configurar variaveis de ambiente
-cp .env.example .env
-# Editar .env com suas configuracoes
 ```
 
 ## Configuracao (.env)
 
+Crie um arquivo `.env` na raiz do projeto.
+
 ```env
 # Aplicacao
-SECRET_KEY=sua-chave-secreta-min-32-chars
+APP_NAME=ColdCalls Platform
+SECRET_KEY=change-me-in-production-min-32-chars
 DEBUG=false
+BASE_URL=http://localhost:8000
+
+# Banco
+DATABASE_URL=sqlite:///./coldcalls.db
 
 # JWT
-JWT_SECRET=jwt-secret-min-32-chars
+JWT_SECRET=jwt-secret-change-me-min-32-chars
+JWT_ALGORITHM=HS256
+JWT_EXPIRATION_HOURS=24
 
-# Encryption (gerar com: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
-ENCRYPTION_KEY=sua-chave-fernet
+# Criptografia das credenciais Twilio do usuario (Fernet)
+ENCRYPTION_KEY=<32-byte-urlsafe-base64-key>
 
-# Admin inicial
+# Admin inicial (criado automaticamente no primeiro startup)
 ADMIN_EMAIL=admin@example.com
-ADMIN_PASSWORD=senha-segura
+ADMIN_PASSWORD=change-me
 
-# Cloudflare R2 (para audios)
-R2_ACCOUNT_ID=xxx
-R2_ACCESS_KEY_ID=xxx
-R2_SECRET_ACCESS_KEY=xxx
+# Cloudflare R2
+R2_ACCOUNT_ID=
+R2_ACCESS_KEY_ID=
+R2_SECRET_ACCESS_KEY=
 R2_BUCKET_NAME=coldcalls-audios
-R2_PUBLIC_URL=https://seu-bucket.r2.dev
+R2_PUBLIC_URL=
 
-# Etherscan (para verificacao USDT)
-ETHERSCAN_API_KEY=xxx
-USDT_WALLET_ADDRESS=0xSuaWallet
+# Pagamentos (USDT ERC-20)
+ETHERSCAN_API_KEY=
+USDT_CONTRACT=0xdAC17F958D2ee523a2206206994597C13D831ec7
+USDT_WALLET_ADDRESS=
+
+# Limite de usuarios nao-admin
+MAX_USERS=4
+```
+
+Gerar `ENCRYPTION_KEY`:
+
+```bash
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
 ## Executando
 
-### Aplicacao Web
+### 1) Aplicacao web
 
 ```bash
-# Desenvolvimento
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-
-# Producao
-gunicorn app.main:app -w 4 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8000
 ```
 
-### Worker de Campanhas
+### 2) Worker (em outro terminal)
 
 ```bash
-# Em outro terminal
 python worker.py
 ```
 
-O worker processa campanhas com status "running" a cada 10 segundos.
+O worker verifica campanhas `running` a cada 10 segundos.
 
-### Migracao de Assets Legados (opcional)
+## Fluxo de uso
 
-Se houver Caller IDs/Audios antigos sem `user_id`, associe-os a um usuario:
+1. Acesse `http://localhost:8000`.
+2. Faca login com o admin definido no `.env`.
+3. Em `/admin`, cadastre paises e planos de aluguel.
+4. Crie usuarios em `/admin/users`.
+5. Cada usuario configura:
+   - Numero de transferencia em `/dashboard/settings`
+   - Credenciais Twilio em `/dashboard/settings`
+   - Caller IDs em `/assets/caller-ids`
+   - Audios em `/assets/audios`
+6. O usuario paga aluguel em `/billing`.
+7. Crie e inicie campanhas em `/campaigns`.
+
+## Rotas principais
+
+- Auth: `/auth/login`, `/auth/logout`
+- Dashboard: `/dashboard`, `/dashboard/settings`
+- Assets: `/assets/caller-ids`, `/assets/audios`
+- Campanhas: `/campaigns`, `/campaigns/create`, `/campaigns/{id}`
+- Billing: `/billing`, `POST /billing/verify`
+- Admin: `/admin`, `/admin/users`, `/admin/countries`, `/admin/rental-plans`
+- API JSON/TwiML:
+  - `/api/stats`
+  - `/api/campaigns/{id}/progress`
+  - `/api/campaigns/{id}/numbers`
+  - `/api/data/countries`
+  - `/api/data/caller-ids`
+  - `/api/data/audios`
+  - `/api/twiml/{campaign_id}`
+
+## Scripts de manutencao legado
+
+Associar assets orfaos a um usuario:
 
 ```bash
 python3 scripts/assign_orphan_assets.py --email user@example.com --dry-run
 python3 scripts/assign_orphan_assets.py --email user@example.com
 ```
 
-Para migrar campanhas legadas que apontam para assets sem ownership correto:
+Migrar campanhas legadas para assets corretos:
 
 ```bash
 python3 scripts/migrate_campaign_assets_to_owners.py --dry-run
 python3 scripts/migrate_campaign_assets_to_owners.py
 ```
 
-### Limpeza de Schema Legado (opcional)
-
-Para arquivar/remover tabelas antigas de creditos e tentar remover colunas obsoletas:
+Limpar schema legado:
 
 ```bash
 python3 scripts/cleanup_legacy_schema.py
 python3 scripts/cleanup_legacy_schema.py --apply
 ```
 
-## Uso
+## Observacoes
 
-### 1. Primeiro Acesso
-
-- Acesse `http://localhost:8000`
-- Faca login com as credenciais admin definidas no `.env`
-- O admin e criado automaticamente no primeiro startup
-
-### 2. Configuracao Admin
-
-1. Acesse `/admin`
-2. Adicione **Paises** com precos por minuto
-3. Gerencie **planos de aluguel** (daily/weekly)
-4. Crie usuarios
-
-### 3. Usuarios
-
-1. Admin cria usuarios em `/admin/users` (max 4 usuarios)
-2. Cada usuario configura suas credenciais **Twilio** em `/dashboard/settings`
-3. Cada usuario configura numero de transferencia em `/dashboard/settings`
-4. Cada usuario gerencia seus **Caller IDs** e **Audios** em `/assets`
-5. Cada usuario paga o aluguel (daily/weekly) em `/billing`
-
-### 4. Campanhas
-
-1. Criar campanha em `/campaigns/create`
-2. Selecionar pais, caller ID, audio
-3. Upload lista de numeros (formato E.164: +5511999999999)
-4. Iniciar campanha
-5. Worker processa as chamadas automaticamente
-
-## API Endpoints
-
-### Autenticacao
-- `GET/POST /auth/login` - Login
-- `GET/POST /auth/register` - Desabilitado (redireciona para login)
-- `GET /auth/logout` - Logout
-
-### Dashboard
-- `GET /dashboard` - Dashboard principal
-- `GET/POST /dashboard/settings` - Configuracoes de transferencia (3CX)
-
-### Campanhas
-- `GET /campaigns` - Listar campanhas
-- `GET/POST /campaigns/create` - Criar campanha
-- `GET /campaigns/{id}` - Detalhes da campanha
-- `POST /campaigns/{id}/start` - Iniciar
-- `POST /campaigns/{id}/pause` - Pausar
-- `POST /campaigns/{id}/cancel` - Cancelar
-
-### Billing (Aluguel do Software)
-- `GET /billing` - Status do aluguel + planos ativos
-- `POST /billing/verify` - Verificar TX e ativar/estender aluguel
-
-### API JSON
-- `GET /api/stats` - Estatisticas do usuario
-- `GET /api/campaigns/{id}/progress` - Progresso da campanha
-- `GET /api/data/countries` - Lista de paises
-- `GET /api/data/caller-ids` - Lista de caller IDs
-- `GET /api/data/audios` - Lista de audios
-
-## Deploy (VPS Linux)
-
-```bash
-# Instalar dependencias do sistema
-sudo apt update
-sudo apt install python3.11 python3.11-venv nginx
-
-# Criar usuario
-sudo useradd -m coldcalls
-sudo su - coldcalls
-
-# Setup aplicacao
-git clone <repo> ~/app
-cd ~/app
-python3.11 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env
-# Editar .env
-
-# Systemd service (app)
-sudo tee /etc/systemd/system/coldcalls.service << EOF
-[Unit]
-Description=ColdCalls Platform
-After=network.target
-
-[Service]
-User=coldcalls
-WorkingDirectory=/home/coldcalls/app
-ExecStart=/home/coldcalls/app/venv/bin/gunicorn app.main:app -w 2 -k uvicorn.workers.UvicornWorker -b 127.0.0.1:8000
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-# Systemd service (worker)
-sudo tee /etc/systemd/system/coldcalls-worker.service << EOF
-[Unit]
-Description=ColdCalls Worker
-After=network.target
-
-[Service]
-User=coldcalls
-WorkingDirectory=/home/coldcalls/app
-ExecStart=/home/coldcalls/app/venv/bin/python worker.py
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-# Iniciar servicos
-sudo systemctl enable coldcalls coldcalls-worker
-sudo systemctl start coldcalls coldcalls-worker
-
-# Nginx reverse proxy
-sudo tee /etc/nginx/sites-available/coldcalls << EOF
-server {
-    listen 80;
-    server_name seu-dominio.com;
-
-    location / {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-    }
-}
-EOF
-
-sudo ln -s /etc/nginx/sites-available/coldcalls /etc/nginx/sites-enabled/
-sudo nginx -t && sudo systemctl reload nginx
-
-# SSL com Let's Encrypt
-sudo apt install certbot python3-certbot-nginx
-sudo certbot --nginx -d seu-dominio.com
-```
-
-## Seguranca
-
-- Senhas hasheadas com bcrypt
-- Credenciais Twilio encriptadas com Fernet
-- JWT com expiracao de 24h
-- Cookies httponly
-- Limite de 4 usuarios
-
-## Licenca
-
-MIT
+- O banco e criado automaticamente no startup (`init_db()`), sem Alembic.
+- O endpoint `/health` retorna status da aplicacao.
+- Rotas admin antigas de Caller IDs e Audios estao descontinuadas; a gestao e por usuario em `/assets`.
