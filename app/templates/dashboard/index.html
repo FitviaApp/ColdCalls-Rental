@@ -124,7 +124,7 @@
     <!-- Quick Actions -->
     <div class="mb-8">
         <h2 class="text-lg font-medium text-gray-900 mb-4">Quick Actions</h2>
-        <div class="grid grid-cols-1 gap-4 sm:grid-cols-4">
+        <div class="grid grid-cols-1 gap-4 sm:grid-cols-5">
             <a href="/campaigns/create" class="relative rounded-lg border border-gray-300 bg-white px-6 py-5 shadow-sm hover:border-indigo-500 hover:ring-1 hover:ring-indigo-500 {% if not stats.transfer_configured or not stats.rental_active %}opacity-50 pointer-events-none{% endif %}">
                 <div class="flex items-center space-x-3">
                     <svg class="h-6 w-6 text-indigo-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -147,6 +147,14 @@
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5V4H2v16h5m10 0v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6m10 0H7"/>
                     </svg>
                     <span class="text-gray-900 font-medium">Manage Assets</span>
+                </div>
+            </a>
+            <a href="/assets/audios/upload" class="relative rounded-lg border border-gray-300 bg-white px-6 py-5 shadow-sm hover:border-indigo-500 hover:ring-1 hover:ring-indigo-500 {% if not stats.rental_active %}opacity-50 pointer-events-none{% endif %}">
+                <div class="flex items-center space-x-3">
+                    <svg class="h-6 w-6 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19V6l12-2v13M9 19a2 2 0 11-4 0 2 2 0 014 0zm12-2a2 2 0 11-4 0 2 2 0 014 0z"/>
+                    </svg>
+                    <span class="text-gray-900 font-medium">Upload Audio</span>
                 </div>
             </a>
             <a href="/dashboard/settings" class="relative rounded-lg border border-gray-300 bg-white px-6 py-5 shadow-sm hover:border-indigo-500 hover:ring-1 hover:ring-indigo-500">

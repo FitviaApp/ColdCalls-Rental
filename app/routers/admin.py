@@ -17,7 +17,7 @@ from app.models import (
     User, CallerID, Country, Audio, Campaign,
     PaymentStatus, RentalPlan, RentalPayment
 )
-from app.services.rental_service import get_active_rental
+from app.services.rental_service import get_active_rental, add_paid_days
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 templates = Jinja2Templates(directory="app/templates")
@@ -200,6 +200,7 @@ async def list_users(
     request: Request,
     created: bool = False,
     deleted: bool = False,
+    notice: Optional[str] = None,
     error: Optional[str] = None,
     user: User = Depends(get_admin_user),
     db: Session = Depends(get_db)
@@ -219,6 +220,7 @@ async def list_users(
             "rental_status": rental_status,
             "created": created,
             "deleted": deleted,
+            "notice": notice,
             "error": error
         }
     )
@@ -312,7 +314,40 @@ async def assign_orphan_assets(
     db.commit()
 
     msg = quote(f"Assigned orphan assets to {user.email}")
-    return RedirectResponse(url=f"/admin/users?error={msg}", status_code=302)
+    return RedirectResponse(url=f"/admin/users?notice={msg}", status_code=302)
+
+
+@router.post("/users/{user_id}/add-paid-days")
+async def add_paid_days_to_user(
+    user_id: int,
+    paid_days: int = Form(...),
+    admin: User = Depends(get_admin_user),
+    db: Session = Depends(get_db)
+):
+    """Manually add paid days to a user's rental from admin dashboard."""
+    del admin
+
+    if paid_days <= 0:
+        msg = quote("Paid days must be greater than zero")
+        return RedirectResponse(url=f"/admin/users?error={msg}", status_code=302)
+
+    user = db.query(User).filter(User.id == user_id, User.is_admin == False).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    try:
+        rental = add_paid_days(db, user.id, paid_days)
+    except RuntimeError:
+        msg = quote("No rental plans available. Create a rental plan first.")
+        return RedirectResponse(url=f"/admin/users?error={msg}", status_code=302)
+
+    db.commit()
+
+    msg = quote(
+        f"Added {paid_days} paid day(s) to {user.email}. "
+        f"Access active until {rental.expires_at.strftime('%Y-%m-%d')}."
+    )
+    return RedirectResponse(url=f"/admin/users?notice={msg}", status_code=302)
 
 
 @router.get("/rental-plans", response_class=HTMLResponse)
