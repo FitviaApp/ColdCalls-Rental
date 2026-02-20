@@ -32,8 +32,6 @@ async def admin_dashboard(
     db: Session = Depends(get_db)
 ):
     """Admin dashboard"""
-    del user
-
     stats = {
         "total_users": db.query(User).filter(User.is_admin == False).count(),
         "total_campaigns": db.query(Campaign).count(),
