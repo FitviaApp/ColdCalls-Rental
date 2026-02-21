@@ -54,28 +54,21 @@ class TwilioService:
         """
         logger.info(f"Initiating call to {to_number} from {from_number}")
 
-        # Prefer dynamic TwiML endpoint so campaign-level options are controlled server-side.
+        # Use dynamic callback URL only when "Press 1" is enabled.
+        # For normal calls, inline TwiML avoids dependency on public BASE_URL.
         call_kwargs = {}
-        if campaign_id is not None:
+        if press_1_to_talk_with_agent:
+            if campaign_id is None:
+                raise ValueError("campaign_id is required when press_1_to_talk_with_agent is enabled")
             base_url = settings.BASE_URL.rstrip("/")
             call_kwargs["url"] = f"{base_url}/api/twiml/{campaign_id}"
         else:
-            # Fallback inline TwiML if campaign context is unavailable.
-            if press_1_to_talk_with_agent:
-                twiml = f'''<Response>
-                <Play>{audio_url}</Play>
-                <Gather input="dtmf" numDigits="1" timeout="8">
-                    <Say voice="alice">Press 1 to talk with an agent.</Say>
-                </Gather>
-                <Hangup/>
-            </Response>'''
-            else:
-                twiml = f'''<Response>
-                <Play>{audio_url}</Play>
-                <Dial callerId="{from_number}" timeout="30">
-                    <Number>{transfer_number}</Number>
-                </Dial>
-            </Response>'''
+            twiml = f'''<Response>
+            <Play>{audio_url}</Play>
+            <Dial callerId="{from_number}" timeout="30">
+                <Number>{transfer_number}</Number>
+            </Dial>
+        </Response>'''
             call_kwargs["twiml"] = twiml
 
         call = self.client.calls.create(
