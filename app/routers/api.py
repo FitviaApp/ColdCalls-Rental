@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.config import get_settings
 from app.dependencies import require_active_rental
-from app.models import User, Campaign, CampaignNumber, CallerID, Country, Audio, CampaignStatus
+from app.models import User, Campaign, CampaignNumber, CallerID, Country, Audio, CampaignStatus, VoiceProvider
 from app.schemas import DashboardStats, CampaignProgress, DropdownCallerID, DropdownCountry, DropdownAudio
 from app.services.rental_service import has_active_rental
 
@@ -67,6 +67,8 @@ async def twiml_handler(
         return _hangup_response()
 
     if not has_active_rental(db, campaign.user_id):
+        return _hangup_response()
+    if campaign.voice_provider != VoiceProvider.TWILIO:
         return _hangup_response()
 
     # Get transfer number from user settings
@@ -127,6 +129,8 @@ async def twiml_gather_handler(
         return _hangup_response()
     if not has_active_rental(db, campaign.user_id):
         return _hangup_response()
+    if campaign.voice_provider != VoiceProvider.TWILIO:
+        return _hangup_response()
 
     transfer_number = campaign.user.transfer_number
     if not transfer_number:
@@ -142,6 +146,35 @@ async def twiml_gather_handler(
 
     logger.info(f"Campaign {campaign_id}: Invalid/no DTMF ({digits}), hanging up")
     return _hangup_response()
+
+
+@router.post("/telnyx/texml/{campaign_id}")
+@router.get("/telnyx/texml/{campaign_id}")
+async def telnyx_texml_handler(
+    campaign_id: int,
+    db: Session = Depends(get_db)
+):
+    campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
+    if not campaign:
+        return _hangup_response()
+    if not has_active_rental(db, campaign.user_id):
+        return _hangup_response()
+    if campaign.voice_provider != VoiceProvider.TELNYX:
+        return _hangup_response()
+
+    transfer_number = campaign.user.transfer_number
+    if not transfer_number:
+        return _hangup_response()
+
+    # TeXML is TwiML-compatible for these basic verbs.
+    texml = f'''<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Play>{campaign.audio.r2_url}</Play>
+    <Dial callerId="{campaign.caller_id.phone_number}" timeout="30">
+        <Number>{transfer_number}</Number>
+    </Dial>
+</Response>'''
+    return Response(content=texml, media_type="application/xml")
 
 
 @router.get("/stats", response_model=DashboardStats)

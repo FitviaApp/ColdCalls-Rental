@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     APP_NAME: str = "ColdCalls Platform"
     SECRET_KEY: str = "change-me-in-production-min-32-chars"
     DEBUG: bool = False
-    BASE_URL: str = "http://localhost:8000"  # Public URL for Twilio callbacks
+    BASE_URL: str = "http://localhost:8000"  # Public URL for Twilio/Telnyx callbacks
 
     # Database
     DATABASE_URL: str = "sqlite:///./coldcalls.db"

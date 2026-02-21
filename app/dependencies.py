@@ -10,7 +10,7 @@ from app.auth import decode_access_token
 from app.database import get_db
 from app.models import User
 from app.services.rental_service import has_active_rental
-from app.services.user_twilio_service import has_user_twilio_credentials
+from app.services.user_voice_provider_service import has_any_user_voice_provider_credentials
 
 
 async def get_current_user(
@@ -85,16 +85,16 @@ async def require_transfer_configured(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ) -> User:
-    """Require user to have transfer number and Twilio credentials configured."""
+    """Require user to have transfer number and at least one voice provider configured."""
     if not user.transfer_number:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Please configure your Transfer Number (3CX) in Settings first"
         )
-    if not has_user_twilio_credentials(db, user.id):
+    if not has_any_user_voice_provider_credentials(db, user.id):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Please configure your Twilio Account SID and Auth Token in Settings first"
+            detail="Please configure at least one voice provider (Twilio, Telnyx, or Vonage) in Settings first"
         )
     return user
 

@@ -34,6 +34,19 @@
             </div>
             <div class="border-t border-gray-200 px-4 py-5 sm:px-6 space-y-4">
                 <div>
+                    <label for="voice_provider" class="block text-sm font-medium text-gray-700">Voice Provider</label>
+                    <select name="voice_provider" id="voice_provider" required
+                        class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border px-3 py-2">
+                        {% for provider in voice_providers %}
+                        <option value="{{ provider.value }}" {% if not provider.configured %}disabled{% endif %}>
+                            {{ provider.label }}{% if not provider.configured %} (not configured){% endif %}
+                        </option>
+                        {% endfor %}
+                    </select>
+                    <p class="mt-1 text-xs text-gray-500">Only configured providers are available.</p>
+                </div>
+
+                <div>
                     <label for="name" class="block text-sm font-medium text-gray-700">Campaign Name</label>
                     <input type="text" name="name" id="name" required
                         class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border px-3 py-2"
@@ -71,7 +84,7 @@
                             class="mt-1 h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
                         <span>
                             <span class="block text-sm font-medium text-gray-700">Enable "Press 1 to talk with an agent"</span>
-                            <span class="block text-xs text-gray-500">If enabled, the call is only transferred when the callee presses 1.</span>
+                            <span class="block text-xs text-gray-500">If enabled, the call is only transferred when the callee presses 1 (Twilio only).</span>
                         </span>
                     </label>
                 </div>
@@ -135,4 +148,24 @@
         </div>
     </form>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+    const providerSelect = document.getElementById('voice_provider');
+    const press1 = document.getElementById('press_1_to_talk_with_agent');
+
+    function syncPress1Availability() {
+        const isTwilio = providerSelect.value === 'twilio';
+        press1.disabled = !isTwilio;
+        if (!isTwilio) {
+            press1.checked = false;
+        }
+    }
+
+    providerSelect.addEventListener('change', syncPress1Availability);
+    syncPress1Availability();
+})();
+</script>
 {% endblock %}

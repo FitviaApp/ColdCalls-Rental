@@ -44,6 +44,12 @@ class RentalStatus(str, enum.Enum):
     EXPIRED = "expired"
 
 
+class VoiceProvider(str, enum.Enum):
+    TWILIO = "twilio"
+    TELNYX = "telnyx"
+    VONAGE = "vonage"
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -67,6 +73,18 @@ class User(Base):
     audios = relationship("Audio", back_populates="user", cascade="all, delete-orphan")
     twilio_credentials = relationship(
         "UserTwilioCredential",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        uselist=False
+    )
+    telnyx_credentials = relationship(
+        "UserTelnyxCredential",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        uselist=False
+    )
+    vonage_credentials = relationship(
+        "UserVonageCredential",
         back_populates="user",
         cascade="all, delete-orphan",
         uselist=False
@@ -142,6 +160,12 @@ class Campaign(Base):
     audio_id = Column(Integer, ForeignKey("audios.id"), nullable=False)
     status = Column(Enum(CampaignStatus), default=CampaignStatus.DRAFT, index=True)
     press_1_to_talk_with_agent = Column(Boolean, default=False, nullable=False)
+    voice_provider = Column(
+        Enum(VoiceProvider, values_callable=lambda enum_cls: [member.value for member in enum_cls]),
+        default=VoiceProvider.TWILIO,
+        nullable=False,
+        index=True
+    )
 
     # Progress tracking
     total_numbers = Column(Integer, default=0)
@@ -211,6 +235,38 @@ class UserTwilioCredential(Base):
 
     def __repr__(self):
         return f"<UserTwilioCredential user_id={self.user_id}>"
+
+
+class UserTelnyxCredential(Base):
+    __tablename__ = "user_telnyx_credentials"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, unique=True, index=True)
+    api_key_encrypted = Column(Text, nullable=False)
+    account_sid_encrypted = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    user = relationship("User", back_populates="telnyx_credentials")
+
+    def __repr__(self):
+        return f"<UserTelnyxCredential user_id={self.user_id}>"
+
+
+class UserVonageCredential(Base):
+    __tablename__ = "user_vonage_credentials"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, unique=True, index=True)
+    application_id_encrypted = Column(Text, nullable=False)
+    private_key_encrypted = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    user = relationship("User", back_populates="vonage_credentials")
+
+    def __repr__(self):
+        return f"<UserVonageCredential user_id={self.user_id}>"
 
 
 class RentalPlan(Base):

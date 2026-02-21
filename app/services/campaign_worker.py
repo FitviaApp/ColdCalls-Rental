@@ -13,11 +13,15 @@ from sqlalchemy.orm import Session
 from app.database import SessionLocal, init_db
 from app.models import (
     Campaign, CampaignNumber, User,
-    CampaignStatus, CallStatus
+    CampaignStatus, CallStatus, VoiceProvider
 )
+from app.services.telnyx_service import TelnyxService
 from app.services.twilio_service import TwilioService
+from app.services.vonage_service import VonageService
 from app.services.rental_service import has_active_rental
+from app.services.user_telnyx_service import get_user_telnyx_credentials
 from app.services.user_twilio_service import get_user_twilio_credentials
+from app.services.user_vonage_service import get_user_vonage_credentials
 
 # Configure logging
 logging.basicConfig(
@@ -80,12 +84,11 @@ class CampaignWorker:
             self.db.commit()
             return
 
-        # Initialize Twilio service with campaign owner's credentials.
+        # Initialize voice provider service with campaign owner's credentials.
         try:
-            account_sid, auth_token = get_user_twilio_credentials(self.db, user.id)
-            twilio_service = TwilioService(account_sid=account_sid, auth_token=auth_token)
+            voice_service = self._build_voice_service(campaign, user)
         except Exception as e:
-            logger.error(f"Campaign {campaign.id}: Failed to init Twilio: {e}")
+            logger.error(f"Campaign {campaign.id}: Failed to init voice provider: {e}")
             campaign.status = CampaignStatus.PAUSED
             self.db.commit()
             return
@@ -122,7 +125,7 @@ class CampaignWorker:
                 self.db.commit()
                 break
 
-            self.process_number(campaign, number, twilio_service)
+            self.process_number(campaign, number, voice_service)
 
             # Delay between calls
             if self.running:
@@ -134,7 +137,7 @@ class CampaignWorker:
         self,
         campaign: Campaign,
         number: CampaignNumber,
-        twilio_service: TwilioService
+        voice_service
     ):
         """Process a single number in a campaign"""
         user = campaign.user
@@ -150,7 +153,7 @@ class CampaignWorker:
 
         try:
             # Make the call using campaign-configured TwiML flow.
-            call_result = twilio_service.make_call(
+            call_result = voice_service.make_call(
                 to_number=number.phone_number,
                 from_number=caller_id.phone_number,
                 audio_url=audio.r2_url,
@@ -164,7 +167,7 @@ class CampaignWorker:
             self.db.flush()
 
             # Poll for completion
-            final_result = twilio_service.poll_call_status(call_result['call_sid'])
+            final_result = voice_service.poll_call_status(call_result['call_sid'])
 
             # Update number record
             number.status = self._map_status(final_result['status'])
@@ -207,16 +210,37 @@ class CampaignWorker:
 
     def _map_status(self, twilio_status: str) -> CallStatus:
         """Map Twilio status to CallStatus enum"""
+        normalized_status = str(twilio_status or "").lower()
         mapping = {
             'completed': CallStatus.COMPLETED,
             'in-progress': CallStatus.IN_PROGRESS,
             'no-answer': CallStatus.NO_ANSWER,
+            'unanswered': CallStatus.NO_ANSWER,
             'busy': CallStatus.BUSY,
             'failed': CallStatus.FAILED,
             'canceled': CallStatus.CANCELLED,
+            'cancelled': CallStatus.CANCELLED,
+            'rejected': CallStatus.FAILED,
             'timeout': CallStatus.FAILED,
         }
-        return mapping.get(twilio_status, CallStatus.FAILED)
+        return mapping.get(normalized_status, CallStatus.FAILED)
+
+    def _build_voice_service(self, campaign: Campaign, user: User):
+        provider = campaign.voice_provider.value if hasattr(campaign.voice_provider, "value") else str(campaign.voice_provider)
+
+        if provider == VoiceProvider.TWILIO.value:
+            account_sid, auth_token = get_user_twilio_credentials(self.db, user.id)
+            return TwilioService(account_sid=account_sid, auth_token=auth_token)
+
+        if provider == VoiceProvider.TELNYX.value:
+            api_key, account_sid = get_user_telnyx_credentials(self.db, user.id)
+            return TelnyxService(api_key=api_key, account_sid=account_sid)
+
+        if provider == VoiceProvider.VONAGE.value:
+            application_id, private_key = get_user_vonage_credentials(self.db, user.id)
+            return VonageService(application_id=application_id, private_key=private_key)
+
+        raise ValueError(f"Unsupported voice provider: {provider}")
 
     def stop(self):
         """Signal worker to stop"""

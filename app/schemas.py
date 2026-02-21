@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Optional, List
 from pydantic import BaseModel, EmailStr, Field
 
-from app.models import CampaignStatus, CallStatus
+from app.models import CampaignStatus, CallStatus, VoiceProvider
 
 
 # ============== User Schemas ==============
@@ -152,6 +152,7 @@ class CampaignResponse(CampaignBase):
     country_id: int
     audio_id: int
     press_1_to_talk_with_agent: bool
+    voice_provider: VoiceProvider
     status: CampaignStatus
     total_numbers: int
     processed_numbers: int

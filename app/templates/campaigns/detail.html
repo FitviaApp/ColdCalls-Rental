@@ -136,6 +136,12 @@
                         <dd class="text-sm text-gray-900">{{ campaign.audio.name }}</dd>
                     </div>
                     <div>
+                        <dt class="text-sm font-medium text-gray-500">Voice Provider</dt>
+                        <dd class="text-sm text-gray-900">
+                            {{ (campaign.voice_provider.value if campaign.voice_provider.value is defined else campaign.voice_provider)|upper }}
+                        </dd>
+                    </div>
+                    <div>
                         <dt class="text-sm font-medium text-gray-500">Transfer to (3CX)</dt>
                         <dd class="text-sm text-gray-900 font-mono">{{ campaign.user.transfer_number }}</dd>
                     </div>

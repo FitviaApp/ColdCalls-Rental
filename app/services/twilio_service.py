@@ -7,6 +7,7 @@ import logging
 from typing import Optional
 
 from twilio.rest import Client
+from twilio.base.exceptions import TwilioRestException
 from app.config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -71,18 +72,38 @@ class TwilioService:
         </Response>'''
             call_kwargs["twiml"] = twiml
 
-        call = self.client.calls.create(
-            to=to_number,
-            from_=from_number,
-            **call_kwargs,
-            timeout=timeout,
-            # Machine detection parameters (same as cold_calls.py)
-            machine_detection='Enable',
-            machine_detection_timeout=5,
-            machine_detection_speech_threshold=2400,
-            machine_detection_speech_end_threshold=1200,
-            machine_detection_silence_timeout=5000
-        )
+        try:
+            call = self.client.calls.create(
+                to=to_number,
+                from_=from_number,
+                **call_kwargs,
+                timeout=timeout,
+                # Machine detection parameters (same as cold_calls.py)
+                machine_detection='Enable',
+                machine_detection_timeout=5,
+                machine_detection_speech_threshold=2400,
+                machine_detection_speech_end_threshold=1200,
+                machine_detection_silence_timeout=5000
+            )
+        except TwilioRestException as e:
+            error_code = getattr(e, "code", None)
+            more_info = ""
+            details = getattr(e, "details", None)
+            if isinstance(details, dict):
+                more_info = str(details.get("more_info", "") or "")
+            if not more_info:
+                more_info = str(getattr(e, "more_info", "") or "")
+            if not more_info and error_code:
+                more_info = f"https://www.twilio.com/docs/errors/{error_code}"
+
+            # Surface Twilio-native diagnostics in campaign error_message.
+            detail = (
+                f"Twilio create call failed: status={e.status} code={e.code} "
+                f"message={e.msg} more_info={more_info} to={to_number} from={from_number} "
+                f"account_sid={self.account_sid}"
+            )
+            logger.error(detail)
+            raise RuntimeError(detail) from e
 
         logger.info(f"Call initiated: SID={call.sid}, status={call.status}")
 

@@ -13,8 +13,16 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.dependencies import require_active_rental
-from app.models import User, Campaign, CampaignNumber, CallerID, Country, Audio, CampaignStatus, CallStatus
-from app.services.user_twilio_service import has_user_twilio_credentials
+from app.models import (
+    User, Campaign, CampaignNumber, CallerID, Country, Audio,
+    CampaignStatus, CallStatus, VoiceProvider
+)
+from app.services.user_voice_provider_service import (
+    get_user_voice_provider_status,
+    has_any_user_voice_provider_credentials,
+    has_user_voice_provider_credentials,
+    supported_voice_providers,
+)
 
 router = APIRouter(prefix="/campaigns", tags=["campaigns"])
 templates = Jinja2Templates(directory="app/templates")
@@ -44,6 +52,7 @@ def _load_create_dependencies(db: Session, user_id: int) -> dict:
     return {
         "caller_ids": caller_ids,
         "audios": audios,
+        "voice_providers": get_user_voice_provider_status(db, user_id),
     }
 
 
@@ -91,8 +100,8 @@ async def create_campaign_page(
     setup_error = None
     if not user.transfer_number:
         setup_error = "Please configure your Transfer Number (3CX) in Settings before creating a campaign."
-    elif not has_user_twilio_credentials(db, user.id):
-        setup_error = "Please configure your Twilio Account SID and Auth Token in Settings before creating a campaign."
+    elif not has_any_user_voice_provider_credentials(db, user.id):
+        setup_error = "Please configure at least one voice provider (Twilio, Telnyx, or Vonage) in Settings."
 
     return templates.TemplateResponse(
         "campaigns/create.html",
@@ -111,6 +120,7 @@ async def create_campaign(
     name: str = Form(...),
     caller_id_id: int = Form(...),
     audio_id: int = Form(...),
+    voice_provider: str = Form(default=VoiceProvider.TWILIO.value),
     press_1_to_talk_with_agent: bool = Form(False),
     numbers_text: str = Form(default=""),
     numbers_file: Optional[UploadFile] = File(default=None),
@@ -132,14 +142,49 @@ async def create_campaign(
             },
             status_code=400
         )
-    if not has_user_twilio_credentials(db, user.id):
+    if not has_any_user_voice_provider_credentials(db, user.id):
         return templates.TemplateResponse(
             "campaigns/create.html",
             {
                 "request": request,
                 "user": user,
                 **deps,
-                "error": "Please configure your Twilio Account SID and Auth Token in Settings before creating a campaign."
+                "error": "Please configure at least one voice provider (Twilio, Telnyx, or Vonage) in Settings."
+            },
+            status_code=400
+        )
+
+    voice_provider = (voice_provider or "").strip().lower()
+    if voice_provider not in supported_voice_providers():
+        return templates.TemplateResponse(
+            "campaigns/create.html",
+            {
+                "request": request,
+                "user": user,
+                **deps,
+                "error": "Invalid voice provider selected."
+            },
+            status_code=400
+        )
+    if not has_user_voice_provider_credentials(db, user.id, voice_provider):
+        return templates.TemplateResponse(
+            "campaigns/create.html",
+            {
+                "request": request,
+                "user": user,
+                **deps,
+                "error": f"Selected provider ({voice_provider}) is not configured in Settings."
+            },
+            status_code=400
+        )
+    if press_1_to_talk_with_agent and voice_provider != VoiceProvider.TWILIO.value:
+        return templates.TemplateResponse(
+            "campaigns/create.html",
+            {
+                "request": request,
+                "user": user,
+                **deps,
+                "error": "Press 1 flow is currently available only with Twilio."
             },
             status_code=400
         )
@@ -219,6 +264,7 @@ async def create_campaign(
         caller_id_id=caller_id_id,
         country_id=country.id,
         audio_id=audio_id,
+        voice_provider=voice_provider,
         press_1_to_talk_with_agent=press_1_to_talk_with_agent,
         status=CampaignStatus.DRAFT,
         total_numbers=len(valid_numbers)
@@ -298,8 +344,17 @@ async def start_campaign(
     if not user.transfer_number:
         raise HTTPException(status_code=400, detail="Please configure your Transfer Number (3CX) in Settings first")
 
-    if not has_user_twilio_credentials(db, user.id):
-        raise HTTPException(status_code=400, detail="Please configure your Twilio Account SID and Auth Token in Settings first")
+    provider = campaign.voice_provider.value if hasattr(campaign.voice_provider, "value") else str(campaign.voice_provider)
+    if not has_user_voice_provider_credentials(db, user.id, provider):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Please configure {provider.title()} credentials in Settings first"
+        )
+    if campaign.press_1_to_talk_with_agent and provider != VoiceProvider.TWILIO.value:
+        raise HTTPException(
+            status_code=400,
+            detail="Press 1 flow is currently available only with Twilio campaigns"
+        )
 
     if campaign.caller_id.user_id != user.id or campaign.audio.user_id != user.id:
         raise HTTPException(

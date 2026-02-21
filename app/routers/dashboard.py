@@ -12,10 +12,19 @@ from app.database import get_db
 from app.dependencies import get_current_user, require_active_rental
 from app.models import User, Campaign, CampaignStatus
 from app.services.rental_service import get_active_rental
+from app.services.user_telnyx_service import (
+    has_user_telnyx_credentials,
+    upsert_user_telnyx_credentials,
+)
 from app.services.user_twilio_service import (
     has_user_twilio_credentials,
     upsert_user_twilio_credentials,
 )
+from app.services.user_vonage_service import (
+    has_user_vonage_credentials,
+    upsert_user_vonage_credentials,
+)
+from app.services.user_voice_provider_service import has_any_user_voice_provider_credentials
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 templates = Jinja2Templates(directory="app/templates")
@@ -45,7 +54,9 @@ async def dashboard(
         "total_calls": sum(c.processed_numbers for c in all_campaigns),
         "successful_calls": sum(c.successful_calls for c in all_campaigns),
         "total_spent": sum(c.total_cost for c in all_campaigns),
-        "transfer_configured": bool(user.transfer_number),
+        "transfer_configured": bool(
+            user.transfer_number and has_any_user_voice_provider_credentials(db, user.id)
+        ),
         "rental_active": False,
     }
     active_rental = get_active_rental(db, user.id)
@@ -69,6 +80,8 @@ async def settings_page(
     user: User = Depends(require_active_rental),
     saved: bool = False,
     twilio_saved: bool = False,
+    telnyx_saved: bool = False,
+    vonage_saved: bool = False,
     db: Session = Depends(get_db)
 ):
     """User settings page"""
@@ -79,7 +92,11 @@ async def settings_page(
             "user": user,
             "saved": saved,
             "twilio_saved": twilio_saved,
+            "telnyx_saved": telnyx_saved,
+            "vonage_saved": vonage_saved,
             "twilio_configured": has_user_twilio_credentials(db, user.id),
+            "telnyx_configured": has_user_telnyx_credentials(db, user.id),
+            "vonage_configured": has_user_vonage_credentials(db, user.id),
             "error": None
         }
     )
@@ -103,7 +120,11 @@ async def save_transfer_number(
                 "user": user,
                 "saved": False,
                 "twilio_saved": False,
+                "telnyx_saved": False,
+                "vonage_saved": False,
                 "twilio_configured": has_user_twilio_credentials(db, user.id),
+                "telnyx_configured": has_user_telnyx_credentials(db, user.id),
+                "vonage_configured": has_user_vonage_credentials(db, user.id),
                 "error": "Invalid transfer number. Use E.164 format (e.g., +15551234567)"
             },
             status_code=400
@@ -136,7 +157,11 @@ async def save_twilio_credentials(
                 "user": user,
                 "saved": False,
                 "twilio_saved": False,
+                "telnyx_saved": False,
+                "vonage_saved": False,
                 "twilio_configured": has_user_twilio_credentials(db, user.id),
+                "telnyx_configured": has_user_telnyx_credentials(db, user.id),
+                "vonage_configured": has_user_vonage_credentials(db, user.id),
                 "error": "Invalid Twilio Account SID format."
             },
             status_code=400
@@ -150,7 +175,11 @@ async def save_twilio_credentials(
                 "user": user,
                 "saved": False,
                 "twilio_saved": False,
+                "telnyx_saved": False,
+                "vonage_saved": False,
                 "twilio_configured": has_user_twilio_credentials(db, user.id),
+                "telnyx_configured": has_user_telnyx_credentials(db, user.id),
+                "vonage_configured": has_user_vonage_credentials(db, user.id),
                 "error": "Twilio Auth Token cannot be empty."
             },
             status_code=400
@@ -160,3 +189,110 @@ async def save_twilio_credentials(
     db.commit()
 
     return RedirectResponse(url="/dashboard/settings?twilio_saved=true", status_code=302)
+
+
+@router.post("/settings/telnyx")
+async def save_telnyx_credentials(
+    request: Request,
+    api_key: str = Form(...),
+    account_sid: str = Form(...),
+    user: User = Depends(require_active_rental),
+    db: Session = Depends(get_db)
+):
+    """Save user's Telnyx credentials."""
+    api_key = api_key.strip()
+    account_sid = account_sid.strip()
+
+    if not api_key:
+        return templates.TemplateResponse(
+            "dashboard/settings.html",
+            {
+                "request": request,
+                "user": user,
+                "saved": False,
+                "twilio_saved": False,
+                "telnyx_saved": False,
+                "vonage_saved": False,
+                "twilio_configured": has_user_twilio_credentials(db, user.id),
+                "telnyx_configured": has_user_telnyx_credentials(db, user.id),
+                "vonage_configured": has_user_vonage_credentials(db, user.id),
+                "error": "Telnyx API Key cannot be empty."
+            },
+            status_code=400
+        )
+    if not account_sid:
+        return templates.TemplateResponse(
+            "dashboard/settings.html",
+            {
+                "request": request,
+                "user": user,
+                "saved": False,
+                "twilio_saved": False,
+                "telnyx_saved": False,
+                "vonage_saved": False,
+                "twilio_configured": has_user_twilio_credentials(db, user.id),
+                "telnyx_configured": has_user_telnyx_credentials(db, user.id),
+                "vonage_configured": has_user_vonage_credentials(db, user.id),
+                "error": "Telnyx Account SID cannot be empty."
+            },
+            status_code=400
+        )
+
+    upsert_user_telnyx_credentials(db, user.id, api_key, account_sid)
+    db.commit()
+
+    return RedirectResponse(url="/dashboard/settings?telnyx_saved=true", status_code=302)
+
+
+@router.post("/settings/vonage")
+async def save_vonage_credentials(
+    request: Request,
+    application_id: str = Form(...),
+    private_key: str = Form(...),
+    user: User = Depends(require_active_rental),
+    db: Session = Depends(get_db)
+):
+    """Save user's Vonage credentials."""
+    application_id = application_id.strip()
+    private_key = private_key.strip()
+
+    if not application_id:
+        return templates.TemplateResponse(
+            "dashboard/settings.html",
+            {
+                "request": request,
+                "user": user,
+                "saved": False,
+                "twilio_saved": False,
+                "telnyx_saved": False,
+                "vonage_saved": False,
+                "twilio_configured": has_user_twilio_credentials(db, user.id),
+                "telnyx_configured": has_user_telnyx_credentials(db, user.id),
+                "vonage_configured": has_user_vonage_credentials(db, user.id),
+                "error": "Vonage Application ID cannot be empty."
+            },
+            status_code=400
+        )
+
+    if "BEGIN" not in private_key:
+        return templates.TemplateResponse(
+            "dashboard/settings.html",
+            {
+                "request": request,
+                "user": user,
+                "saved": False,
+                "twilio_saved": False,
+                "telnyx_saved": False,
+                "vonage_saved": False,
+                "twilio_configured": has_user_twilio_credentials(db, user.id),
+                "telnyx_configured": has_user_telnyx_credentials(db, user.id),
+                "vonage_configured": has_user_vonage_credentials(db, user.id),
+                "error": "Vonage private key must be in PEM format."
+            },
+            status_code=400
+        )
+
+    upsert_user_vonage_credentials(db, user.id, application_id, private_key)
+    db.commit()
+
+    return RedirectResponse(url="/dashboard/settings?vonage_saved=true", status_code=302)
