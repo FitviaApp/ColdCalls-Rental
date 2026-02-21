@@ -30,6 +30,21 @@ def validate_phone_number(number: str) -> Optional[str]:
     return None
 
 
+def _load_create_dependencies(db: Session, user_id: int) -> dict:
+    caller_ids = db.query(CallerID).filter(
+        CallerID.is_active == True,
+        CallerID.user_id == user_id
+    ).all()
+    audios = db.query(Audio).filter(
+        Audio.is_active == True,
+        Audio.user_id == user_id
+    ).all()
+    return {
+        "caller_ids": caller_ids,
+        "audios": audios,
+    }
+
+
 @router.get("", response_class=HTMLResponse)
 async def list_campaigns(
     request: Request,
@@ -58,15 +73,7 @@ async def create_campaign_page(
     db: Session = Depends(get_db)
 ):
     """Display campaign creation form"""
-    caller_ids = db.query(CallerID).filter(
-        CallerID.is_active == True,
-        CallerID.user_id == user.id
-    ).all()
-    countries = db.query(Country).filter(Country.is_active == True).all()
-    audios = db.query(Audio).filter(
-        Audio.is_active == True,
-        Audio.user_id == user.id
-    ).all()
+    deps = _load_create_dependencies(db, user.id)
 
     setup_error = None
     if not user.transfer_number:
@@ -79,9 +86,7 @@ async def create_campaign_page(
         {
             "request": request,
             "user": user,
-            "caller_ids": caller_ids,
-            "countries": countries,
-            "audios": audios,
+            **deps,
             "error": setup_error
         }
     )
@@ -92,7 +97,6 @@ async def create_campaign(
     request: Request,
     name: str = Form(...),
     caller_id_id: int = Form(...),
-    country_id: int = Form(...),
     audio_id: int = Form(...),
     press_1_to_talk_with_agent: bool = Form(False),
     numbers_text: str = Form(default=""),
@@ -101,49 +105,27 @@ async def create_campaign(
     db: Session = Depends(get_db)
 ):
     """Create a new campaign"""
+    deps = _load_create_dependencies(db, user.id)
+
     # Check if user has transfer number configured
     if not user.transfer_number:
-        caller_ids = db.query(CallerID).filter(
-            CallerID.is_active == True,
-            CallerID.user_id == user.id
-        ).all()
-        countries = db.query(Country).filter(Country.is_active == True).all()
-        audios = db.query(Audio).filter(
-            Audio.is_active == True,
-            Audio.user_id == user.id
-        ).all()
-
         return templates.TemplateResponse(
             "campaigns/create.html",
             {
                 "request": request,
                 "user": user,
-                "caller_ids": caller_ids,
-                "countries": countries,
-                "audios": audios,
+                **deps,
                 "error": "Please configure your Transfer Number (3CX) in Settings before creating a campaign."
             },
             status_code=400
         )
     if not has_user_twilio_credentials(db, user.id):
-        caller_ids = db.query(CallerID).filter(
-            CallerID.is_active == True,
-            CallerID.user_id == user.id
-        ).all()
-        countries = db.query(Country).filter(Country.is_active == True).all()
-        audios = db.query(Audio).filter(
-            Audio.is_active == True,
-            Audio.user_id == user.id
-        ).all()
-
         return templates.TemplateResponse(
             "campaigns/create.html",
             {
                 "request": request,
                 "user": user,
-                "caller_ids": caller_ids,
-                "countries": countries,
-                "audios": audios,
+                **deps,
                 "error": "Please configure your Twilio Account SID and Auth Token in Settings before creating a campaign."
             },
             status_code=400
@@ -177,24 +159,12 @@ async def create_campaign(
             invalid_count += 1
 
     if not valid_numbers:
-        caller_ids = db.query(CallerID).filter(
-            CallerID.is_active == True,
-            CallerID.user_id == user.id
-        ).all()
-        countries = db.query(Country).filter(Country.is_active == True).all()
-        audios = db.query(Audio).filter(
-            Audio.is_active == True,
-            Audio.user_id == user.id
-        ).all()
-
         return templates.TemplateResponse(
             "campaigns/create.html",
             {
                 "request": request,
                 "user": user,
-                "caller_ids": caller_ids,
-                "countries": countries,
-                "audios": audios,
+                **deps,
                 "error": f"No valid phone numbers found. Numbers must be in E.164 format (e.g., +5511999999999). {invalid_count} invalid numbers skipped."
             },
             status_code=400
@@ -206,22 +176,40 @@ async def create_campaign(
         CallerID.is_active == True,
         CallerID.user_id == user.id
     ).first()
-    country = db.query(Country).filter(Country.id == country_id, Country.is_active == True).first()
     audio = db.query(Audio).filter(
         Audio.id == audio_id,
         Audio.is_active == True,
         Audio.user_id == user.id
     ).first()
 
-    if not caller_id or not country or not audio:
-        raise HTTPException(status_code=400, detail="Invalid caller ID, country, or audio selection")
+    if not caller_id or not audio:
+        raise HTTPException(status_code=400, detail="Invalid caller ID or audio selection")
+
+    country = db.query(Country).filter(
+        Country.code == caller_id.country_code,
+        Country.is_active == True
+    ).first()
+    if not country:
+        return templates.TemplateResponse(
+            "campaigns/create.html",
+            {
+                "request": request,
+                "user": user,
+                **deps,
+                "error": (
+                    f"No active pricing configured for caller ID country "
+                    f"({caller_id.country_code}). Ask admin to configure this country."
+                )
+            },
+            status_code=400
+        )
 
     # Create campaign
     campaign = Campaign(
         user_id=user.id,
         name=name,
         caller_id_id=caller_id_id,
-        country_id=country_id,
+        country_id=country.id,
         audio_id=audio_id,
         press_1_to_talk_with_agent=press_1_to_talk_with_agent,
         status=CampaignStatus.DRAFT,

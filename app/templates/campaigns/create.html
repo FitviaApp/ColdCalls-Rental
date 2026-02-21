@@ -27,7 +27,7 @@
     </div>
     {% endif %}
 
-    <form action="/campaigns/create" method="POST" enctype="multipart/form-data" class="space-y-6" x-data="campaignForm()">
+    <form action="/campaigns/create" method="POST" enctype="multipart/form-data" class="space-y-6">
         <div class="bg-white shadow rounded-lg">
             <div class="px-4 py-5 sm:px-6">
                 <h3 class="text-lg font-medium text-gray-900">Campaign Information</h3>
@@ -41,28 +41,17 @@
                 </div>
 
                 <div>
-                    <label for="country_id" class="block text-sm font-medium text-gray-700">Country</label>
-                    <select name="country_id" id="country_id" required x-model="selectedCountry" @change="filterCallerIds()"
-                        class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border px-3 py-2">
-                        <option value="">Select a country</option>
-                        {% for country in countries %}
-                        <option value="{{ country.id }}" data-code="{{ country.code }}">${{ "%.3f"|format(country.price_per_minute) }}/min - {{ country.name }} ({{ country.code }})</option>
-                        {% endfor %}
-                    </select>
-                </div>
-
-                <div>
                     <label for="caller_id_id" class="block text-sm font-medium text-gray-700">Caller ID (Source Number)</label>
                     <select name="caller_id_id" id="caller_id_id" required
                         class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border px-3 py-2">
-                        <option value="">Select country first</option>
+                        <option value="">Select a source number</option>
                         {% for caller_id in caller_ids %}
-                        <option value="{{ caller_id.id }}" data-country="{{ caller_id.country_code }}" style="display: none;">
+                        <option value="{{ caller_id.id }}">
                             {{ caller_id.phone_number }} {% if caller_id.description %}({{ caller_id.description }}){% endif %}
                         </option>
                         {% endfor %}
                     </select>
-                    <p class="mt-1 text-xs text-gray-500">Available numbers filtered by country</p>
+                    <p class="mt-1 text-xs text-gray-500">Country and pricing are inferred from this number.</p>
                 </div>
 
                 <div>
@@ -146,33 +135,4 @@
         </div>
     </form>
 </div>
-{% endblock %}
-
-{% block scripts %}
-<script>
-function campaignForm() {
-    return {
-        selectedCountry: '',
-        filterCallerIds() {
-            const countrySelect = document.getElementById('country_id');
-            const callerIdSelect = document.getElementById('caller_id_id');
-            const selectedOption = countrySelect.options[countrySelect.selectedIndex];
-            const countryCode = selectedOption ? selectedOption.dataset.code : '';
-
-            // Reset caller ID selection
-            callerIdSelect.value = '';
-
-            // Show/hide options based on country
-            Array.from(callerIdSelect.options).forEach(option => {
-                if (option.value === '') {
-                    option.style.display = '';
-                    option.textContent = countryCode ? 'Select a number' : 'Select country first';
-                } else {
-                    option.style.display = option.dataset.country === countryCode ? '' : 'none';
-                }
-            });
-        }
-    }
-}
-</script>
 {% endblock %}
