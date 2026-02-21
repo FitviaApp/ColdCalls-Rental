@@ -3,6 +3,7 @@ Campaigns Router - CRUD and campaign management
 """
 import re
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Form, Request, UploadFile, File, HTTPException
@@ -17,6 +18,7 @@ from app.services.user_twilio_service import has_user_twilio_credentials
 
 router = APIRouter(prefix="/campaigns", tags=["campaigns"])
 templates = Jinja2Templates(directory="app/templates")
+WORKER_HEARTBEAT_FILE = Path("/tmp/coldcalls_worker_heartbeat")
 
 # E.164 phone number regex
 E164_PATTERN = re.compile(r'^\+[1-9]\d{1,14}$')
@@ -43,6 +45,17 @@ def _load_create_dependencies(db: Session, user_id: int) -> dict:
         "caller_ids": caller_ids,
         "audios": audios,
     }
+
+
+def _is_worker_online(max_age_seconds: int = 60) -> bool:
+    """Check if the background worker heartbeat is recent."""
+    try:
+        if not WORKER_HEARTBEAT_FILE.exists():
+            return False
+        age_seconds = (datetime.utcnow().timestamp() - WORKER_HEARTBEAT_FILE.stat().st_mtime)
+        return age_seconds <= max_age_seconds
+    except Exception:
+        return False
 
 
 @router.get("", response_class=HTMLResponse)
@@ -275,6 +288,12 @@ async def start_campaign(
 
     if campaign.status not in [CampaignStatus.DRAFT, CampaignStatus.PAUSED]:
         raise HTTPException(status_code=400, detail="Campaign cannot be started")
+
+    if not _is_worker_online():
+        raise HTTPException(
+            status_code=503,
+            detail="Worker is offline. Start/restart worker.py and try again."
+        )
 
     if not user.transfer_number:
         raise HTTPException(status_code=400, detail="Please configure your Transfer Number (3CX) in Settings first")

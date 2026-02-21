@@ -5,11 +5,12 @@ import logging
 import signal
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 from sqlalchemy.orm import Session
 
-from app.database import SessionLocal
+from app.database import SessionLocal, init_db
 from app.models import (
     Campaign, CampaignNumber, User,
     CampaignStatus, CallStatus
@@ -24,6 +25,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+WORKER_HEARTBEAT_FILE = Path("/tmp/coldcalls_worker_heartbeat")
 
 
 class CampaignWorker:
@@ -230,6 +232,8 @@ def run_worker(check_interval: int = 10):
         check_interval: Seconds between campaign checks
     """
     logger.info("Starting campaign worker...")
+    # Ensure tables and lightweight schema patches are applied even if app has not started.
+    init_db()
 
     # Handle graceful shutdown
     worker = None
@@ -247,12 +251,14 @@ def run_worker(check_interval: int = 10):
         try:
             worker = CampaignWorker(db)
             worker.process_pending_campaigns()
+            _touch_heartbeat()
 
             if not worker.running:
                 break
 
         except Exception as e:
             logger.error(f"Worker error: {e}")
+            _touch_heartbeat()
         finally:
             db.close()
 
@@ -261,6 +267,14 @@ def run_worker(check_interval: int = 10):
         time.sleep(check_interval)
 
     logger.info("Campaign worker stopped")
+
+
+def _touch_heartbeat():
+    """Update worker heartbeat timestamp for health checks."""
+    try:
+        WORKER_HEARTBEAT_FILE.touch()
+    except Exception as e:
+        logger.warning(f"Could not update worker heartbeat: {e}")
 
 
 if __name__ == "__main__":
