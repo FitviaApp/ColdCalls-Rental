@@ -83,3 +83,35 @@ def activate_or_extend_rental(db: Session, user_id: int, plan: RentalPlan) -> Us
     db.flush()
 
     return rental
+
+
+def add_paid_days(db: Session, user_id: int, days: int) -> UserRental:
+    """Create a manual rental extension used by admin-paid day adjustments."""
+    if days <= 0:
+        raise ValueError("Days must be greater than zero")
+
+    # user_rentals.plan_id is required, so anchor manual extensions to a real plan.
+    plan = db.query(RentalPlan).filter(RentalPlan.is_active == True).order_by(RentalPlan.duration_days.asc()).first()
+    if not plan:
+        plan = db.query(RentalPlan).order_by(RentalPlan.duration_days.asc()).first()
+    if not plan:
+        raise RuntimeError("No rental plan exists")
+
+    now = datetime.utcnow()
+    current = get_active_rental(db, user_id)
+
+    starts_at = now
+    if current and current.expires_at > now:
+        starts_at = current.expires_at
+
+    rental = UserRental(
+        user_id=user_id,
+        plan_id=plan.id,
+        starts_at=starts_at,
+        expires_at=starts_at + timedelta(days=days),
+        status=RentalStatus.ACTIVE,
+    )
+    db.add(rental)
+    db.flush()
+
+    return rental

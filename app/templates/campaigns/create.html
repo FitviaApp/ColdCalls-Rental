@@ -21,6 +21,9 @@
         <a href="/assets/caller-ids" class="underline font-medium">Manage Caller IDs</a>
         and
         <a href="/assets/audios" class="underline font-medium">Manage Audios</a>.
+        {% if audios|length == 0 %}
+        <a href="/assets/audios/upload" class="underline font-medium ml-1">Upload Audio now</a>.
+        {% endif %}
     </div>
     {% endif %}
 
