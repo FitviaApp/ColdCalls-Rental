@@ -185,24 +185,19 @@ async def create_campaign(
     if not caller_id or not audio:
         raise HTTPException(status_code=400, detail="Invalid caller ID or audio selection")
 
+    country_code = caller_id.country_code.strip().upper()[:5]
     country = db.query(Country).filter(
-        Country.code == caller_id.country_code,
-        Country.is_active == True
+        Country.code == country_code
     ).first()
     if not country:
-        return templates.TemplateResponse(
-            "campaigns/create.html",
-            {
-                "request": request,
-                "user": user,
-                **deps,
-                "error": (
-                    f"No active pricing configured for caller ID country "
-                    f"({caller_id.country_code}). Ask admin to configure this country."
-                )
-            },
-            status_code=400
+        country = Country(
+            code=country_code,
+            name=country_code,
+            price_per_minute=0.0,
+            is_active=True,
         )
+        db.add(country)
+        db.flush()
 
     # Create campaign
     campaign = Campaign(
