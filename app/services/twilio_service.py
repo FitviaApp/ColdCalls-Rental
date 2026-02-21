@@ -39,7 +39,7 @@ class TwilioService:
         timeout: int = 60
     ) -> dict:
         """
-        Initiate a call with machine detection enabled
+        Initiate a call.
 
         Args:
             to_number: Destination phone number (E.164 format)
@@ -72,18 +72,25 @@ class TwilioService:
         </Response>'''
             call_kwargs["twiml"] = twiml
 
+        # Keep AMD for direct transfer campaigns, but skip it on Press 1 flow.
+        # In Press 1 flow, DTMF confirmation already acts as a human gate.
+        machine_detection_kwargs = {}
+        if not press_1_to_talk_with_agent:
+            machine_detection_kwargs = {
+                "machine_detection": "Enable",
+                "machine_detection_timeout": 5,
+                "machine_detection_speech_threshold": 2400,
+                "machine_detection_speech_end_threshold": 1200,
+                "machine_detection_silence_timeout": 5000,
+            }
+
         try:
             call = self.client.calls.create(
                 to=to_number,
                 from_=from_number,
                 **call_kwargs,
                 timeout=timeout,
-                # Machine detection parameters (same as cold_calls.py)
-                machine_detection='Enable',
-                machine_detection_timeout=5,
-                machine_detection_speech_threshold=2400,
-                machine_detection_speech_end_threshold=1200,
-                machine_detection_silence_timeout=5000
+                **machine_detection_kwargs,
             )
         except TwilioRestException as e:
             error_code = getattr(e, "code", None)
