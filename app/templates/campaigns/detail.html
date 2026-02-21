@@ -137,7 +137,13 @@
                     </div>
                     <div>
                         <dt class="text-sm font-medium text-gray-500">Transfer to (3CX)</dt>
-                        <dd class="text-sm text-gray-900 font-mono">{{ campaign.transfer_number }}</dd>
+                        <dd class="text-sm text-gray-900 font-mono">{{ campaign.user.transfer_number }}</dd>
+                    </div>
+                    <div>
+                        <dt class="text-sm font-medium text-gray-500">Press 1 flow</dt>
+                        <dd class="text-sm text-gray-900">
+                            {% if campaign.press_1_to_talk_with_agent %}Enabled{% else %}Disabled{% endif %}
+                        </dd>
                     </div>
                 </dl>
             </div>

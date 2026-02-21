@@ -7,17 +7,31 @@ from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.config import get_settings
 from app.dependencies import require_active_rental
 from app.models import User, Campaign, CampaignNumber, CallerID, Country, Audio, CampaignStatus
 from app.schemas import DashboardStats, CampaignProgress, DropdownCallerID, DropdownCountry, DropdownAudio
 from app.services.rental_service import has_active_rental
 
 logger = logging.getLogger(__name__)
+settings = get_settings()
 
 router = APIRouter(prefix="/api", tags=["api"])
 
 
 # ============== TwiML Endpoint ==============
+def _hangup_response() -> Response:
+    twiml = '<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>'
+    return Response(content=twiml, media_type="application/xml")
+
+
+def _build_transfer_block(campaign: Campaign, transfer_number: str) -> str:
+    return f'''
+    <Dial callerId="{campaign.caller_id.phone_number}" timeout="30">
+        <Number>{transfer_number}</Number>
+    </Dial>
+'''
+
 
 @router.post("/twiml/{campaign_id}")
 @router.get("/twiml/{campaign_id}")
@@ -50,21 +64,16 @@ async def twiml_handler(
     campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
 
     if not campaign:
-        # Return hangup if campaign not found
-        twiml = '<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>'
-        return Response(content=twiml, media_type="application/xml")
+        return _hangup_response()
 
     if not has_active_rental(db, campaign.user_id):
-        twiml = '<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>'
-        return Response(content=twiml, media_type="application/xml")
+        return _hangup_response()
 
     # Get transfer number from user settings
     transfer_number = campaign.user.transfer_number
 
     if not transfer_number:
-        # No transfer number configured - hang up
-        twiml = '<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>'
-        return Response(content=twiml, media_type="application/xml")
+        return _hangup_response()
 
     # Log the request for debugging
     logger.info(f"TwiML request for campaign {campaign_id}: AnsweredBy={answered_by}")
@@ -73,21 +82,66 @@ async def twiml_handler(
     if answered_by.startswith("machine") or answered_by == "fax":
         # Machine/voicemail/fax detected - hang up
         logger.info(f"Campaign {campaign_id}: Machine detected ({answered_by}), hanging up")
-        twiml = '<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>'
+        return _hangup_response()
+    if campaign.press_1_to_talk_with_agent:
+        base_url = settings.BASE_URL.rstrip("/")
+        logger.info(
+            f"Campaign {campaign_id}: Human/unknown ({answered_by}), "
+            "playing audio and waiting for DTMF 1"
+        )
+        twiml = f'''<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Play>{campaign.audio.r2_url}</Play>
+    <Gather input="dtmf" numDigits="1" timeout="8" action="{base_url}/api/twiml/{campaign_id}/gather" method="POST" actionOnEmptyResult="true">
+        <Say voice="alice">Press 1 to talk with an agent.</Say>
+    </Gather>
+    <Hangup/>
+</Response>'''
     else:
         # Human answered (or unknown - treat as human to not miss calls)
         # Play the campaign audio, then transfer to 3CX
-        audio_url = campaign.audio.r2_url
-        logger.info(f"Campaign {campaign_id}: Human/unknown ({answered_by}), playing audio and transferring to {transfer_number}")
+        logger.info(
+            f"Campaign {campaign_id}: Human/unknown ({answered_by}), "
+            f"playing audio and transferring to {transfer_number}"
+        )
         twiml = f'''<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Play>{audio_url}</Play>
-    <Dial callerId="{campaign.caller_id.phone_number}" timeout="30">
-        <Number>{transfer_number}</Number>
-    </Dial>
+    <Play>{campaign.audio.r2_url}</Play>
+    {_build_transfer_block(campaign, transfer_number)}
 </Response>'''
 
     return Response(content=twiml, media_type="application/xml")
+
+
+@router.post("/twiml/{campaign_id}/gather")
+async def twiml_gather_handler(
+    campaign_id: int,
+    request: Request,
+    db: Session = Depends(get_db)
+):
+    form_data = await request.form()
+    digits = str(form_data.get("Digits", "")).strip()
+
+    campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
+    if not campaign:
+        return _hangup_response()
+    if not has_active_rental(db, campaign.user_id):
+        return _hangup_response()
+
+    transfer_number = campaign.user.transfer_number
+    if not transfer_number:
+        return _hangup_response()
+
+    if digits == "1":
+        logger.info(f"Campaign {campaign_id}: DTMF 1 received, transferring")
+        twiml = f'''<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    {_build_transfer_block(campaign, transfer_number)}
+</Response>'''
+        return Response(content=twiml, media_type="application/xml")
+
+    logger.info(f"Campaign {campaign_id}: Invalid/no DTMF ({digits}), hanging up")
+    return _hangup_response()
 
 
 @router.get("/stats", response_model=DashboardStats)

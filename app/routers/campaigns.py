@@ -94,6 +94,7 @@ async def create_campaign(
     caller_id_id: int = Form(...),
     country_id: int = Form(...),
     audio_id: int = Form(...),
+    press_1_to_talk_with_agent: bool = Form(False),
     numbers_text: str = Form(default=""),
     numbers_file: Optional[UploadFile] = File(default=None),
     user: User = Depends(require_active_rental),
@@ -222,6 +223,7 @@ async def create_campaign(
         caller_id_id=caller_id_id,
         country_id=country_id,
         audio_id=audio_id,
+        press_1_to_talk_with_agent=press_1_to_talk_with_agent,
         status=CampaignStatus.DRAFT,
         total_numbers=len(valid_numbers)
     )

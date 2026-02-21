@@ -53,3 +53,11 @@ def _apply_schema_patches():
 
         if _column_exists("audios", "user_id") is False:
             conn.execute(text("ALTER TABLE audios ADD COLUMN user_id INTEGER"))
+
+        if _column_exists("campaigns", "press_1_to_talk_with_agent") is False:
+            conn.execute(
+                text(
+                    "ALTER TABLE campaigns "
+                    "ADD COLUMN press_1_to_talk_with_agent BOOLEAN NOT NULL DEFAULT 0"
+                )
+            )

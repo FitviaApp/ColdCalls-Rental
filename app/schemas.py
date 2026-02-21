@@ -151,6 +151,7 @@ class CampaignResponse(CampaignBase):
     caller_id_id: int
     country_id: int
     audio_id: int
+    press_1_to_talk_with_agent: bool
     status: CampaignStatus
     total_numbers: int
     processed_numbers: int

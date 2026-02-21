@@ -147,12 +147,14 @@ class CampaignWorker:
         self.db.flush()
 
         try:
-            # Make the call with inline TwiML (plays audio then transfers)
+            # Make the call using campaign-configured TwiML flow.
             call_result = twilio_service.make_call(
                 to_number=number.phone_number,
                 from_number=caller_id.phone_number,
                 audio_url=audio.r2_url,
-                transfer_number=user.transfer_number
+                transfer_number=user.transfer_number,
+                campaign_id=campaign.id,
+                press_1_to_talk_with_agent=campaign.press_1_to_talk_with_agent
             )
 
             number.call_sid = call_result['call_sid']

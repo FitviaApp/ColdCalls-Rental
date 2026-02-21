@@ -7,8 +7,10 @@ import logging
 from typing import Optional
 
 from twilio.rest import Client
+from app.config import get_settings
 
 logger = logging.getLogger(__name__)
+settings = get_settings()
 
 
 class TwilioService:
@@ -31,6 +33,8 @@ class TwilioService:
         from_number: str,
         audio_url: str,
         transfer_number: str,
+        campaign_id: Optional[int] = None,
+        press_1_to_talk_with_agent: bool = False,
         timeout: int = 60
     ) -> dict:
         """
@@ -41,6 +45,8 @@ class TwilioService:
             from_number: Caller ID (E.164 format)
             audio_url: URL of the audio file to play
             transfer_number: Number to transfer to (3CX)
+            campaign_id: Campaign ID for dynamic TwiML callback endpoint
+            press_1_to_talk_with_agent: If true, require DTMF "1" before transfer
             timeout: Ring timeout in seconds
 
         Returns:
@@ -48,18 +54,34 @@ class TwilioService:
         """
         logger.info(f"Initiating call to {to_number} from {from_number}")
 
-        # Build TwiML inline - plays audio then transfers
-        twiml = f'''<Response>
-            <Play>{audio_url}</Play>
-            <Dial callerId="{from_number}" timeout="30">
-                <Number>{transfer_number}</Number>
-            </Dial>
-        </Response>'''
+        # Prefer dynamic TwiML endpoint so campaign-level options are controlled server-side.
+        call_kwargs = {}
+        if campaign_id is not None:
+            base_url = settings.BASE_URL.rstrip("/")
+            call_kwargs["url"] = f"{base_url}/api/twiml/{campaign_id}"
+        else:
+            # Fallback inline TwiML if campaign context is unavailable.
+            if press_1_to_talk_with_agent:
+                twiml = f'''<Response>
+                <Play>{audio_url}</Play>
+                <Gather input="dtmf" numDigits="1" timeout="8">
+                    <Say voice="alice">Press 1 to talk with an agent.</Say>
+                </Gather>
+                <Hangup/>
+            </Response>'''
+            else:
+                twiml = f'''<Response>
+                <Play>{audio_url}</Play>
+                <Dial callerId="{from_number}" timeout="30">
+                    <Number>{transfer_number}</Number>
+                </Dial>
+            </Response>'''
+            call_kwargs["twiml"] = twiml
 
         call = self.client.calls.create(
             to=to_number,
             from_=from_number,
-            twiml=twiml,
+            **call_kwargs,
             timeout=timeout,
             # Machine detection parameters (same as cold_calls.py)
             machine_detection='Enable',
