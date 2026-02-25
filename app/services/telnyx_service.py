@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Optional
+from typing import Optional, Callable
 
 import httpx
 
@@ -89,11 +89,13 @@ class TelnyxService:
         self,
         call_sid: str,
         max_wait: int = 70,
-        poll_interval: int = 2
+        poll_interval: int = 2,
+        status_callback: Optional[Callable[[str, int, Optional[str]], None]] = None,
     ) -> dict:
         elapsed = 0
         final_statuses = {"completed", "failed", "busy", "no-answer", "canceled", "cancelled"}
         endpoint = f"{self.base_url}/Accounts/{self.account_sid}/Calls/{call_sid}"
+        last_status = None
 
         while elapsed < max_wait:
             try:
@@ -107,9 +109,20 @@ class TelnyxService:
                 row = data.get("data") or data
 
                 status = str(row.get("status") or "").lower()
+                duration = int(row.get("duration") or 0)
+                answered_by = row.get("answered_by")
+
+                if status != last_status:
+                    if status_callback:
+                        try:
+                            status_callback(status, duration, answered_by)
+                        except Exception as callback_error:
+                            logger.warning(
+                                f"Status callback error for {call_sid}: {callback_error}"
+                            )
+                    last_status = status
+
                 if status in final_statuses:
-                    duration = int(row.get("duration") or 0)
-                    answered_by = row.get("answered_by")
                     return {
                         "status": status,
                         "duration": duration,

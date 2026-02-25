@@ -13,13 +13,9 @@
                     </svg>
                 </a>
                 <h1 class="text-2xl font-bold text-gray-900">{{ campaign.name }}</h1>
-                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium
-                    {% if campaign.status.value == 'draft' %}bg-gray-100 text-gray-800
-                    {% elif campaign.status.value == 'running' %}bg-green-100 text-green-800
-                    {% elif campaign.status.value == 'paused' %}bg-yellow-100 text-yellow-800
-                    {% elif campaign.status.value == 'completed' %}bg-blue-100 text-blue-800
-                    {% elif campaign.status.value == 'cancelled' %}bg-red-100 text-red-800
-                    {% endif %}" x-text="progress.status">
+                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium"
+                      :class="campaignBadgeClass(progress.status)"
+                      x-text="progress.status">
                     {{ campaign.status.value }}
                 </span>
             </div>
@@ -157,7 +153,7 @@
 
         <div class="lg:col-span-2 bg-white shadow rounded-lg">
             <div class="px-4 py-5 sm:px-6 flex justify-between items-center">
-                <h3 class="text-lg font-medium text-gray-900">Numbers ({{ numbers|length }})</h3>
+                <h3 class="text-lg font-medium text-gray-900">Numbers (<span x-text="numbers.length">{{ numbers|length }}</span>)</h3>
             </div>
             <div class="border-t border-gray-200 max-h-96 overflow-y-auto">
                 <table class="min-w-full divide-y divide-gray-200">
@@ -170,35 +166,19 @@
                         </tr>
                     </thead>
                     <tbody class="bg-white divide-y divide-gray-200">
-                        {% for number in numbers %}
+                        <template x-for="number in numbers" :key="number.id">
                         <tr>
-                            <td class="px-4 py-2 whitespace-nowrap text-sm font-mono text-gray-900">{{ number.phone_number }}</td>
+                            <td class="px-4 py-2 whitespace-nowrap text-sm font-mono text-gray-900" x-text="number.phone_number"></td>
                             <td class="px-4 py-2 whitespace-nowrap">
-                                <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium
-                                    {% if number.status.value == 'pending' %}bg-gray-100 text-gray-800
-                                    {% elif number.status.value == 'queued' %}bg-blue-100 text-blue-800
-                                    {% elif number.status.value == 'ringing' %}bg-yellow-100 text-yellow-800
-                                    {% elif number.status.value == 'in_progress' %}bg-green-100 text-green-800
-                                    {% elif number.status.value == 'completed' %}bg-green-100 text-green-800
-                                    {% elif number.status.value == 'no_answer' %}bg-orange-100 text-orange-800
-                                    {% elif number.status.value == 'busy' %}bg-red-100 text-red-800
-                                    {% elif number.status.value == 'failed' %}bg-red-100 text-red-800
-                                    {% elif number.status.value == 'cancelled' %}bg-gray-100 text-gray-800
-                                    {% endif %}">
-                                    {{ number.status.value }}
-                                </span>
-                                {% if number.answered_by %}
-                                <span class="ml-1 text-xs text-gray-500">({{ number.answered_by }})</span>
-                                {% endif %}
+                                <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium"
+                                      :class="statusBadgeClass(number.status)"
+                                      x-text="formatStatus(number.status)"></span>
+                                <span x-show="number.answered_by" class="ml-1 text-xs text-gray-500" x-text="'(' + number.answered_by + ')'"></span>
                             </td>
-                            <td class="px-4 py-2 whitespace-nowrap text-sm text-gray-500">
-                                {% if number.duration_seconds %}{{ number.duration_seconds }}s{% else %}-{% endif %}
-                            </td>
-                            <td class="px-4 py-2 whitespace-nowrap text-sm text-gray-500">
-                                {% if number.cost %}${{ "%.3f"|format(number.cost) }}{% else %}-{% endif %}
-                            </td>
+                            <td class="px-4 py-2 whitespace-nowrap text-sm text-gray-500" x-text="formatDuration(number.duration_seconds)"></td>
+                            <td class="px-4 py-2 whitespace-nowrap text-sm text-gray-500" x-text="formatCost(number.cost)"></td>
                         </tr>
-                        {% endfor %}
+                        </template>
                     </tbody>
                 </table>
             </div>
@@ -220,14 +200,16 @@ function campaignDetail() {
             cost: {{ campaign.total_cost }},
             progress_percent: {{ campaign.progress_percent }}
         },
+        numbers: {{ numbers_payload | tojson }},
         polling: null,
         init() {
+            this.fetchNumbers();
             if (this.progress.status === 'running') {
                 this.startPolling();
             }
         },
         startPolling() {
-            this.polling = setInterval(() => this.fetchProgress(), 5000);
+            this.polling = setInterval(() => this.refreshRealtimeData(), 3000);
         },
         stopPolling() {
             if (this.polling) {
@@ -235,20 +217,67 @@ function campaignDetail() {
                 this.polling = null;
             }
         },
+        async refreshRealtimeData() {
+            await this.fetchProgress();
+            await this.fetchNumbers();
+            if (this.progress.status !== 'running') {
+                this.stopPolling();
+            }
+        },
         async fetchProgress() {
             try {
                 const response = await fetch('/api/campaigns/{{ campaign.id }}/progress');
                 if (response.ok) {
                     this.progress = await response.json();
-                    if (this.progress.status !== 'running') {
-                        this.stopPolling();
-                        // Reload page to update UI
-                        window.location.reload();
-                    }
                 }
             } catch (e) {
                 console.error('Failed to fetch progress:', e);
             }
+        },
+        async fetchNumbers() {
+            try {
+                const perPage = Math.max(this.progress.total || this.numbers.length || 50, 50);
+                const response = await fetch(`/api/campaigns/{{ campaign.id }}/numbers?page=1&per_page=${perPage}`);
+                if (response.ok) {
+                    const payload = await response.json();
+                    this.numbers = payload.numbers || [];
+                }
+            } catch (e) {
+                console.error('Failed to fetch numbers:', e);
+            }
+        },
+        formatStatus(status) {
+            return String(status || '').split('_').join(' ');
+        },
+        formatDuration(durationSeconds) {
+            if (!durationSeconds) return '-';
+            return `${durationSeconds}s`;
+        },
+        formatCost(cost) {
+            if (!cost) return '-';
+            return `$${Number(cost).toFixed(3)}`;
+        },
+        statusBadgeClass(status) {
+            const normalized = String(status || '').toLowerCase();
+            if (normalized === 'pending') return 'bg-gray-100 text-gray-800';
+            if (normalized === 'queued') return 'bg-blue-100 text-blue-800';
+            if (normalized === 'ringing') return 'bg-yellow-100 text-yellow-800';
+            if (normalized === 'in_progress') return 'bg-green-100 text-green-800';
+            if (normalized === 'completed') return 'bg-green-100 text-green-800';
+            if (normalized === 'no_answer') return 'bg-orange-100 text-orange-800';
+            if (normalized === 'busy') return 'bg-red-100 text-red-800';
+            if (normalized === 'failed') return 'bg-red-100 text-red-800';
+            if (normalized === 'cancelled') return 'bg-gray-100 text-gray-800';
+            return 'bg-gray-100 text-gray-800';
+        },
+        campaignBadgeClass(status) {
+            const normalized = String(status || '').toLowerCase();
+            if (normalized === 'draft') return 'bg-gray-100 text-gray-800';
+            if (normalized === 'running') return 'bg-green-100 text-green-800';
+            if (normalized === 'paused') return 'bg-yellow-100 text-yellow-800';
+            if (normalized === 'completed') return 'bg-blue-100 text-blue-800';
+            if (normalized === 'cancelled') return 'bg-red-100 text-red-800';
+            return 'bg-gray-100 text-gray-800';
         }
     }
 }

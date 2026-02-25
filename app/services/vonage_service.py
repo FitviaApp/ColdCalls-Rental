@@ -7,7 +7,7 @@ import logging
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Optional, Callable
 
 import httpx
 from jose import jwt
@@ -110,7 +110,8 @@ class VonageService:
         self,
         call_sid: str,
         max_wait: int = 70,
-        poll_interval: int = 2
+        poll_interval: int = 2,
+        status_callback: Optional[Callable[[str, int, Optional[str]], None]] = None,
     ) -> dict:
         elapsed = 0
         final_statuses = {
@@ -124,6 +125,7 @@ class VonageService:
             "unanswered",
         }
         token = self._build_jwt()
+        last_status = None
 
         while elapsed < max_wait:
             try:
@@ -135,9 +137,19 @@ class VonageService:
                 response.raise_for_status()
                 data = response.json()
                 status = str(data.get("status") or "").lower()
+                duration = int(data.get("duration") or 0)
+
+                if status != last_status:
+                    if status_callback:
+                        try:
+                            status_callback(status, duration, None)
+                        except Exception as callback_error:
+                            logger.warning(
+                                f"Status callback error for {call_sid}: {callback_error}"
+                            )
+                    last_status = status
 
                 if status in final_statuses:
-                    duration = int(data.get("duration") or 0)
                     return {
                         "status": status,
                         "duration": duration,

@@ -305,6 +305,18 @@ async def campaign_detail(
     numbers = db.query(CampaignNumber).filter(
         CampaignNumber.campaign_id == campaign_id
     ).order_by(CampaignNumber.id).all()
+    numbers_payload = [
+        {
+            "id": n.id,
+            "phone_number": n.phone_number,
+            "status": n.status.value,
+            "duration_seconds": n.duration_seconds,
+            "cost": n.cost,
+            "answered_by": n.answered_by,
+            "processed_at": n.processed_at.isoformat() if n.processed_at else None,
+        }
+        for n in numbers
+    ]
 
     return templates.TemplateResponse(
         "campaigns/detail.html",
@@ -312,7 +324,8 @@ async def campaign_detail(
             "request": request,
             "user": user,
             "campaign": campaign,
-            "numbers": numbers
+            "numbers": numbers,
+            "numbers_payload": numbers_payload,
         }
     )
 

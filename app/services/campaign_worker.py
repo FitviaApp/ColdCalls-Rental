@@ -149,7 +149,7 @@ class CampaignWorker:
 
         # Mark as queued
         number.status = CallStatus.QUEUED
-        self.db.flush()
+        self.db.commit()
 
         try:
             # Make the call using campaign-configured TwiML flow.
@@ -163,11 +163,51 @@ class CampaignWorker:
             )
 
             number.call_sid = call_result['call_sid']
-            number.status = CallStatus.RINGING
-            self.db.flush()
+            number.status = self._map_status(
+                call_result.get('status'),
+                default=CallStatus.RINGING
+            )
+            self.db.commit()
+
+            live_state = {
+                "status": number.status,
+                "duration": number.duration_seconds or 0,
+                "answered_by": number.answered_by,
+            }
+
+            def persist_status_update(provider_status: str, duration: int, answered_by: Optional[str]):
+                mapped_status = self._map_status(provider_status, default=live_state["status"])
+                updates = {}
+
+                if mapped_status != live_state["status"]:
+                    updates["status"] = mapped_status
+                    live_state["status"] = mapped_status
+
+                if duration > live_state["duration"]:
+                    updates["duration_seconds"] = duration
+                    live_state["duration"] = duration
+
+                if answered_by and answered_by != live_state["answered_by"]:
+                    updates["answered_by"] = answered_by
+                    live_state["answered_by"] = answered_by
+
+                if not updates:
+                    return
+
+                callback_db = SessionLocal()
+                try:
+                    callback_db.query(CampaignNumber).filter(
+                        CampaignNumber.id == number.id
+                    ).update(updates, synchronize_session=False)
+                    callback_db.commit()
+                finally:
+                    callback_db.close()
 
             # Poll for completion
-            final_result = voice_service.poll_call_status(call_result['call_sid'])
+            final_result = voice_service.poll_call_status(
+                call_result['call_sid'],
+                status_callback=persist_status_update
+            )
 
             # Update number record
             number.status = self._map_status(final_result['status'])
@@ -197,6 +237,7 @@ class CampaignWorker:
                 f"Call to {number.phone_number}: "
                 f"{number.status.value}, duration={final_result['duration']}s, cost=${cost:.4f}"
             )
+            self.db.commit()
 
         except Exception as e:
             import traceback
@@ -207,14 +248,23 @@ class CampaignWorker:
             number.processed_at = datetime.utcnow()
             campaign.processed_numbers += 1
             campaign.failed_calls += 1
+            self.db.commit()
 
-    def _map_status(self, twilio_status: str) -> CallStatus:
-        """Map Twilio status to CallStatus enum"""
-        normalized_status = str(twilio_status or "").lower()
+    def _map_status(self, provider_status: str, default: CallStatus = CallStatus.FAILED) -> CallStatus:
+        """Map provider status to CallStatus enum"""
+        normalized_status = str(provider_status or "").strip().lower()
         mapping = {
+            'pending': CallStatus.PENDING,
+            'queued': CallStatus.QUEUED,
+            'initiated': CallStatus.QUEUED,
+            'started': CallStatus.QUEUED,
+            'ringing': CallStatus.RINGING,
+            'calling': CallStatus.RINGING,
             'completed': CallStatus.COMPLETED,
             'in-progress': CallStatus.IN_PROGRESS,
+            'in_progress': CallStatus.IN_PROGRESS,
             'no-answer': CallStatus.NO_ANSWER,
+            'no_answer': CallStatus.NO_ANSWER,
             'unanswered': CallStatus.NO_ANSWER,
             'busy': CallStatus.BUSY,
             'failed': CallStatus.FAILED,
@@ -223,7 +273,7 @@ class CampaignWorker:
             'rejected': CallStatus.FAILED,
             'timeout': CallStatus.FAILED,
         }
-        return mapping.get(normalized_status, CallStatus.FAILED)
+        return mapping.get(normalized_status, default)
 
     def _build_voice_service(self, campaign: Campaign, user: User):
         provider = campaign.voice_provider.value if hasattr(campaign.voice_provider, "value") else str(campaign.voice_provider)

@@ -4,7 +4,7 @@ Handles call initiation, status polling, and machine detection
 """
 import time
 import logging
-from typing import Optional
+from typing import Optional, Callable
 
 from twilio.rest import Client
 from twilio.base.exceptions import TwilioRestException
@@ -123,7 +123,8 @@ class TwilioService:
         self,
         call_sid: str,
         max_wait: int = 70,
-        poll_interval: int = 2
+        poll_interval: int = 2,
+        status_callback: Optional[Callable[[str, int, Optional[str]], None]] = None,
     ) -> dict:
         """
         Poll call status until completion or timeout
@@ -132,6 +133,7 @@ class TwilioService:
             call_sid: Twilio call SID
             max_wait: Maximum wait time in seconds
             poll_interval: Time between polls in seconds
+            status_callback: Optional callback invoked when status changes
 
         Returns:
             dict with 'status', 'duration', 'answered_by'
@@ -147,6 +149,17 @@ class TwilioService:
 
                 if current_status != last_status:
                     logger.debug(f"Call {call_sid}: status={current_status}")
+                    if status_callback:
+                        try:
+                            status_callback(
+                                current_status,
+                                int(call.duration) if call.duration else 0,
+                                getattr(call, 'answered_by', None),
+                            )
+                        except Exception as callback_error:
+                            logger.warning(
+                                f"Status callback error for {call_sid}: {callback_error}"
+                            )
                     last_status = current_status
 
                 if current_status in final_statuses:
