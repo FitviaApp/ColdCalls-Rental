@@ -17,6 +17,7 @@ from app.services.user_telnyx_service import (
     upsert_user_telnyx_credentials,
 )
 from app.services.user_twilio_service import (
+    get_user_twilio_credentials,
     has_user_twilio_credentials,
     upsert_user_twilio_credentials,
 )
@@ -25,6 +26,7 @@ from app.services.user_vonage_service import (
     upsert_user_vonage_credentials,
 )
 from app.services.user_voice_provider_service import has_any_user_voice_provider_credentials
+from app.services.twilio_service import TwilioService
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 templates = Jinja2Templates(directory="app/templates")
@@ -48,6 +50,23 @@ async def dashboard(
     # Calculate stats
     all_campaigns = db.query(Campaign).filter(Campaign.user_id == user.id).all()
 
+    twilio_balance = None
+    twilio_balance_currency = "USD"
+    twilio_balance_error = None
+    twilio_configured = has_user_twilio_credentials(db, user.id)
+    if twilio_configured:
+        try:
+            account_sid, auth_token = get_user_twilio_credentials(db, user.id)
+            twilio_service = TwilioService(account_sid=account_sid, auth_token=auth_token)
+            balance_info = twilio_service.get_account_balance()
+            if balance_info:
+                twilio_balance = balance_info["balance"]
+                twilio_balance_currency = balance_info["currency"]
+            else:
+                twilio_balance_error = "Unable to load Twilio balance right now."
+        except Exception:
+            twilio_balance_error = "Unable to load Twilio balance right now."
+
     stats = {
         "total_campaigns": len(all_campaigns),
         "active_campaigns": len([c for c in all_campaigns if c.status == CampaignStatus.RUNNING]),
@@ -58,6 +77,10 @@ async def dashboard(
             user.transfer_number and has_any_user_voice_provider_credentials(db, user.id)
         ),
         "rental_active": False,
+        "twilio_configured": twilio_configured,
+        "twilio_balance": twilio_balance,
+        "twilio_balance_currency": twilio_balance_currency,
+        "twilio_balance_error": twilio_balance_error,
     }
     active_rental = get_active_rental(db, user.id)
     stats["rental_active"] = bool(active_rental)

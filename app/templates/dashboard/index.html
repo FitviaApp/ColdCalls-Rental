@@ -53,6 +53,39 @@
     </div>
     {% endif %}
 
+    <div class="mb-6">
+        <div class="bg-white overflow-hidden shadow rounded-lg">
+            <div class="p-5">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0">
+                        <svg class="h-6 w-6 text-emerald-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0 8V4m8 8a8 8 0 11-16 0 8 8 0 0116 0z"/>
+                        </svg>
+                    </div>
+                    <div class="ml-5 w-0 flex-1">
+                        <dl>
+                            <dt class="text-sm font-medium text-gray-500 truncate">Twilio Balance</dt>
+                            {% if stats.twilio_balance is not none %}
+                            <dd class="text-lg font-semibold text-gray-900">
+                                {{ "%.2f"|format(stats.twilio_balance) }} {{ stats.twilio_balance_currency }}
+                            </dd>
+                            {% elif stats.twilio_configured %}
+                            <dd class="text-sm font-medium text-amber-700">
+                                {{ stats.twilio_balance_error or "Unable to load balance" }}
+                            </dd>
+                            {% else %}
+                            <dd class="text-sm font-medium text-gray-600">
+                                Twilio not configured.
+                                <a href="/dashboard/settings#twilio" class="text-indigo-600 hover:text-indigo-500">Configure now</a>
+                            </dd>
+                            {% endif %}
+                        </dl>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Stats -->
     <div class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3 mb-8" x-data="dashboardStats()" x-init="fetchStats()">
         <div class="bg-white overflow-hidden shadow rounded-lg">

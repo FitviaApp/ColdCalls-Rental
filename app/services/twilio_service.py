@@ -227,3 +227,20 @@ class TwilioService:
         except Exception as e:
             logger.error(f"Error fetching call details for {call_sid}: {e}")
             return None
+
+    def get_account_balance(self) -> Optional[dict]:
+        """
+        Get account balance from Twilio.
+
+        Returns:
+            dict with 'balance' and 'currency', or None on error.
+        """
+        try:
+            balance_info = self.client.balance.fetch()
+            return {
+                "balance": float(balance_info.balance),
+                "currency": str(balance_info.currency or "USD"),
+            }
+        except Exception as e:
+            logger.error(f"Error fetching Twilio account balance: {e}")
+            return None
