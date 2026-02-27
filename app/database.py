@@ -97,3 +97,11 @@ def _apply_schema_patches():
                     "ADD COLUMN voice_provider VARCHAR(20) NOT NULL DEFAULT 'twilio'"
                 )
             )
+
+        if _column_exists("campaigns", "max_concurrent_calls") is False:
+            conn.execute(
+                text(
+                    "ALTER TABLE campaigns "
+                    "ADD COLUMN max_concurrent_calls INTEGER NOT NULL DEFAULT 1"
+                )
+            )

@@ -89,6 +89,15 @@
                     </label>
                 </div>
 
+                <div>
+                    <label for="max_concurrent_calls" class="block text-sm font-medium text-gray-700">Concurrent Calls</label>
+                    <input type="number" name="max_concurrent_calls" id="max_concurrent_calls" min="1" max="20" value="1" required
+                        class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border px-3 py-2">
+                    <p class="mt-1 text-xs text-gray-500">
+                        Defines how many calls can run at the same time. For Twilio, new calls still start at a maximum of 1 per second.
+                    </p>
+                </div>
+
             </div>
         </div>
 

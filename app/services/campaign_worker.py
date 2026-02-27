@@ -1,8 +1,10 @@
 """
 Campaign Worker - Background process for executing campaigns
 """
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 import logging
 import signal
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -30,6 +32,26 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 WORKER_HEARTBEAT_FILE = Path("/tmp/coldcalls_worker_heartbeat")
+MIN_CONCURRENT_CALLS = 1
+MAX_CONCURRENT_CALLS = 20
+TWILIO_MIN_START_INTERVAL_SECONDS = 1.0
+
+
+class _ThreadSafeStartRateLimiter:
+    """Simple shared limiter for outbound call starts."""
+
+    def __init__(self, min_interval_seconds: float):
+        self.min_interval_seconds = min_interval_seconds
+        self._lock = threading.Lock()
+        self._next_allowed_at = 0.0
+
+    def wait_turn(self):
+        with self._lock:
+            now = time.monotonic()
+            if now < self._next_allowed_at:
+                time.sleep(self._next_allowed_at - now)
+                now = time.monotonic()
+            self._next_allowed_at = now + self.min_interval_seconds
 
 
 class CampaignWorker:
@@ -84,20 +106,29 @@ class CampaignWorker:
             self.db.commit()
             return
 
-        # Initialize voice provider service with campaign owner's credentials.
+        # Validate provider credentials before dispatching calls.
         try:
-            voice_service = self._build_voice_service(campaign, user)
+            self._build_voice_service(campaign, user)
         except Exception as e:
             logger.error(f"Campaign {campaign.id}: Failed to init voice provider: {e}")
             campaign.status = CampaignStatus.PAUSED
             self.db.commit()
             return
 
-        # Get pending numbers (process in batches of 5)
+        max_concurrent_calls = self._normalize_concurrency(campaign.max_concurrent_calls)
+        batch_size = max(5, max_concurrent_calls)
+        provider = campaign.voice_provider.value if hasattr(campaign.voice_provider, "value") else str(campaign.voice_provider)
+        start_rate_limiter = (
+            _ThreadSafeStartRateLimiter(TWILIO_MIN_START_INTERVAL_SECONDS)
+            if provider == VoiceProvider.TWILIO.value
+            else None
+        )
+
+        # Keep batches bounded so multiple running campaigns still take turns.
         pending_numbers = self.db.query(CampaignNumber).filter(
             CampaignNumber.campaign_id == campaign.id,
             CampaignNumber.status == CallStatus.PENDING
-        ).limit(5).all()
+        ).limit(batch_size).all()
 
         if not pending_numbers:
             # Campaign complete
@@ -108,30 +139,57 @@ class CampaignWorker:
             logger.info(f"Campaign {campaign.id} completed")
             return
 
-        for number in pending_numbers:
-            if not self.running:
-                break
+        pending_number_ids = [n.id for n in pending_numbers]
+        futures = {}
 
-            # Refresh campaign status in case it was paused
-            self.db.refresh(campaign)
-            if campaign.status != CampaignStatus.RUNNING:
-                logger.info(f"Campaign {campaign.id} no longer running, stopping")
-                break
+        logger.info(
+            f"Campaign {campaign.id}: dispatching {len(pending_number_ids)} numbers "
+            f"with concurrency={max_concurrent_calls}"
+        )
 
-            # Re-check active rental before each call.
-            if not has_active_rental(self.db, user.id):
-                logger.warning(f"Campaign {campaign.id}: Rental expired mid-run")
-                campaign.status = CampaignStatus.PAUSED
-                self.db.commit()
-                break
+        with ThreadPoolExecutor(max_workers=max_concurrent_calls) as executor:
+            while self.running and (pending_number_ids or futures):
+                while self.running and pending_number_ids and len(futures) < max_concurrent_calls:
+                    self.db.refresh(campaign)
+                    if campaign.status != CampaignStatus.RUNNING:
+                        logger.info(f"Campaign {campaign.id} no longer running, stopping")
+                        pending_number_ids.clear()
+                        break
 
-            self.process_number(campaign, number, voice_service)
+                    if not has_active_rental(self.db, user.id):
+                        logger.warning(f"Campaign {campaign.id}: Rental expired mid-run")
+                        campaign.status = CampaignStatus.PAUSED
+                        self.db.commit()
+                        pending_number_ids.clear()
+                        break
 
-            # Delay between calls
-            if self.running:
-                time.sleep(5)
+                    number_id = pending_number_ids.pop(0)
+                    future = executor.submit(
+                        self.process_number_by_id,
+                        campaign.id,
+                        number_id,
+                        start_rate_limiter,
+                    )
+                    futures[future] = number_id
 
-        self.db.commit()
+                if not futures:
+                    continue
+
+                done, _ = wait(
+                    list(futures.keys()),
+                    timeout=1.0,
+                    return_when=FIRST_COMPLETED
+                )
+
+                for future in done:
+                    number_id = futures.pop(future)
+                    try:
+                        future.result()
+                    except Exception as e:
+                        logger.error(
+                            f"Campaign {campaign.id}: unexpected worker error "
+                            f"for number_id={number_id}: {e}"
+                        )
 
     def process_number(
         self,
@@ -139,22 +197,108 @@ class CampaignWorker:
         number: CampaignNumber,
         voice_service
     ):
-        """Process a single number in a campaign"""
+        """Process a single number in the current DB session."""
+        self._process_number_with_session(
+            self.db,
+            campaign,
+            number,
+            voice_service,
+            start_rate_limiter=None,
+        )
+
+    def process_number_by_id(
+        self,
+        campaign_id: int,
+        number_id: int,
+        start_rate_limiter: Optional[_ThreadSafeStartRateLimiter] = None
+    ):
+        """Process one number using a dedicated session (thread-safe)."""
+        db = SessionLocal()
+        try:
+            campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
+            number = db.query(CampaignNumber).filter(
+                CampaignNumber.id == number_id,
+                CampaignNumber.campaign_id == campaign_id,
+            ).first()
+
+            if not campaign or not number:
+                return
+            if campaign.status != CampaignStatus.RUNNING or number.status != CallStatus.PENDING:
+                return
+
+            user = campaign.user
+
+            if not has_active_rental(db, user.id):
+                logger.warning(f"Campaign {campaign.id}: Rental expired while processing number {number.id}")
+                campaign.status = CampaignStatus.PAUSED
+                db.commit()
+                return
+
+            if not user.transfer_number:
+                logger.warning(f"Campaign {campaign.id}: transfer number missing while processing number {number.id}")
+                campaign.status = CampaignStatus.PAUSED
+                db.commit()
+                return
+
+            if campaign.caller_id.user_id != user.id or campaign.audio.user_id != user.id:
+                logger.warning(f"Campaign {campaign.id}: resource ownership mismatch while processing number {number.id}")
+                campaign.status = CampaignStatus.PAUSED
+                db.commit()
+                return
+
+            try:
+                voice_service = self._build_voice_service(campaign, user, db=db)
+            except Exception as e:
+                logger.error(f"Campaign {campaign.id}: Failed to init voice provider: {e}")
+                campaign.status = CampaignStatus.PAUSED
+                db.commit()
+                return
+
+            self._process_number_with_session(
+                db,
+                campaign,
+                number,
+                voice_service,
+                start_rate_limiter=start_rate_limiter,
+            )
+        finally:
+            db.close()
+
+    def _process_number_with_session(
+        self,
+        db: Session,
+        campaign: Campaign,
+        number: CampaignNumber,
+        voice_service,
+        start_rate_limiter: Optional[_ThreadSafeStartRateLimiter] = None,
+    ):
+        """Process a single number using the provided DB session."""
         user = campaign.user
         caller_id = campaign.caller_id
         audio = campaign.audio
         country = campaign.country
+        phone_number = number.phone_number
 
-        logger.info(f"Calling {number.phone_number} for campaign {campaign.id}")
+        logger.info(f"Calling {phone_number} for campaign {campaign.id}")
 
-        # Mark as queued
-        number.status = CallStatus.QUEUED
-        self.db.commit()
+        claimed_rows = db.query(CampaignNumber).filter(
+            CampaignNumber.id == number.id,
+            CampaignNumber.status == CallStatus.PENDING
+        ).update(
+            {CampaignNumber.status: CallStatus.QUEUED},
+            synchronize_session=False
+        )
+        db.commit()
+        if claimed_rows == 0:
+            return
 
         try:
+            if start_rate_limiter:
+                start_rate_limiter.wait_turn()
+
             # Make the call using campaign-configured TwiML flow.
             call_result = voice_service.make_call(
-                to_number=number.phone_number,
+                to_number=phone_number,
                 from_number=caller_id.phone_number,
                 audio_url=audio.r2_url,
                 transfer_number=user.transfer_number,
@@ -162,17 +306,25 @@ class CampaignWorker:
                 press_1_to_talk_with_agent=campaign.press_1_to_talk_with_agent
             )
 
-            number.call_sid = call_result['call_sid']
-            number.status = self._map_status(
+            initial_status = self._map_status(
                 call_result.get('status'),
                 default=CallStatus.RINGING
             )
-            self.db.commit()
+            db.query(CampaignNumber).filter(
+                CampaignNumber.id == number.id
+            ).update(
+                {
+                    CampaignNumber.call_sid: call_result['call_sid'],
+                    CampaignNumber.status: initial_status,
+                },
+                synchronize_session=False
+            )
+            db.commit()
 
             live_state = {
-                "status": number.status,
-                "duration": number.duration_seconds or 0,
-                "answered_by": number.answered_by,
+                "status": initial_status,
+                "duration": 0,
+                "answered_by": None,
             }
 
             def persist_status_update(provider_status: str, duration: int, answered_by: Optional[str]):
@@ -209,46 +361,73 @@ class CampaignWorker:
                 status_callback=persist_status_update
             )
 
-            # Update number record
-            number.status = self._map_status(final_result['status'])
-            number.duration_seconds = final_result['duration']
-            number.answered_by = final_result['answered_by']
-            number.processed_at = datetime.utcnow()
+            final_status = self._map_status(final_result['status'])
+            final_duration = int(final_result.get('duration') or 0)
+            final_answered_by = final_result.get('answered_by')
 
             # Calculate cost based on duration and country price
-            if final_result['duration'] > 0:
-                minutes = (final_result['duration'] + 59) // 60  # Round up
+            if final_duration > 0:
+                minutes = (final_duration + 59) // 60  # Round up
                 cost = minutes * country.price_per_minute
             else:
                 cost = 0.0
 
-            number.cost = cost
+            db.query(CampaignNumber).filter(
+                CampaignNumber.id == number.id
+            ).update(
+                {
+                    CampaignNumber.status: final_status,
+                    CampaignNumber.duration_seconds: final_duration,
+                    CampaignNumber.answered_by: final_answered_by,
+                    CampaignNumber.processed_at: datetime.utcnow(),
+                    CampaignNumber.cost: cost,
+                },
+                synchronize_session=False
+            )
 
-            # Update campaign stats
-            campaign.processed_numbers += 1
-            campaign.total_cost += cost
-
-            if number.status == CallStatus.COMPLETED:
-                campaign.successful_calls += 1
+            campaign_updates = {
+                Campaign.processed_numbers: Campaign.processed_numbers + 1,
+                Campaign.total_cost: Campaign.total_cost + cost,
+            }
+            if final_status == CallStatus.COMPLETED:
+                campaign_updates[Campaign.successful_calls] = Campaign.successful_calls + 1
             else:
-                campaign.failed_calls += 1
+                campaign_updates[Campaign.failed_calls] = Campaign.failed_calls + 1
+
+            db.query(Campaign).filter(
+                Campaign.id == campaign.id
+            ).update(campaign_updates, synchronize_session=False)
+            db.commit()
 
             logger.info(
-                f"Call to {number.phone_number}: "
-                f"{number.status.value}, duration={final_result['duration']}s, cost=${cost:.4f}"
+                f"Call to {phone_number}: "
+                f"{final_status.value}, duration={final_duration}s, cost=${cost:.4f}"
             )
-            self.db.commit()
 
         except Exception as e:
             import traceback
-            logger.error(f"Error calling {number.phone_number}: {e}")
+            logger.error(f"Error calling {phone_number}: {e}")
             logger.error(f"Traceback: {traceback.format_exc()}")
-            number.status = CallStatus.FAILED
-            number.error_message = str(e)[:500]  # Limit error message length
-            number.processed_at = datetime.utcnow()
-            campaign.processed_numbers += 1
-            campaign.failed_calls += 1
-            self.db.commit()
+            db.query(CampaignNumber).filter(
+                CampaignNumber.id == number.id
+            ).update(
+                {
+                    CampaignNumber.status: CallStatus.FAILED,
+                    CampaignNumber.error_message: str(e)[:500],  # Limit error message length
+                    CampaignNumber.processed_at: datetime.utcnow(),
+                },
+                synchronize_session=False
+            )
+            db.query(Campaign).filter(
+                Campaign.id == campaign.id
+            ).update(
+                {
+                    Campaign.processed_numbers: Campaign.processed_numbers + 1,
+                    Campaign.failed_calls: Campaign.failed_calls + 1,
+                },
+                synchronize_session=False
+            )
+            db.commit()
 
     def _map_status(self, provider_status: str, default: CallStatus = CallStatus.FAILED) -> CallStatus:
         """Map provider status to CallStatus enum"""
@@ -275,19 +454,25 @@ class CampaignWorker:
         }
         return mapping.get(normalized_status, default)
 
-    def _build_voice_service(self, campaign: Campaign, user: User):
+    def _normalize_concurrency(self, value: Optional[int]) -> int:
+        """Clamp campaign concurrency to a safe range."""
+        raw = value or MIN_CONCURRENT_CALLS
+        return max(MIN_CONCURRENT_CALLS, min(MAX_CONCURRENT_CALLS, int(raw)))
+
+    def _build_voice_service(self, campaign: Campaign, user: User, db: Optional[Session] = None):
+        session = db or self.db
         provider = campaign.voice_provider.value if hasattr(campaign.voice_provider, "value") else str(campaign.voice_provider)
 
         if provider == VoiceProvider.TWILIO.value:
-            account_sid, auth_token = get_user_twilio_credentials(self.db, user.id)
+            account_sid, auth_token = get_user_twilio_credentials(session, user.id)
             return TwilioService(account_sid=account_sid, auth_token=auth_token)
 
         if provider == VoiceProvider.TELNYX.value:
-            api_key, account_sid = get_user_telnyx_credentials(self.db, user.id)
+            api_key, account_sid = get_user_telnyx_credentials(session, user.id)
             return TelnyxService(api_key=api_key, account_sid=account_sid)
 
         if provider == VoiceProvider.VONAGE.value:
-            application_id, private_key = get_user_vonage_credentials(self.db, user.id)
+            application_id, private_key = get_user_vonage_credentials(session, user.id)
             return VonageService(application_id=application_id, private_key=private_key)
 
         raise ValueError(f"Unsupported voice provider: {provider}")

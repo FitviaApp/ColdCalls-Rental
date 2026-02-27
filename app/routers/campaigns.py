@@ -27,6 +27,8 @@ from app.services.user_voice_provider_service import (
 router = APIRouter(prefix="/campaigns", tags=["campaigns"])
 templates = Jinja2Templates(directory="app/templates")
 WORKER_HEARTBEAT_FILE = Path("/tmp/coldcalls_worker_heartbeat")
+MIN_CONCURRENT_CALLS = 1
+MAX_CONCURRENT_CALLS = 20
 
 # E.164 phone number regex
 E164_PATTERN = re.compile(r'^\+[1-9]\d{1,14}$')
@@ -122,6 +124,7 @@ async def create_campaign(
     audio_id: int = Form(...),
     voice_provider: str = Form(default=VoiceProvider.TWILIO.value),
     press_1_to_talk_with_agent: bool = Form(False),
+    max_concurrent_calls: int = Form(default=1),
     numbers_text: str = Form(default=""),
     numbers_file: Optional[UploadFile] = File(default=None),
     user: User = Depends(require_active_rental),
@@ -185,6 +188,20 @@ async def create_campaign(
                 "user": user,
                 **deps,
                 "error": "Press 1 flow is currently available only with Twilio."
+            },
+            status_code=400
+        )
+    if not (MIN_CONCURRENT_CALLS <= max_concurrent_calls <= MAX_CONCURRENT_CALLS):
+        return templates.TemplateResponse(
+            "campaigns/create.html",
+            {
+                "request": request,
+                "user": user,
+                **deps,
+                "error": (
+                    f"Concurrent calls must be between {MIN_CONCURRENT_CALLS} "
+                    f"and {MAX_CONCURRENT_CALLS}."
+                )
             },
             status_code=400
         )
@@ -266,6 +283,7 @@ async def create_campaign(
         audio_id=audio_id,
         voice_provider=voice_provider,
         press_1_to_talk_with_agent=press_1_to_talk_with_agent,
+        max_concurrent_calls=max_concurrent_calls,
         status=CampaignStatus.DRAFT,
         total_numbers=len(valid_numbers)
     )

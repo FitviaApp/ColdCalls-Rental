@@ -166,6 +166,7 @@ class Campaign(Base):
         nullable=False,
         index=True
     )
+    max_concurrent_calls = Column(Integer, default=1, nullable=False)
 
     # Progress tracking
     total_numbers = Column(Integer, default=0)

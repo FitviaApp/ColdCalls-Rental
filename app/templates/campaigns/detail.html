@@ -147,6 +147,10 @@
                             {% if campaign.press_1_to_talk_with_agent %}Enabled{% else %}Disabled{% endif %}
                         </dd>
                     </div>
+                    <div>
+                        <dt class="text-sm font-medium text-gray-500">Concurrent calls</dt>
+                        <dd class="text-sm text-gray-900">{{ campaign.max_concurrent_calls }}</dd>
+                    </div>
                 </dl>
             </div>
         </div>

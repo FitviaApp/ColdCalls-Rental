@@ -153,6 +153,7 @@ class CampaignResponse(CampaignBase):
     audio_id: int
     press_1_to_talk_with_agent: bool
     voice_provider: VoiceProvider
+    max_concurrent_calls: int
     status: CampaignStatus
     total_numbers: int
     processed_numbers: int

@@ -8,6 +8,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
+from app.auth import hash_password, verify_password
 from app.database import get_db
 from app.dependencies import get_current_user, require_active_rental
 from app.models import User, Campaign, CampaignStatus
@@ -105,6 +106,7 @@ async def settings_page(
     twilio_saved: bool = False,
     telnyx_saved: bool = False,
     vonage_saved: bool = False,
+    password_saved: bool = False,
     db: Session = Depends(get_db)
 ):
     """User settings page"""
@@ -117,12 +119,109 @@ async def settings_page(
             "twilio_saved": twilio_saved,
             "telnyx_saved": telnyx_saved,
             "vonage_saved": vonage_saved,
+            "password_saved": password_saved,
             "twilio_configured": has_user_twilio_credentials(db, user.id),
             "telnyx_configured": has_user_telnyx_credentials(db, user.id),
             "vonage_configured": has_user_vonage_credentials(db, user.id),
             "error": None
         }
     )
+
+
+@router.post("/settings/password")
+async def change_password(
+    request: Request,
+    current_password: str = Form(...),
+    new_password: str = Form(...),
+    confirm_password: str = Form(...),
+    user: User = Depends(require_active_rental),
+    db: Session = Depends(get_db)
+):
+    """Allow authenticated users (including admins) to change their password."""
+    current_password = current_password.strip()
+    new_password = new_password.strip()
+    confirm_password = confirm_password.strip()
+
+    if not verify_password(current_password, user.password_hash):
+        return templates.TemplateResponse(
+            "dashboard/settings.html",
+            {
+                "request": request,
+                "user": user,
+                "saved": False,
+                "twilio_saved": False,
+                "telnyx_saved": False,
+                "vonage_saved": False,
+                "password_saved": False,
+                "twilio_configured": has_user_twilio_credentials(db, user.id),
+                "telnyx_configured": has_user_telnyx_credentials(db, user.id),
+                "vonage_configured": has_user_vonage_credentials(db, user.id),
+                "error": "Current password is incorrect."
+            },
+            status_code=400
+        )
+
+    if len(new_password) < 6:
+        return templates.TemplateResponse(
+            "dashboard/settings.html",
+            {
+                "request": request,
+                "user": user,
+                "saved": False,
+                "twilio_saved": False,
+                "telnyx_saved": False,
+                "vonage_saved": False,
+                "password_saved": False,
+                "twilio_configured": has_user_twilio_credentials(db, user.id),
+                "telnyx_configured": has_user_telnyx_credentials(db, user.id),
+                "vonage_configured": has_user_vonage_credentials(db, user.id),
+                "error": "New password must be at least 6 characters."
+            },
+            status_code=400
+        )
+
+    if new_password != confirm_password:
+        return templates.TemplateResponse(
+            "dashboard/settings.html",
+            {
+                "request": request,
+                "user": user,
+                "saved": False,
+                "twilio_saved": False,
+                "telnyx_saved": False,
+                "vonage_saved": False,
+                "password_saved": False,
+                "twilio_configured": has_user_twilio_credentials(db, user.id),
+                "telnyx_configured": has_user_telnyx_credentials(db, user.id),
+                "vonage_configured": has_user_vonage_credentials(db, user.id),
+                "error": "New password and confirmation do not match."
+            },
+            status_code=400
+        )
+
+    if verify_password(new_password, user.password_hash):
+        return templates.TemplateResponse(
+            "dashboard/settings.html",
+            {
+                "request": request,
+                "user": user,
+                "saved": False,
+                "twilio_saved": False,
+                "telnyx_saved": False,
+                "vonage_saved": False,
+                "password_saved": False,
+                "twilio_configured": has_user_twilio_credentials(db, user.id),
+                "telnyx_configured": has_user_telnyx_credentials(db, user.id),
+                "vonage_configured": has_user_vonage_credentials(db, user.id),
+                "error": "New password must be different from current password."
+            },
+            status_code=400
+        )
+
+    user.password_hash = hash_password(new_password)
+    db.commit()
+
+    return RedirectResponse(url="/dashboard/settings?password_saved=true", status_code=302)
 
 
 @router.post("/settings/transfer")
