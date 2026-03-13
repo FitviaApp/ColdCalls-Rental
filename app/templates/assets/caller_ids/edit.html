@@ -41,6 +41,14 @@
                 <label for="is_active" class="ml-2 block text-sm text-gray-900">Active</label>
             </div>
 
+            <div class="rounded-md border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-700">
+                Voximplant status:
+                <span class="font-medium">{{ caller_id.vox_verification_status.value.replace('_', ' ') }}</span>
+                {% if caller_id.vox_last_verification_at %}
+                <span class="text-gray-500">Last update: {{ caller_id.vox_last_verification_at.strftime('%Y-%m-%d %H:%M') }}</span>
+                {% endif %}
+            </div>
+
             <div class="flex justify-between pt-4">
                 <button type="submit" form="delete-caller-id-form" class="px-4 py-2 text-sm font-medium text-red-600 hover:text-red-900">Delete</button>
                 <div class="space-x-3">

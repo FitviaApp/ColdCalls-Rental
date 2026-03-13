@@ -9,12 +9,14 @@ from app.models import VoiceProvider
 from app.services.user_telnyx_service import has_user_telnyx_credentials
 from app.services.user_twilio_service import has_user_twilio_credentials
 from app.services.user_vonage_service import has_user_vonage_credentials
+from app.services.user_voximplant_service import has_user_voximplant_credentials
 
 
 PROVIDER_LABELS = {
     VoiceProvider.TWILIO.value: "Twilio",
     VoiceProvider.TELNYX.value: "Telnyx",
     VoiceProvider.VONAGE.value: "Vonage",
+    VoiceProvider.VOXIMPLANT.value: "Voximplant",
 }
 
 
@@ -23,7 +25,16 @@ def supported_voice_providers() -> tuple[str, ...]:
         VoiceProvider.TWILIO.value,
         VoiceProvider.TELNYX.value,
         VoiceProvider.VONAGE.value,
+        VoiceProvider.VOXIMPLANT.value,
     )
+
+
+def provider_supports_press_1(provider: str) -> bool:
+    provider = (provider or "").strip().lower()
+    return provider in {
+        VoiceProvider.TWILIO.value,
+        VoiceProvider.VOXIMPLANT.value,
+    }
 
 
 def has_user_voice_provider_credentials(db: Session, user_id: int, provider: str) -> bool:
@@ -36,6 +47,8 @@ def has_user_voice_provider_credentials(db: Session, user_id: int, provider: str
         return has_user_telnyx_credentials(db, user_id)
     if provider == VoiceProvider.VONAGE.value:
         return has_user_vonage_credentials(db, user_id)
+    if provider == VoiceProvider.VOXIMPLANT.value:
+        return has_user_voximplant_credentials(db, user_id)
     return False
 
 
@@ -56,6 +69,7 @@ def get_user_voice_provider_status(db: Session, user_id: int) -> list[dict]:
                 "value": provider,
                 "label": PROVIDER_LABELS.get(provider, provider.title()),
                 "configured": has_user_voice_provider_credentials(db, user_id, provider),
+                "supports_press_1": provider_supports_press_1(provider),
             }
         )
     return providers

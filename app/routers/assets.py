@@ -1,6 +1,7 @@
 """
 Assets Router - user-managed Caller IDs and Audios
 """
+from datetime import datetime
 import re
 from urllib.parse import quote
 from typing import Optional
@@ -12,8 +13,13 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.dependencies import require_active_rental
-from app.models import User, CallerID, Audio, Campaign, CampaignStatus
+from app.models import User, CallerID, Audio, Campaign, CampaignStatus, VoxCallerIDVerificationStatus
 from app.services.r2_service import r2_service
+from app.services.user_voximplant_service import get_user_voximplant_credentials
+from app.services.voximplant_management_service import (
+    VoximplantManagementService,
+    ensure_voximplant_caller_id,
+)
 
 router = APIRouter(prefix="/assets", tags=["assets"])
 templates = Jinja2Templates(directory="app/templates")
@@ -41,8 +47,10 @@ async def list_caller_ids(
             "request": request,
             "user": user,
             "caller_ids": caller_ids,
+            "voximplant_configured": bool(get_user_voximplant_credentials(db, user.id)),
             "created": created,
             "deleted": deleted,
+            "verified": request.query_params.get("verified") == "true",
             "error": error,
         }
     )
@@ -104,6 +112,7 @@ async def create_caller_id(
         country_code=country_code,
         description=description.strip(),
         is_active=True,
+        vox_verification_status=VoxCallerIDVerificationStatus.NOT_STARTED,
     )
     db.add(caller_id)
     db.commit()
@@ -185,13 +194,92 @@ async def edit_caller_id(
             status_code=400,
         )
 
+    phone_number_changed = caller_id.phone_number != phone_number
     caller_id.phone_number = phone_number
     caller_id.country_code = country_code
     caller_id.description = description.strip()
     caller_id.is_active = is_active
+    if phone_number_changed:
+        caller_id.vox_callerid_id = None
+        caller_id.vox_verification_status = VoxCallerIDVerificationStatus.NOT_STARTED
+        caller_id.vox_last_verification_at = None
     db.commit()
 
     return RedirectResponse(url="/assets/caller-ids", status_code=302)
+
+
+@router.post("/caller-ids/{caller_id_id}/voximplant/verify")
+async def start_voximplant_verification(
+    caller_id_id: int,
+    user: User = Depends(require_active_rental),
+    db: Session = Depends(get_db)
+):
+    caller_id = db.query(CallerID).filter(
+        CallerID.id == caller_id_id,
+        CallerID.user_id == user.id
+    ).first()
+    if not caller_id:
+        raise HTTPException(status_code=404, detail="Caller ID not found")
+
+    credentials = get_user_voximplant_credentials(db, user.id)
+    if not credentials:
+        msg = quote("Configure Voximplant credentials in Settings before verifying numbers.")
+        return RedirectResponse(url=f"/assets/caller-ids?error={msg}", status_code=302)
+
+    try:
+        response = ensure_voximplant_caller_id(caller_id, credentials)
+        caller_id.vox_callerid_id = int(
+            response.get("callerid_id")
+            or response.get("caller_id")
+            or caller_id.vox_callerid_id
+            or 0
+        ) or None
+        VoximplantManagementService(credentials).verify_caller_id(caller_id.vox_callerid_id)
+        caller_id.vox_verification_status = VoxCallerIDVerificationStatus.PENDING
+        caller_id.vox_last_verification_at = datetime.utcnow()
+        db.commit()
+    except Exception as exc:
+        caller_id.vox_verification_status = VoxCallerIDVerificationStatus.FAILED
+        db.commit()
+        msg = quote(f"Voximplant verification failed: {exc}")
+        return RedirectResponse(url=f"/assets/caller-ids?error={msg}", status_code=302)
+
+    return RedirectResponse(url="/assets/caller-ids", status_code=302)
+
+
+@router.post("/caller-ids/{caller_id_id}/voximplant/activate")
+async def activate_voximplant_caller_id(
+    caller_id_id: int,
+    verification_code: str = Form(...),
+    user: User = Depends(require_active_rental),
+    db: Session = Depends(get_db)
+):
+    caller_id = db.query(CallerID).filter(
+        CallerID.id == caller_id_id,
+        CallerID.user_id == user.id
+    ).first()
+    if not caller_id:
+        raise HTTPException(status_code=404, detail="Caller ID not found")
+
+    credentials = get_user_voximplant_credentials(db, user.id)
+    if not credentials or not caller_id.vox_callerid_id:
+        msg = quote("Start Voximplant verification before activating this number.")
+        return RedirectResponse(url=f"/assets/caller-ids?error={msg}", status_code=302)
+
+    try:
+        VoximplantManagementService(credentials).activate_caller_id(
+            caller_id.vox_callerid_id,
+            verification_code.strip(),
+        )
+        caller_id.vox_verification_status = VoxCallerIDVerificationStatus.VERIFIED
+        db.commit()
+    except Exception as exc:
+        caller_id.vox_verification_status = VoxCallerIDVerificationStatus.FAILED
+        db.commit()
+        msg = quote(f"Activation failed: {exc}")
+        return RedirectResponse(url=f"/assets/caller-ids?error={msg}", status_code=302)
+
+    return RedirectResponse(url="/assets/caller-ids?verified=true", status_code=302)
 
 
 @router.post("/caller-ids/{caller_id_id}/delete")

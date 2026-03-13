@@ -2,6 +2,7 @@
 Application configuration using pydantic-settings
 """
 from functools import lru_cache
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -10,7 +11,7 @@ class Settings(BaseSettings):
     APP_NAME: str = "ColdCalls Platform"
     SECRET_KEY: str = "change-me-in-production-min-32-chars"
     DEBUG: bool = False
-    BASE_URL: str = "http://localhost:8000"  # Public URL for Twilio/Telnyx callbacks
+    BASE_URL: str = "http://localhost:8000"  # Public URL for Twilio/Telnyx/Voximplant callbacks
 
     # Database
     DATABASE_URL: str = "sqlite:///./coldcalls.db"
@@ -20,7 +21,7 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     JWT_EXPIRATION_HOURS: int = 24
 
-    # Encryption key for user Twilio credentials (Fernet)
+    # Encryption key for user voice-provider credentials (Fernet)
     ENCRYPTION_KEY: str = "encryption-key-must-be-32-url-safe-base64-chars"
 
     # Admin
@@ -41,6 +42,20 @@ class Settings(BaseSettings):
 
     # User limits
     MAX_USERS: int = 4
+
+    @field_validator("DEBUG", mode="before")
+    @classmethod
+    def normalize_debug(cls, value):
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return False
+        normalized = str(value).strip().lower()
+        if normalized in {"1", "true", "yes", "on", "debug", "development", "dev"}:
+            return True
+        if normalized in {"0", "false", "no", "off", "release", "production", "prod"}:
+            return False
+        return value
 
     model_config = {
         "env_file": ".env",

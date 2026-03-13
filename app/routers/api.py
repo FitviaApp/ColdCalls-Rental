@@ -9,9 +9,10 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.config import get_settings
 from app.dependencies import require_active_rental
-from app.models import User, Campaign, CampaignNumber, CallerID, Country, Audio, CampaignStatus, VoiceProvider
+from app.models import User, Campaign, CampaignNumber, CallerID, Country, Audio, CampaignStatus, VoiceProvider, CallStatus
 from app.schemas import DashboardStats, CampaignProgress, DropdownCallerID, DropdownCountry, DropdownAudio
 from app.services.rental_service import has_active_rental
+from app.services.voximplant_service import decode_voximplant_callback_token
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -31,6 +32,22 @@ def _build_transfer_block(campaign: Campaign, transfer_number: str) -> str:
         <Number>{transfer_number}</Number>
     </Dial>
 '''
+
+
+def _map_voximplant_callback_status(status: str) -> CallStatus:
+    normalized = str(status or "").strip().lower()
+    mapping = {
+        "queued": CallStatus.QUEUED,
+        "ringing": CallStatus.RINGING,
+        "in_progress": CallStatus.IN_PROGRESS,
+        "completed": CallStatus.COMPLETED,
+        "failed": CallStatus.FAILED,
+        "busy": CallStatus.BUSY,
+        "no_answer": CallStatus.NO_ANSWER,
+        "cancelled": CallStatus.CANCELLED,
+        "canceled": CallStatus.CANCELLED,
+    }
+    return mapping.get(normalized, CallStatus.FAILED)
 
 
 @router.post("/twiml/{campaign_id}")
@@ -175,6 +192,42 @@ async def telnyx_texml_handler(
     </Dial>
 </Response>'''
     return Response(content=texml, media_type="application/xml")
+
+
+@router.post("/voximplant/callback")
+async def voximplant_callback(
+    request: Request,
+    db: Session = Depends(get_db)
+):
+    payload = await request.json()
+    token = str(payload.get("token") or "").strip()
+    decoded = decode_voximplant_callback_token(token)
+    if not decoded:
+        raise HTTPException(status_code=401, detail="Invalid callback token")
+
+    campaign_number_id = int(decoded.get("sub") or 0)
+    number = db.query(CampaignNumber).filter(CampaignNumber.id == campaign_number_id).first()
+    if not number:
+        raise HTTPException(status_code=404, detail="Campaign number not found")
+
+    status = _map_voximplant_callback_status(payload.get("status"))
+    duration = int(payload.get("duration") or 0)
+    answered_by = payload.get("answered_by")
+    error_message = payload.get("error_message")
+    call_sid = payload.get("call_sid")
+
+    number.status = status
+    if call_sid:
+        number.call_sid = str(call_sid)[:50]
+    if duration >= 0:
+        number.duration_seconds = duration
+    if answered_by:
+        number.answered_by = str(answered_by)[:50]
+    if error_message:
+        number.error_message = str(error_message)[:500]
+    db.commit()
+
+    return {"ok": True}
 
 
 @router.get("/stats", response_model=DashboardStats)

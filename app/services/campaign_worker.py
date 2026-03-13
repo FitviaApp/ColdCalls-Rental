@@ -15,15 +15,17 @@ from sqlalchemy.orm import Session
 from app.database import SessionLocal, init_db
 from app.models import (
     Campaign, CampaignNumber, User,
-    CampaignStatus, CallStatus, VoiceProvider
+    CampaignStatus, CallStatus, VoiceProvider, VoxCallerIDVerificationStatus
 )
 from app.services.telnyx_service import TelnyxService
 from app.services.twilio_service import TwilioService
 from app.services.vonage_service import VonageService
+from app.services.voximplant_service import VoximplantService
 from app.services.rental_service import has_active_rental
 from app.services.user_telnyx_service import get_user_telnyx_credentials
 from app.services.user_twilio_service import get_user_twilio_credentials
 from app.services.user_vonage_service import get_user_vonage_credentials
+from app.services.user_voximplant_service import get_user_voximplant_credentials
 
 # Configure logging
 logging.basicConfig(
@@ -303,7 +305,8 @@ class CampaignWorker:
                 audio_url=audio.r2_url,
                 transfer_number=user.transfer_number,
                 campaign_id=campaign.id,
-                press_1_to_talk_with_agent=campaign.press_1_to_talk_with_agent
+                press_1_to_talk_with_agent=campaign.press_1_to_talk_with_agent,
+                metadata={"campaign_number_id": number.id},
             )
 
             initial_status = self._map_status(
@@ -358,7 +361,8 @@ class CampaignWorker:
             # Poll for completion
             final_result = voice_service.poll_call_status(
                 call_result['call_sid'],
-                status_callback=persist_status_update
+                status_callback=persist_status_update,
+                metadata={"campaign_number_id": number.id},
             )
 
             final_status = self._map_status(final_result['status'])
@@ -474,6 +478,14 @@ class CampaignWorker:
         if provider == VoiceProvider.VONAGE.value:
             application_id, private_key = get_user_vonage_credentials(session, user.id)
             return VonageService(application_id=application_id, private_key=private_key)
+
+        if provider == VoiceProvider.VOXIMPLANT.value:
+            if campaign.caller_id.vox_verification_status != VoxCallerIDVerificationStatus.VERIFIED:
+                raise ValueError("Caller ID is not verified in Voximplant")
+            credentials = get_user_voximplant_credentials(session, user.id)
+            if not credentials:
+                raise ValueError("Voximplant credentials not configured")
+            return VoximplantService(session, credentials)
 
         raise ValueError(f"Unsupported voice provider: {provider}")
 

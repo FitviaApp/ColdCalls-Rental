@@ -36,7 +36,8 @@ class TwilioService:
         transfer_number: str,
         campaign_id: Optional[int] = None,
         press_1_to_talk_with_agent: bool = False,
-        timeout: int = 60
+        timeout: int = 60,
+        metadata: Optional[dict] = None,
     ) -> dict:
         """
         Initiate a call.
@@ -53,6 +54,7 @@ class TwilioService:
         Returns:
             dict with 'call_sid' and 'status'
         """
+        del metadata
         logger.info(f"Initiating call to {to_number} from {from_number}")
 
         # Use dynamic callback URL only when "Press 1" is enabled.
@@ -125,6 +127,7 @@ class TwilioService:
         max_wait: int = 70,
         poll_interval: int = 2,
         status_callback: Optional[Callable[[str, int, Optional[str]], None]] = None,
+        metadata: Optional[dict] = None,
     ) -> dict:
         """
         Poll call status until completion or timeout
@@ -138,6 +141,7 @@ class TwilioService:
         Returns:
             dict with 'status', 'duration', 'answered_by'
         """
+        del metadata
         elapsed = 0
         final_statuses = ['completed', 'failed', 'busy', 'no-answer', 'canceled']
         last_status = None

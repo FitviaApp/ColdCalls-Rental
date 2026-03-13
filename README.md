@@ -4,7 +4,7 @@ Plataforma web para gerenciamento de campanhas de cold calls multiusuario com:
 
 - FastAPI + Jinja2
 - SQLAlchemy + SQLite
-- Twilio (discagem + TwiML)
+- Twilio, Telnyx, Vonage e Voximplant
 - Cloudflare R2 (audios)
 - Cobranca de aluguel via USDT (verificacao on-chain)
 
@@ -34,10 +34,13 @@ app/
   services/
     campaign_worker.py      # Loop do worker
     twilio_service.py       # Integracao Twilio
+    voximplant_service.py   # Runtime Voximplant
+    voximplant_management_service.py  # Provisionamento Voximplant
     payment_service.py      # Verificacao da transacao USDT
     rental_service.py       # Regras de aluguel
     r2_service.py           # Upload/delete no R2
     user_twilio_service.py  # Credenciais Twilio por usuario
+    user_voximplant_service.py  # Credenciais Voximplant por usuario
 worker.py                   # Entry point do worker
 scripts/                    # Scripts de migracao/limpeza legado
 requirements.txt
@@ -47,9 +50,10 @@ README.md
 ## Requisitos
 
 - Python 3.11+
-- Conta Twilio (Account SID + Auth Token)
+- Pelo menos um provider de voz configurado por usuario
 - Bucket Cloudflare R2 (para audios)
 - Chave Etherscan (verificacao de pagamento)
+- `BASE_URL` publica para callbacks de providers
 
 ## Instalacao
 
@@ -73,6 +77,7 @@ Crie um arquivo `.env` na raiz do projeto.
 APP_NAME=ColdCalls Platform
 SECRET_KEY=change-me-in-production-min-32-chars
 DEBUG=false
+# URL publica para callbacks Twilio, Telnyx e Voximplant
 BASE_URL=http://localhost:8000
 
 # Banco
@@ -83,7 +88,7 @@ JWT_SECRET=jwt-secret-change-me-min-32-chars
 JWT_ALGORITHM=HS256
 JWT_EXPIRATION_HOURS=24
 
-# Criptografia das credenciais Twilio do usuario (Fernet)
+# Criptografia das credenciais dos providers do usuario (Fernet)
 ENCRYPTION_KEY=<32-byte-urlsafe-base64-key>
 
 # Admin inicial (criado automaticamente no primeiro startup)
@@ -136,9 +141,10 @@ O worker verifica campanhas `running` a cada 10 segundos.
 4. Crie usuarios em `/admin/users`.
 5. Cada usuario configura:
    - Numero de transferencia em `/dashboard/settings`
-   - Credenciais Twilio em `/dashboard/settings`
+   - Credenciais de voz em `/dashboard/settings`
    - Caller IDs em `/assets/caller-ids`
    - Audios em `/assets/audios`
+   - Se usar Voximplant, verifica cada Caller ID pelo fluxo de codigo em `/assets/caller-ids`
 6. O usuario paga aluguel em `/billing`.
 7. Crie e inicie campanhas em `/campaigns`.
 
@@ -158,6 +164,30 @@ O worker verifica campanhas `running` a cada 10 segundos.
   - `/api/data/caller-ids`
   - `/api/data/audios`
   - `/api/twiml/{campaign_id}`
+  - `/api/telnyx/texml/{campaign_id}`
+  - `/api/voximplant/callback`
+
+## Voximplant
+
+Para usar a Voximplant por usuario:
+
+1. Gere uma service account na Voximplant.
+2. Copie `account_id`, `service_account_email`, `key_id` e `private_key`.
+3. Configure esses dados em `/dashboard/settings#voximplant`.
+4. O sistema vai tentar provisionar automaticamente:
+   - application
+   - scenario
+   - rule
+5. Verifique cada Caller ID em `/assets/caller-ids` antes de criar campanhas Voximplant.
+
+Observacoes da Voximplant:
+
+- `BASE_URL` precisa ser acessivel publicamente para o callback `/api/voximplant/callback`.
+- O fluxo implementado usa scenario JavaScript na Voximplant para:
+  - originar a chamada PSTN
+  - tocar audio do R2
+  - opcionalmente pedir `Press 1`
+  - transferir para o numero configurado pelo usuario
 
 ## Scripts de manutencao legado
 

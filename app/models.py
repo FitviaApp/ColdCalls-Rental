@@ -48,6 +48,14 @@ class VoiceProvider(str, enum.Enum):
     TWILIO = "twilio"
     TELNYX = "telnyx"
     VONAGE = "vonage"
+    VOXIMPLANT = "voximplant"
+
+
+class VoxCallerIDVerificationStatus(str, enum.Enum):
+    NOT_STARTED = "not_started"
+    PENDING = "pending"
+    VERIFIED = "verified"
+    FAILED = "failed"
 
 
 class User(Base):
@@ -89,6 +97,12 @@ class User(Base):
         cascade="all, delete-orphan",
         uselist=False
     )
+    voximplant_credentials = relationship(
+        "UserVoximplantCredential",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        uselist=False
+    )
 
     def __repr__(self):
         return f"<User {self.email}>"
@@ -103,6 +117,17 @@ class CallerID(Base):
     country_code = Column(String(5), nullable=False, index=True)
     description = Column(String(255), default="")
     is_active = Column(Boolean, default=True)
+    vox_callerid_id = Column(Integer, nullable=True, index=True)
+    vox_verification_status = Column(
+        Enum(
+            VoxCallerIDVerificationStatus,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        default=VoxCallerIDVerificationStatus.NOT_STARTED,
+        nullable=False,
+        index=True,
+    )
+    vox_last_verification_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     # Relationships
@@ -268,6 +293,31 @@ class UserVonageCredential(Base):
 
     def __repr__(self):
         return f"<UserVonageCredential user_id={self.user_id}>"
+
+
+class UserVoximplantCredential(Base):
+    __tablename__ = "user_voximplant_credentials"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, unique=True, index=True)
+    account_id_encrypted = Column(Text, nullable=False)
+    application_id_encrypted = Column(Text, nullable=True)
+    service_account_email_encrypted = Column(Text, nullable=False)
+    key_id_encrypted = Column(Text, nullable=False)
+    private_key_encrypted = Column(Text, nullable=False)
+    vox_app_id = Column(Integer, nullable=True)
+    vox_rule_id = Column(Integer, nullable=True)
+    vox_scenario_id = Column(Integer, nullable=True)
+    provision_status = Column(String(30), nullable=False, default="pending", index=True)
+    provision_error = Column(Text, nullable=True)
+    provisioned_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    user = relationship("User", back_populates="voximplant_credentials")
+
+    def __repr__(self):
+        return f"<UserVoximplantCredential user_id={self.user_id}>"
 
 
 class RentalPlan(Base):

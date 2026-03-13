@@ -105,3 +105,17 @@ def _apply_schema_patches():
                     "ADD COLUMN max_concurrent_calls INTEGER NOT NULL DEFAULT 1"
                 )
             )
+
+        if _column_exists("caller_ids", "vox_callerid_id") is False:
+            conn.execute(text("ALTER TABLE caller_ids ADD COLUMN vox_callerid_id INTEGER"))
+
+        if _column_exists("caller_ids", "vox_verification_status") is False:
+            conn.execute(
+                text(
+                    "ALTER TABLE caller_ids "
+                    "ADD COLUMN vox_verification_status VARCHAR(20) NOT NULL DEFAULT 'not_started'"
+                )
+            )
+
+        if _column_exists("caller_ids", "vox_last_verification_at") is False:
+            conn.execute(text("ALTER TABLE caller_ids ADD COLUMN vox_last_verification_at DATETIME"))

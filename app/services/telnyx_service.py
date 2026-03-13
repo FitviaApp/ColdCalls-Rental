@@ -34,9 +34,10 @@ class TelnyxService:
         transfer_number: str,
         campaign_id: Optional[int] = None,
         press_1_to_talk_with_agent: bool = False,
-        timeout: int = 60
+        timeout: int = 60,
+        metadata: Optional[dict] = None,
     ) -> dict:
-        del audio_url, transfer_number, timeout
+        del audio_url, transfer_number, timeout, metadata
         if press_1_to_talk_with_agent:
             raise ValueError("Press 1 flow is currently supported only for Twilio campaigns")
         if campaign_id is None:
@@ -91,7 +92,9 @@ class TelnyxService:
         max_wait: int = 70,
         poll_interval: int = 2,
         status_callback: Optional[Callable[[str, int, Optional[str]], None]] = None,
+        metadata: Optional[dict] = None,
     ) -> dict:
+        del metadata
         elapsed = 0
         final_statuses = {"completed", "failed", "busy", "no-answer", "canceled", "cancelled"}
         endpoint = f"{self.base_url}/Accounts/{self.account_sid}/Calls/{call_sid}"

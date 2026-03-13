@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Optional, List
 from pydantic import BaseModel, EmailStr, Field
 
-from app.models import CampaignStatus, CallStatus, VoiceProvider
+from app.models import CampaignStatus, CallStatus, VoiceProvider, VoxCallerIDVerificationStatus
 
 
 # ============== User Schemas ==============
@@ -69,6 +69,9 @@ class CallerIDUpdate(BaseModel):
 class CallerIDResponse(CallerIDBase):
     id: int
     is_active: bool
+    vox_callerid_id: Optional[int] = None
+    vox_verification_status: VoxCallerIDVerificationStatus
+    vox_last_verification_at: Optional[datetime] = None
     created_at: datetime
 
     model_config = {"from_attributes": True}

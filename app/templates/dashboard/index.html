@@ -76,7 +76,34 @@
                             {% else %}
                             <dd class="text-sm font-medium text-gray-600">
                                 Twilio not configured.
-                                <a href="/dashboard/settings#twilio" class="text-indigo-600 hover:text-indigo-500">Configure now</a>
+                                <a href="/dashboard/settings#twilio" class="text-indigo-600 hover:text-indigo-500">Configure Twilio</a>
+                            </dd>
+                            {% endif %}
+                        </dl>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="mb-6">
+        <div class="bg-white overflow-hidden shadow rounded-lg">
+            <div class="p-5">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0">
+                        <svg class="h-6 w-6 text-sky-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-4l-4 4v-4z"/>
+                        </svg>
+                    </div>
+                    <div class="ml-5 w-0 flex-1">
+                        <dl>
+                            <dt class="text-sm font-medium text-gray-500 truncate">Voximplant</dt>
+                            {% if stats.voximplant_configured %}
+                            <dd class="text-lg font-semibold text-gray-900">Configured</dd>
+                            {% else %}
+                            <dd class="text-sm font-medium text-gray-600">
+                                Voximplant not configured.
+                                <a href="/dashboard/settings#voximplant" class="text-indigo-600 hover:text-indigo-500">Configure now</a>
                             </dd>
                             {% endif %}
                         </dl>

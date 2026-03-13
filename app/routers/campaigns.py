@@ -15,12 +15,13 @@ from app.database import get_db
 from app.dependencies import require_active_rental
 from app.models import (
     User, Campaign, CampaignNumber, CallerID, Country, Audio,
-    CampaignStatus, CallStatus, VoiceProvider
+    CampaignStatus, CallStatus, VoiceProvider, VoxCallerIDVerificationStatus
 )
 from app.services.user_voice_provider_service import (
     get_user_voice_provider_status,
     has_any_user_voice_provider_credentials,
     has_user_voice_provider_credentials,
+    provider_supports_press_1,
     supported_voice_providers,
 )
 
@@ -103,7 +104,7 @@ async def create_campaign_page(
     if not user.transfer_number:
         setup_error = "Please configure your Transfer Number (3CX) in Settings before creating a campaign."
     elif not has_any_user_voice_provider_credentials(db, user.id):
-        setup_error = "Please configure at least one voice provider (Twilio, Telnyx, or Vonage) in Settings."
+        setup_error = "Please configure at least one voice provider (Twilio, Telnyx, Vonage, or Voximplant) in Settings."
 
     return templates.TemplateResponse(
         "campaigns/create.html",
@@ -152,7 +153,7 @@ async def create_campaign(
                 "request": request,
                 "user": user,
                 **deps,
-                "error": "Please configure at least one voice provider (Twilio, Telnyx, or Vonage) in Settings."
+                "error": "Please configure at least one voice provider (Twilio, Telnyx, Vonage, or Voximplant) in Settings."
             },
             status_code=400
         )
@@ -180,14 +181,14 @@ async def create_campaign(
             },
             status_code=400
         )
-    if press_1_to_talk_with_agent and voice_provider != VoiceProvider.TWILIO.value:
+    if press_1_to_talk_with_agent and not provider_supports_press_1(voice_provider):
         return templates.TemplateResponse(
             "campaigns/create.html",
             {
                 "request": request,
                 "user": user,
                 **deps,
-                "error": "Press 1 flow is currently available only with Twilio."
+                "error": "Press 1 flow is not available for the selected provider."
             },
             status_code=400
         )
@@ -259,6 +260,20 @@ async def create_campaign(
 
     if not caller_id or not audio:
         raise HTTPException(status_code=400, detail="Invalid caller ID or audio selection")
+    if (
+        voice_provider == VoiceProvider.VOXIMPLANT.value
+        and caller_id.vox_verification_status != VoxCallerIDVerificationStatus.VERIFIED
+    ):
+        return templates.TemplateResponse(
+            "campaigns/create.html",
+            {
+                "request": request,
+                "user": user,
+                **deps,
+                "error": "Selected Caller ID is not verified in Voximplant yet."
+            },
+            status_code=400,
+        )
 
     country_code = caller_id.country_code.strip().upper()[:5]
     country = db.query(Country).filter(
@@ -381,10 +396,18 @@ async def start_campaign(
             status_code=400,
             detail=f"Please configure {provider.title()} credentials in Settings first"
         )
-    if campaign.press_1_to_talk_with_agent and provider != VoiceProvider.TWILIO.value:
+    if campaign.press_1_to_talk_with_agent and not provider_supports_press_1(provider):
         raise HTTPException(
             status_code=400,
-            detail="Press 1 flow is currently available only with Twilio campaigns"
+            detail="Press 1 flow is not available for the selected provider"
+        )
+    if (
+        provider == VoiceProvider.VOXIMPLANT.value
+        and campaign.caller_id.vox_verification_status != VoxCallerIDVerificationStatus.VERIFIED
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Selected Caller ID is not verified in Voximplant yet"
         )
 
     if campaign.caller_id.user_id != user.id or campaign.audio.user_id != user.id:

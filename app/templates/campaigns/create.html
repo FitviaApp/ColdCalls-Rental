@@ -82,9 +82,9 @@
                     <label class="flex items-start space-x-3 cursor-pointer">
                         <input type="checkbox" name="press_1_to_talk_with_agent" id="press_1_to_talk_with_agent"
                             class="mt-1 h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
-                        <span>
-                            <span class="block text-sm font-medium text-gray-700">Enable "Press 1 to talk with an agent"</span>
-                            <span class="block text-xs text-gray-500">If enabled, the call is only transferred when the callee presses 1 (Twilio only).</span>
+                            <span>
+                                <span class="block text-sm font-medium text-gray-700">Enable "Press 1 to talk with an agent"</span>
+                            <span class="block text-xs text-gray-500">If enabled, the call is only transferred when the callee presses 1 (supported by Twilio and Voximplant).</span>
                         </span>
                     </label>
                 </div>
@@ -166,9 +166,9 @@
     const press1 = document.getElementById('press_1_to_talk_with_agent');
 
     function syncPress1Availability() {
-        const isTwilio = providerSelect.value === 'twilio';
-        press1.disabled = !isTwilio;
-        if (!isTwilio) {
+        const supportsPress1 = ['twilio', 'voximplant'].includes(providerSelect.value);
+        press1.disabled = !supportsPress1;
+        if (!supportsPress1) {
             press1.checked = false;
         }
     }
