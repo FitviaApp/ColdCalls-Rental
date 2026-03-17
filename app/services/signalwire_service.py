@@ -1,5 +1,5 @@
 """
-SignalWire Voice service (Compatibility API via Twilio-compatible client)
+SignalWire Voice service (Compatibility API via direct HTTP requests)
 """
 from __future__ import annotations
 
@@ -7,12 +7,9 @@ import logging
 import time
 from typing import Callable, Optional
 
-from app.config import get_settings
+import httpx
 
-try:
-    from signalwire.rest import Client
-except ImportError:  # pragma: no cover - handled at runtime if dependency missing
-    Client = None
+from app.config import get_settings
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -24,16 +21,12 @@ class SignalWireService:
     def __init__(self, project_id: str, api_token: str, space_url: str):
         if not project_id or not api_token or not space_url:
             raise ValueError("SignalWire credentials not configured")
-        if Client is None:
-            raise ValueError("SignalWire SDK not installed. Please install the 'signalwire' package.")
 
         self.project_id = project_id.strip()
         self.api_token = api_token.strip()
         self.space_url = self._normalize_space_url(space_url)
-        self.client = Client(
-            self.project_id,
-            self.api_token,
-            signalwire_space_url=self.space_url,
+        self.base_url = (
+            f"https://{self.space_url}/api/laml/2010-04-01/Accounts/{self.project_id}"
         )
 
     def _normalize_space_url(self, space_url: str) -> str:
@@ -58,12 +51,16 @@ class SignalWireService:
         del metadata
         logger.info(f"Initiating SignalWire call to {to_number} from {from_number}")
 
-        call_kwargs = {}
+        payload: dict[str, str | int] = {
+            "To": to_number,
+            "From": from_number,
+            "Timeout": int(timeout),
+        }
         if press_1_to_talk_with_agent:
             if campaign_id is None:
                 raise ValueError("campaign_id is required when press_1_to_talk_with_agent is enabled")
             base_url = settings.BASE_URL.rstrip("/")
-            call_kwargs["url"] = f"{base_url}/api/twiml/{campaign_id}"
+            payload["Url"] = f"{base_url}/api/twiml/{campaign_id}"
         else:
             twiml = f"""<Response>
             <Play>{audio_url}</Play>
@@ -71,31 +68,37 @@ class SignalWireService:
                 <Number>{transfer_number}</Number>
             </Dial>
         </Response>"""
-            call_kwargs["twiml"] = twiml
+            payload["Twiml"] = twiml
 
-        machine_detection_kwargs = {}
+        machine_detection_payload: dict[str, str | int] = {}
         if not press_1_to_talk_with_agent:
-            machine_detection_kwargs = {
-                "machine_detection": "Enable",
-                "machine_detection_timeout": 5,
-                "machine_detection_speech_threshold": 2400,
-                "machine_detection_speech_end_threshold": 1200,
-                "machine_detection_silence_timeout": 5000,
+            machine_detection_payload = {
+                "MachineDetection": "Enable",
+                "MachineDetectionTimeout": 5,
+                "MachineDetectionSpeechThreshold": 2400,
+                "MachineDetectionSpeechEndThreshold": 1200,
+                "MachineDetectionSilenceTimeout": 5000,
             }
 
         try:
-            call = self.client.calls.create(
-                to=to_number,
-                from_=from_number,
-                timeout=timeout,
-                **call_kwargs,
-                **machine_detection_kwargs,
-            )
+            with httpx.Client(timeout=30.0, auth=(self.project_id, self.api_token)) as client:
+                response = client.post(
+                    f"{self.base_url}/Calls.json",
+                    data={**payload, **machine_detection_payload},
+                    headers={"Accept": "application/json"},
+                )
+            response.raise_for_status()
+            data = response.json()
         except Exception as exc:
             raise RuntimeError(f"SignalWire create call failed: {exc}") from exc
 
-        logger.info(f"SignalWire call initiated: SID={call.sid}, status={call.status}")
-        return {"call_sid": call.sid, "status": call.status}
+        call_sid = data.get("sid")
+        if not call_sid:
+            raise RuntimeError(f"SignalWire create call returned no call SID: {data}")
+        status = data.get("status") or "queued"
+
+        logger.info(f"SignalWire call initiated: SID={call_sid}, status={status}")
+        return {"call_sid": call_sid, "status": status}
 
     def poll_call_status(
         self,
@@ -112,16 +115,24 @@ class SignalWireService:
 
         while elapsed < max_wait:
             try:
-                call = self.client.calls(call_sid).fetch()
-                current_status = call.status
+                with httpx.Client(timeout=30.0, auth=(self.project_id, self.api_token)) as client:
+                    response = client.get(
+                        f"{self.base_url}/Calls/{call_sid}.json",
+                        headers={"Accept": "application/json"},
+                    )
+                response.raise_for_status()
+                data = response.json()
+                current_status = data.get("status")
+                duration = int(data.get("duration") or 0)
+                answered_by = data.get("answered_by") or data.get("AnsweredBy")
 
                 if current_status != last_status:
                     if status_callback:
                         try:
                             status_callback(
                                 current_status,
-                                int(call.duration) if call.duration else 0,
-                                getattr(call, "answered_by", None),
+                                duration,
+                                answered_by,
                             )
                         except Exception as callback_error:
                             logger.warning(
@@ -132,8 +143,8 @@ class SignalWireService:
                 if current_status in final_statuses:
                     return {
                         "status": current_status,
-                        "duration": int(call.duration) if call.duration else 0,
-                        "answered_by": getattr(call, "answered_by", None),
+                        "duration": duration,
+                        "answered_by": answered_by,
                     }
 
                 time.sleep(poll_interval)
