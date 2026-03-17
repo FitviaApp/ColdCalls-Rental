@@ -34,6 +34,15 @@ def _build_transfer_block(campaign: Campaign, transfer_number: str) -> str:
 '''
 
 
+def _build_press_1_gather_block(base_url: str, campaign_id: int) -> str:
+    return (
+        f'<Gather input="dtmf" numDigits="1" timeout="8" '
+        f'action="{base_url}/api/twiml/{campaign_id}/gather" method="POST" actionOnEmptyResult="true">'
+        "<Say voice=\"alice\">Press 1 to talk with an agent.</Say>"
+        "</Gather>"
+    )
+
+
 def _map_voximplant_callback_status(status: str) -> CallStatus:
     normalized = str(status or "").strip().lower()
     mapping = {
@@ -102,30 +111,43 @@ async def twiml_handler(
         # Machine/voicemail/fax detected - hang up
         logger.info(f"Campaign {campaign_id}: Machine detected ({answered_by}), hanging up")
         return _hangup_response()
+    audio_url = campaign.audio.r2_url if campaign.audio else None
+
     if campaign.press_1_to_talk_with_agent:
         base_url = settings.BASE_URL.rstrip("/")
         logger.info(
             f"Campaign {campaign_id}: Human/unknown ({answered_by}), "
-            "playing audio and waiting for DTMF 1"
+            "waiting for DTMF 1 before transfer"
         )
-        twiml = f'''<?xml version="1.0" encoding="UTF-8"?>
+        if audio_url:
+            twiml = f'''<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Play>{campaign.audio.r2_url}</Play>
-    <Gather input="dtmf" numDigits="1" timeout="8" action="{base_url}/api/twiml/{campaign_id}/gather" method="POST" actionOnEmptyResult="true">
-        <Say voice="alice">Press 1 to talk with an agent.</Say>
-    </Gather>
+    <Play>{audio_url}</Play>
+    {_build_press_1_gather_block(base_url, campaign_id)}
+    <Hangup/>
+</Response>'''
+        else:
+            twiml = f'''<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    {_build_press_1_gather_block(base_url, campaign_id)}
     <Hangup/>
 </Response>'''
     else:
         # Human answered (or unknown - treat as human to not miss calls)
-        # Play the campaign audio, then transfer to 3CX
+        # Play campaign audio (when present), then transfer to 3CX.
         logger.info(
             f"Campaign {campaign_id}: Human/unknown ({answered_by}), "
-            f"playing audio and transferring to {transfer_number}"
+            f"transferring to {transfer_number}"
         )
-        twiml = f'''<?xml version="1.0" encoding="UTF-8"?>
+        if audio_url:
+            twiml = f'''<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Play>{campaign.audio.r2_url}</Play>
+    <Play>{audio_url}</Play>
+    {_build_transfer_block(campaign, transfer_number)}
+</Response>'''
+        else:
+            twiml = f'''<?xml version="1.0" encoding="UTF-8"?>
+<Response>
     {_build_transfer_block(campaign, transfer_number)}
 </Response>'''
 
@@ -183,10 +205,19 @@ async def telnyx_texml_handler(
     if not transfer_number:
         return _hangup_response()
 
-    # TeXML is TwiML-compatible for these basic verbs.
-    texml = f'''<?xml version="1.0" encoding="UTF-8"?>
+    audio_url = campaign.audio.r2_url if campaign.audio else None
+    if audio_url:
+        # TeXML is TwiML-compatible for these basic verbs.
+        texml = f'''<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Play>{campaign.audio.r2_url}</Play>
+    <Play>{audio_url}</Play>
+    <Dial callerId="{campaign.caller_id.phone_number}" timeout="30">
+        <Number>{transfer_number}</Number>
+    </Dial>
+</Response>'''
+    else:
+        texml = f'''<?xml version="1.0" encoding="UTF-8"?>
+<Response>
     <Dial callerId="{campaign.caller_id.phone_number}" timeout="30">
         <Number>{transfer_number}</Number>
     </Dial>

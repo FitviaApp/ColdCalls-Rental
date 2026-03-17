@@ -53,7 +53,7 @@ class VonageService:
         self,
         to_number: str,
         from_number: str,
-        audio_url: str,
+        audio_url: Optional[str],
         transfer_number: str,
         campaign_id: Optional[int] = None,
         press_1_to_talk_with_agent: bool = False,
@@ -64,18 +64,22 @@ class VonageService:
         if press_1_to_talk_with_agent:
             raise ValueError("Press 1 flow is currently supported only for Twilio, SignalWire, and Voximplant campaigns")
 
-        ncco = [
-            {
-                "action": "stream",
-                "streamUrl": [audio_url],
-            },
+        ncco = []
+        if audio_url:
+            ncco.append(
+                {
+                    "action": "stream",
+                    "streamUrl": [audio_url],
+                }
+            )
+        ncco.append(
             {
                 "action": "connect",
                 "from": from_number,
                 "endpoint": [{"type": "phone", "number": transfer_number}],
                 "timeout": 30,
-            },
-        ]
+            }
+        )
 
         payload = {
             "to": [{"type": "phone", "number": to_number}],

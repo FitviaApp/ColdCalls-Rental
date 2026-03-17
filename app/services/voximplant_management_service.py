@@ -192,7 +192,15 @@ VoxEngine.addEventListener(AppEvents.Started, function() {{
 
   outboundCall.addEventListener(CallEvents.Connected, function() {{
     postStatus("ringing", {{}});
-    outboundCall.startPlayback(data.audio_url);
+    if (data.audio_url) {{
+      outboundCall.startPlayback(data.audio_url);
+      return;
+    }}
+    if (data.press_1_to_talk_with_agent) {{
+      promptForAgent();
+      return;
+    }}
+    connectTransfer();
   }});
 
   outboundCall.addEventListener(CallEvents.PlaybackFinished, function() {{

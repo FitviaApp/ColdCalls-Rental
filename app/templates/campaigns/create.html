@@ -15,15 +15,10 @@
     </div>
     {% endif %}
 
-    {% if caller_ids|length == 0 or audios|length == 0 %}
+    {% if caller_ids|length == 0 %}
     <div class="mb-6 bg-yellow-50 border border-yellow-200 text-yellow-800 px-4 py-3 rounded">
-        You need at least one active Caller ID and one active Audio before creating campaigns.
-        <a href="/assets/caller-ids" class="underline font-medium">Manage Caller IDs</a>
-        and
-        <a href="/assets/audios" class="underline font-medium">Manage Audios</a>.
-        {% if audios|length == 0 %}
-        <a href="/assets/audios/upload" class="underline font-medium ml-1">Upload Audio now</a>.
-        {% endif %}
+        You need at least one active Caller ID before creating campaigns.
+        <a href="/assets/caller-ids" class="underline font-medium">Manage Caller IDs</a>.
     </div>
     {% endif %}
 
@@ -69,13 +64,14 @@
 
                 <div>
                     <label for="audio_id" class="block text-sm font-medium text-gray-700">Audio</label>
-                    <select name="audio_id" id="audio_id" required
+                    <select name="audio_id" id="audio_id"
                         class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border px-3 py-2">
-                        <option value="">Select an audio</option>
+                        <option value="">No audio (direct transfer)</option>
                         {% for audio in audios %}
                         <option value="{{ audio.id }}">{{ audio.name }} {% if audio.duration_seconds %}({{ audio.duration_seconds }}s){% endif %}</option>
                         {% endfor %}
                     </select>
+                    <p class="mt-1 text-xs text-gray-500">When no audio is selected, the call is transferred directly. If "Press 1" is enabled, a short TTS prompt is used before transfer.</p>
                 </div>
 
                 <div class="border rounded-md p-3 bg-gray-50">

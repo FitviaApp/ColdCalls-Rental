@@ -140,7 +140,7 @@ class CampaignBase(BaseModel):
 class CampaignCreate(CampaignBase):
     caller_id_id: int
     country_id: int
-    audio_id: int
+    audio_id: Optional[int] = None
     phone_numbers: List[str]  # List of phone numbers to call
 
 
@@ -153,7 +153,7 @@ class CampaignResponse(CampaignBase):
     user_id: int
     caller_id_id: int
     country_id: int
-    audio_id: int
+    audio_id: Optional[int]
     press_1_to_talk_with_agent: bool
     voice_provider: VoiceProvider
     max_concurrent_calls: int
@@ -174,7 +174,7 @@ class CampaignResponse(CampaignBase):
 class CampaignDetail(CampaignResponse):
     caller_id: CallerIDResponse
     country: CountryResponse
-    audio: AudioResponse
+    audio: Optional[AudioResponse]
 
 
 # ============== CampaignNumber Schemas ==============

@@ -189,7 +189,7 @@ class Campaign(Base):
     name = Column(String(255), nullable=False)
     caller_id_id = Column(Integer, ForeignKey("caller_ids.id"), nullable=False)
     country_id = Column(Integer, ForeignKey("countries.id"), nullable=False)
-    audio_id = Column(Integer, ForeignKey("audios.id"), nullable=False)
+    audio_id = Column(Integer, ForeignKey("audios.id"), nullable=True)
     status = Column(Enum(CampaignStatus), default=CampaignStatus.DRAFT, index=True)
     press_1_to_talk_with_agent = Column(Boolean, default=False, nullable=False)
     voice_provider = Column(

@@ -122,7 +122,7 @@ async def create_campaign(
     request: Request,
     name: str = Form(...),
     caller_id_id: int = Form(...),
-    audio_id: int = Form(...),
+    audio_id: Optional[str] = Form(default=None),
     voice_provider: str = Form(default=VoiceProvider.TWILIO.value),
     press_1_to_talk_with_agent: bool = Form(False),
     max_concurrent_calls: int = Form(default=1),
@@ -252,14 +252,52 @@ async def create_campaign(
         CallerID.is_active == True,
         CallerID.user_id == user.id
     ).first()
-    audio = db.query(Audio).filter(
-        Audio.id == audio_id,
-        Audio.is_active == True,
-        Audio.user_id == user.id
-    ).first()
+    selected_audio_id: Optional[int] = None
+    if audio_id is not None and str(audio_id).strip():
+        try:
+            selected_audio_id = int(str(audio_id).strip())
+        except ValueError:
+            return templates.TemplateResponse(
+                "campaigns/create.html",
+                {
+                    "request": request,
+                    "user": user,
+                    **deps,
+                    "error": "Invalid audio selection."
+                },
+                status_code=400
+            )
 
-    if not caller_id or not audio:
-        raise HTTPException(status_code=400, detail="Invalid caller ID or audio selection")
+    audio = None
+    if selected_audio_id is not None:
+        audio = db.query(Audio).filter(
+            Audio.id == selected_audio_id,
+            Audio.is_active == True,
+            Audio.user_id == user.id
+        ).first()
+
+    if not caller_id:
+        return templates.TemplateResponse(
+            "campaigns/create.html",
+            {
+                "request": request,
+                "user": user,
+                **deps,
+                "error": "Invalid caller ID selection."
+            },
+            status_code=400
+        )
+    if selected_audio_id is not None and not audio:
+        return templates.TemplateResponse(
+            "campaigns/create.html",
+            {
+                "request": request,
+                "user": user,
+                **deps,
+                "error": "Invalid audio selection."
+            },
+            status_code=400
+        )
     if (
         voice_provider == VoiceProvider.VOXIMPLANT.value
         and caller_id.vox_verification_status != VoxCallerIDVerificationStatus.VERIFIED
@@ -295,7 +333,7 @@ async def create_campaign(
         name=name,
         caller_id_id=caller_id_id,
         country_id=country.id,
-        audio_id=audio_id,
+        audio_id=audio.id if audio else None,
         voice_provider=voice_provider,
         press_1_to_talk_with_agent=press_1_to_talk_with_agent,
         max_concurrent_calls=max_concurrent_calls,
@@ -410,7 +448,17 @@ async def start_campaign(
             detail="Selected Caller ID is not verified in Voximplant yet"
         )
 
-    if campaign.caller_id.user_id != user.id or campaign.audio.user_id != user.id:
+    if campaign.caller_id.user_id != user.id:
+        raise HTTPException(
+            status_code=400,
+            detail="Campaign resources ownership mismatch. Please create a new campaign with your own assets."
+        )
+    if campaign.audio_id is not None and campaign.audio is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Campaign audio not found. Please update the campaign audio."
+        )
+    if campaign.audio and campaign.audio.user_id != user.id:
         raise HTTPException(
             status_code=400,
             detail="Campaign resources ownership mismatch. Please create a new campaign with your own assets."

@@ -32,7 +32,7 @@ class TwilioService:
         self,
         to_number: str,
         from_number: str,
-        audio_url: str,
+        audio_url: Optional[str],
         transfer_number: str,
         campaign_id: Optional[int] = None,
         press_1_to_talk_with_agent: bool = False,
@@ -45,7 +45,7 @@ class TwilioService:
         Args:
             to_number: Destination phone number (E.164 format)
             from_number: Caller ID (E.164 format)
-            audio_url: URL of the audio file to play
+            audio_url: URL of the audio file to play (optional)
             transfer_number: Number to transfer to (3CX)
             campaign_id: Campaign ID for dynamic TwiML callback endpoint
             press_1_to_talk_with_agent: If true, require DTMF "1" before transfer
@@ -66,8 +66,15 @@ class TwilioService:
             base_url = settings.BASE_URL.rstrip("/")
             call_kwargs["url"] = f"{base_url}/api/twiml/{campaign_id}"
         else:
-            twiml = f'''<Response>
+            if audio_url:
+                twiml = f'''<Response>
             <Play>{audio_url}</Play>
+            <Dial callerId="{from_number}" timeout="30">
+                <Number>{transfer_number}</Number>
+            </Dial>
+        </Response>'''
+            else:
+                twiml = f'''<Response>
             <Dial callerId="{from_number}" timeout="30">
                 <Number>{transfer_number}</Number>
             </Dial>

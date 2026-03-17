@@ -104,7 +104,17 @@ class CampaignWorker:
             return
 
         # Enforce tenant ownership for resources.
-        if campaign.caller_id.user_id != user.id or campaign.audio.user_id != user.id:
+        if campaign.caller_id.user_id != user.id:
+            logger.warning(f"Campaign {campaign.id}: Resource ownership mismatch, pausing")
+            campaign.status = CampaignStatus.PAUSED
+            self.db.commit()
+            return
+        if campaign.audio_id is not None and campaign.audio is None:
+            logger.warning(f"Campaign {campaign.id}: Audio resource not found, pausing")
+            campaign.status = CampaignStatus.PAUSED
+            self.db.commit()
+            return
+        if campaign.audio and campaign.audio.user_id != user.id:
             logger.warning(f"Campaign {campaign.id}: Resource ownership mismatch, pausing")
             campaign.status = CampaignStatus.PAUSED
             self.db.commit()
@@ -244,7 +254,17 @@ class CampaignWorker:
                 db.commit()
                 return
 
-            if campaign.caller_id.user_id != user.id or campaign.audio.user_id != user.id:
+            if campaign.caller_id.user_id != user.id:
+                logger.warning(f"Campaign {campaign.id}: resource ownership mismatch while processing number {number.id}")
+                campaign.status = CampaignStatus.PAUSED
+                db.commit()
+                return
+            if campaign.audio_id is not None and campaign.audio is None:
+                logger.warning(f"Campaign {campaign.id}: audio resource not found while processing number {number.id}")
+                campaign.status = CampaignStatus.PAUSED
+                db.commit()
+                return
+            if campaign.audio and campaign.audio.user_id != user.id:
                 logger.warning(f"Campaign {campaign.id}: resource ownership mismatch while processing number {number.id}")
                 campaign.status = CampaignStatus.PAUSED
                 db.commit()
@@ -304,7 +324,7 @@ class CampaignWorker:
             call_result = voice_service.make_call(
                 to_number=phone_number,
                 from_number=caller_id.phone_number,
-                audio_url=audio.r2_url,
+                audio_url=audio.r2_url if audio else None,
                 transfer_number=user.transfer_number,
                 campaign_id=campaign.id,
                 press_1_to_talk_with_agent=campaign.press_1_to_talk_with_agent,

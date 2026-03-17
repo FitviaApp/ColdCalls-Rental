@@ -30,7 +30,7 @@ class TelnyxService:
         self,
         to_number: str,
         from_number: str,
-        audio_url: str,
+        audio_url: Optional[str],
         transfer_number: str,
         campaign_id: Optional[int] = None,
         press_1_to_talk_with_agent: bool = False,

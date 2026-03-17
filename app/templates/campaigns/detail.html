@@ -129,7 +129,13 @@
                     </div>
                     <div>
                         <dt class="text-sm font-medium text-gray-500">Audio</dt>
-                        <dd class="text-sm text-gray-900">{{ campaign.audio.name }}</dd>
+                        <dd class="text-sm text-gray-900">
+                            {% if campaign.audio %}
+                            {{ campaign.audio.name }}
+                            {% else %}
+                            No audio (direct transfer)
+                            {% endif %}
+                        </dd>
                     </div>
                     <div>
                         <dt class="text-sm font-medium text-gray-500">Voice Provider</dt>
