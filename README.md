@@ -4,7 +4,7 @@ Plataforma web para gerenciamento de campanhas de cold calls multiusuario com:
 
 - FastAPI + Jinja2
 - SQLAlchemy + SQLite
-- Twilio, Telnyx, Vonage e Voximplant
+- Twilio, SignalWire, Telnyx, Vonage e Voximplant
 - Cloudflare R2 (audios)
 - Cobranca de aluguel via USDT (verificacao on-chain)
 
@@ -77,7 +77,7 @@ Crie um arquivo `.env` na raiz do projeto.
 APP_NAME=ColdCalls Platform
 SECRET_KEY=change-me-in-production-min-32-chars
 DEBUG=false
-# URL publica para callbacks Twilio, Telnyx e Voximplant
+# URL publica para callbacks Twilio, SignalWire, Telnyx e Voximplant
 BASE_URL=http://localhost:8000
 
 # Banco
@@ -163,7 +163,7 @@ O worker verifica campanhas `running` a cada 10 segundos.
   - `/api/data/countries`
   - `/api/data/caller-ids`
   - `/api/data/audios`
-  - `/api/twiml/{campaign_id}`
+  - `/api/twiml/{campaign_id}` (Twilio/SignalWire)
   - `/api/telnyx/texml/{campaign_id}`
   - `/api/voximplant/callback`
 

@@ -46,6 +46,7 @@ class RentalStatus(str, enum.Enum):
 
 class VoiceProvider(str, enum.Enum):
     TWILIO = "twilio"
+    SIGNALWIRE = "signalwire"
     TELNYX = "telnyx"
     VONAGE = "vonage"
     VOXIMPLANT = "voximplant"
@@ -81,6 +82,12 @@ class User(Base):
     audios = relationship("Audio", back_populates="user", cascade="all, delete-orphan")
     twilio_credentials = relationship(
         "UserTwilioCredential",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        uselist=False
+    )
+    signalwire_credentials = relationship(
+        "UserSignalWireCredential",
         back_populates="user",
         cascade="all, delete-orphan",
         uselist=False
@@ -261,6 +268,23 @@ class UserTwilioCredential(Base):
 
     def __repr__(self):
         return f"<UserTwilioCredential user_id={self.user_id}>"
+
+
+class UserSignalWireCredential(Base):
+    __tablename__ = "user_signalwire_credentials"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, unique=True, index=True)
+    project_id_encrypted = Column(Text, nullable=False)
+    api_token_encrypted = Column(Text, nullable=False)
+    space_url_encrypted = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    user = relationship("User", back_populates="signalwire_credentials")
+
+    def __repr__(self):
+        return f"<UserSignalWireCredential user_id={self.user_id}>"
 
 
 class UserTelnyxCredential(Base):

@@ -1,5 +1,5 @@
 """
-API Router - JSON endpoints for AJAX calls and TwiML
+API Router - JSON endpoints for AJAX calls and cXML/TwiML
 """
 import logging
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -20,7 +20,7 @@ settings = get_settings()
 router = APIRouter(prefix="/api", tags=["api"])
 
 
-# ============== TwiML Endpoint ==============
+# ============== cXML/TwiML Endpoint ==============
 def _hangup_response() -> Response:
     twiml = '<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>'
     return Response(content=twiml, media_type="application/xml")
@@ -58,13 +58,13 @@ async def twiml_handler(
     db: Session = Depends(get_db)
 ):
     """
-    Dynamic TwiML endpoint for handling calls with machine detection.
+    Dynamic cXML/TwiML endpoint for handling calls with machine detection.
 
-    Twilio calls this URL when the call is answered.
+    Twilio/SignalWire call this URL when the call is answered.
     - If human: Play audio, then transfer to 3CX number
     - If machine: Hang up
 
-    Twilio sends AnsweredBy parameter:
+    Twilio/SignalWire sends AnsweredBy parameter:
     - human
     - machine_start, machine_end_beep, machine_end_silence, machine_end_other
     - fax
@@ -85,7 +85,7 @@ async def twiml_handler(
 
     if not has_active_rental(db, campaign.user_id):
         return _hangup_response()
-    if campaign.voice_provider != VoiceProvider.TWILIO:
+    if campaign.voice_provider not in {VoiceProvider.TWILIO, VoiceProvider.SIGNALWIRE}:
         return _hangup_response()
 
     # Get transfer number from user settings
@@ -95,7 +95,7 @@ async def twiml_handler(
         return _hangup_response()
 
     # Log the request for debugging
-    logger.info(f"TwiML request for campaign {campaign_id}: AnsweredBy={answered_by}")
+    logger.info(f"cXML/TwiML request for campaign {campaign_id}: AnsweredBy={answered_by}")
 
     # Check if answered by machine (any machine_* value)
     if answered_by.startswith("machine") or answered_by == "fax":
@@ -146,7 +146,7 @@ async def twiml_gather_handler(
         return _hangup_response()
     if not has_active_rental(db, campaign.user_id):
         return _hangup_response()
-    if campaign.voice_provider != VoiceProvider.TWILIO:
+    if campaign.voice_provider not in {VoiceProvider.TWILIO, VoiceProvider.SIGNALWIRE}:
         return _hangup_response()
 
     transfer_number = campaign.user.transfer_number

@@ -94,7 +94,7 @@ async def require_transfer_configured(
     if not has_any_user_voice_provider_credentials(db, user.id):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Please configure at least one voice provider (Twilio, Telnyx, Vonage, or Voximplant) in Settings first"
+            detail="Please configure at least one voice provider (Twilio, SignalWire, Telnyx, Vonage, or Voximplant) in Settings first"
         )
     return user
 

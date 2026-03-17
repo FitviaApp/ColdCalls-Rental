@@ -19,9 +19,11 @@ from app.models import (
 )
 from app.services.telnyx_service import TelnyxService
 from app.services.twilio_service import TwilioService
+from app.services.signalwire_service import SignalWireService
 from app.services.vonage_service import VonageService
 from app.services.voximplant_service import VoximplantService
 from app.services.rental_service import has_active_rental
+from app.services.user_signalwire_service import get_user_signalwire_credentials
 from app.services.user_telnyx_service import get_user_telnyx_credentials
 from app.services.user_twilio_service import get_user_twilio_credentials
 from app.services.user_vonage_service import get_user_vonage_credentials
@@ -470,6 +472,10 @@ class CampaignWorker:
         if provider == VoiceProvider.TWILIO.value:
             account_sid, auth_token = get_user_twilio_credentials(session, user.id)
             return TwilioService(account_sid=account_sid, auth_token=auth_token)
+
+        if provider == VoiceProvider.SIGNALWIRE.value:
+            project_id, api_token, space_url = get_user_signalwire_credentials(session, user.id)
+            return SignalWireService(project_id=project_id, api_token=api_token, space_url=space_url)
 
         if provider == VoiceProvider.TELNYX.value:
             api_key, account_sid = get_user_telnyx_credentials(session, user.id)

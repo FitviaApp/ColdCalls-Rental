@@ -17,6 +17,10 @@ from app.services.user_telnyx_service import (
     has_user_telnyx_credentials,
     upsert_user_telnyx_credentials,
 )
+from app.services.user_signalwire_service import (
+    has_user_signalwire_credentials,
+    upsert_user_signalwire_credentials,
+)
 from app.services.user_twilio_service import (
     get_user_twilio_credentials,
     has_user_twilio_credentials,
@@ -49,6 +53,7 @@ def _settings_context(
     *,
     saved: bool = False,
     twilio_saved: bool = False,
+    signalwire_saved: bool = False,
     telnyx_saved: bool = False,
     vonage_saved: bool = False,
     voximplant_saved: bool = False,
@@ -62,12 +67,14 @@ def _settings_context(
         "user": user,
         "saved": saved,
         "twilio_saved": twilio_saved,
+        "signalwire_saved": signalwire_saved,
         "telnyx_saved": telnyx_saved,
         "vonage_saved": vonage_saved,
         "voximplant_saved": voximplant_saved,
         "voximplant_provisioned": voximplant_provisioned,
         "password_saved": password_saved,
         "twilio_configured": has_user_twilio_credentials(db, user.id),
+        "signalwire_configured": has_user_signalwire_credentials(db, user.id),
         "telnyx_configured": has_user_telnyx_credentials(db, user.id),
         "vonage_configured": has_user_vonage_credentials(db, user.id),
         "voximplant_configured": has_user_voximplant_credentials(db, user.id),
@@ -146,6 +153,7 @@ async def settings_page(
     user: User = Depends(require_active_rental),
     saved: bool = False,
     twilio_saved: bool = False,
+    signalwire_saved: bool = False,
     telnyx_saved: bool = False,
     vonage_saved: bool = False,
     voximplant_saved: bool = False,
@@ -162,6 +170,7 @@ async def settings_page(
             db,
             saved=saved,
             twilio_saved=twilio_saved,
+            signalwire_saved=signalwire_saved,
             telnyx_saved=telnyx_saved,
             vonage_saved=vonage_saved,
             voximplant_saved=voximplant_saved,
@@ -278,6 +287,47 @@ async def save_twilio_credentials(
     db.commit()
 
     return RedirectResponse(url="/dashboard/settings?twilio_saved=true", status_code=302)
+
+
+@router.post("/settings/signalwire")
+async def save_signalwire_credentials(
+    request: Request,
+    project_id: str = Form(...),
+    api_token: str = Form(...),
+    space_url: str = Form(...),
+    user: User = Depends(require_active_rental),
+    db: Session = Depends(get_db)
+):
+    """Save user's SignalWire credentials."""
+    project_id = project_id.strip()
+    api_token = api_token.strip()
+    space_url = space_url.strip()
+
+    if not project_id:
+        return templates.TemplateResponse(
+            "dashboard/settings.html",
+            _settings_context(request, user, db, error="SignalWire Project ID cannot be empty."),
+            status_code=400
+        )
+
+    if not api_token:
+        return templates.TemplateResponse(
+            "dashboard/settings.html",
+            _settings_context(request, user, db, error="SignalWire API Token cannot be empty."),
+            status_code=400
+        )
+
+    if not space_url:
+        return templates.TemplateResponse(
+            "dashboard/settings.html",
+            _settings_context(request, user, db, error="SignalWire Space URL cannot be empty."),
+            status_code=400
+        )
+
+    upsert_user_signalwire_credentials(db, user.id, project_id, api_token, space_url)
+    db.commit()
+
+    return RedirectResponse(url="/dashboard/settings?signalwire_saved=true", status_code=302)
 
 
 @router.post("/settings/telnyx")

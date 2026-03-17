@@ -62,7 +62,7 @@ class VonageService:
     ) -> dict:
         del campaign_id, timeout, metadata
         if press_1_to_talk_with_agent:
-            raise ValueError("Press 1 flow is currently supported only for Twilio campaigns")
+            raise ValueError("Press 1 flow is currently supported only for Twilio, SignalWire, and Voximplant campaigns")
 
         ncco = [
             {

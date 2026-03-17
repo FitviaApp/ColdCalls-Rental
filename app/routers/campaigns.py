@@ -104,7 +104,7 @@ async def create_campaign_page(
     if not user.transfer_number:
         setup_error = "Please configure your Transfer Number (3CX) in Settings before creating a campaign."
     elif not has_any_user_voice_provider_credentials(db, user.id):
-        setup_error = "Please configure at least one voice provider (Twilio, Telnyx, Vonage, or Voximplant) in Settings."
+        setup_error = "Please configure at least one voice provider (Twilio, SignalWire, Telnyx, Vonage, or Voximplant) in Settings."
 
     return templates.TemplateResponse(
         "campaigns/create.html",
@@ -153,7 +153,7 @@ async def create_campaign(
                 "request": request,
                 "user": user,
                 **deps,
-                "error": "Please configure at least one voice provider (Twilio, Telnyx, Vonage, or Voximplant) in Settings."
+                "error": "Please configure at least one voice provider (Twilio, SignalWire, Telnyx, Vonage, or Voximplant) in Settings."
             },
             status_code=400
         )

@@ -6,6 +6,7 @@ from __future__ import annotations
 from sqlalchemy.orm import Session
 
 from app.models import VoiceProvider
+from app.services.user_signalwire_service import has_user_signalwire_credentials
 from app.services.user_telnyx_service import has_user_telnyx_credentials
 from app.services.user_twilio_service import has_user_twilio_credentials
 from app.services.user_vonage_service import has_user_vonage_credentials
@@ -14,6 +15,7 @@ from app.services.user_voximplant_service import has_user_voximplant_credentials
 
 PROVIDER_LABELS = {
     VoiceProvider.TWILIO.value: "Twilio",
+    VoiceProvider.SIGNALWIRE.value: "SignalWire",
     VoiceProvider.TELNYX.value: "Telnyx",
     VoiceProvider.VONAGE.value: "Vonage",
     VoiceProvider.VOXIMPLANT.value: "Voximplant",
@@ -23,6 +25,7 @@ PROVIDER_LABELS = {
 def supported_voice_providers() -> tuple[str, ...]:
     return (
         VoiceProvider.TWILIO.value,
+        VoiceProvider.SIGNALWIRE.value,
         VoiceProvider.TELNYX.value,
         VoiceProvider.VONAGE.value,
         VoiceProvider.VOXIMPLANT.value,
@@ -33,6 +36,7 @@ def provider_supports_press_1(provider: str) -> bool:
     provider = (provider or "").strip().lower()
     return provider in {
         VoiceProvider.TWILIO.value,
+        VoiceProvider.SIGNALWIRE.value,
         VoiceProvider.VOXIMPLANT.value,
     }
 
@@ -43,6 +47,8 @@ def has_user_voice_provider_credentials(db: Session, user_id: int, provider: str
 
     if provider == VoiceProvider.TWILIO.value:
         return has_user_twilio_credentials(db, user_id)
+    if provider == VoiceProvider.SIGNALWIRE.value:
+        return has_user_signalwire_credentials(db, user_id)
     if provider == VoiceProvider.TELNYX.value:
         return has_user_telnyx_credentials(db, user_id)
     if provider == VoiceProvider.VONAGE.value:

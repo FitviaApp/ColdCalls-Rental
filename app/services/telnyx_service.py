@@ -39,7 +39,7 @@ class TelnyxService:
     ) -> dict:
         del audio_url, transfer_number, timeout, metadata
         if press_1_to_talk_with_agent:
-            raise ValueError("Press 1 flow is currently supported only for Twilio campaigns")
+            raise ValueError("Press 1 flow is currently supported only for Twilio, SignalWire, and Voximplant campaigns")
         if campaign_id is None:
             raise ValueError("campaign_id is required for Telnyx campaigns")
 
