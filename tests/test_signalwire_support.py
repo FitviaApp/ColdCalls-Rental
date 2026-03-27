@@ -1,7 +1,12 @@
 import unittest
 
 from app.models import CallStatus, VoiceProvider
-from app.services.campaign_worker import CampaignWorker
+from app.services.campaign_worker import (
+    CampaignWorker,
+    SIGNALWIRE_MAX_START_INTERVAL_SECONDS,
+    SIGNALWIRE_MIN_START_INTERVAL_SECONDS,
+    TWILIO_MIN_START_INTERVAL_SECONDS,
+)
 from app.services.user_signalwire_service import _normalize_space_url
 from app.services.user_voice_provider_service import (
     provider_supports_press_1,
@@ -45,6 +50,29 @@ class SignalWireSupportTests(unittest.TestCase):
             worker._map_status("unknown-status", default=CallStatus.FAILED),
             CallStatus.FAILED,
         )
+
+    def test_signalwire_rate_limiter_uses_random_interval_between_3_and_5_seconds(self):
+        worker = CampaignWorker(db=None)  # type: ignore[arg-type]
+        limiter = worker._build_start_rate_limiter(VoiceProvider.SIGNALWIRE.value)
+
+        self.assertIsNotNone(limiter)
+
+        samples = [limiter._current_interval_seconds() for _ in range(25)]  # type: ignore[union-attr]
+
+        self.assertTrue(
+            all(
+                SIGNALWIRE_MIN_START_INTERVAL_SECONDS <= sample <= SIGNALWIRE_MAX_START_INTERVAL_SECONDS
+                for sample in samples
+            )
+        )
+        self.assertGreater(len({round(sample, 3) for sample in samples}), 1)
+
+    def test_twilio_rate_limiter_keeps_fixed_interval(self):
+        worker = CampaignWorker(db=None)  # type: ignore[arg-type]
+        limiter = worker._build_start_rate_limiter(VoiceProvider.TWILIO.value)
+
+        self.assertIsNotNone(limiter)
+        self.assertEqual(limiter._current_interval_seconds(), TWILIO_MIN_START_INTERVAL_SECONDS)  # type: ignore[union-attr]
 
 
 if __name__ == "__main__":

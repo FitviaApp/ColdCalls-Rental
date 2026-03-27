@@ -3,12 +3,13 @@ Campaign Worker - Background process for executing campaigns
 """
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 import logging
+import random
 import signal
 import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from sqlalchemy.orm import Session
 
@@ -39,13 +40,15 @@ WORKER_HEARTBEAT_FILE = Path("/tmp/coldcalls_worker_heartbeat")
 MIN_CONCURRENT_CALLS = 1
 MAX_CONCURRENT_CALLS = 20
 TWILIO_MIN_START_INTERVAL_SECONDS = 1.0
+SIGNALWIRE_MIN_START_INTERVAL_SECONDS = 3.0
+SIGNALWIRE_MAX_START_INTERVAL_SECONDS = 5.0
 
 
 class _ThreadSafeStartRateLimiter:
     """Simple shared limiter for outbound call starts."""
 
-    def __init__(self, min_interval_seconds: float):
-        self.min_interval_seconds = min_interval_seconds
+    def __init__(self, interval_seconds: float | Callable[[], float]):
+        self._interval_seconds = interval_seconds
         self._lock = threading.Lock()
         self._next_allowed_at = 0.0
 
@@ -55,7 +58,12 @@ class _ThreadSafeStartRateLimiter:
             if now < self._next_allowed_at:
                 time.sleep(self._next_allowed_at - now)
                 now = time.monotonic()
-            self._next_allowed_at = now + self.min_interval_seconds
+            self._next_allowed_at = now + self._current_interval_seconds()
+
+    def _current_interval_seconds(self) -> float:
+        if callable(self._interval_seconds):
+            return float(self._interval_seconds())
+        return float(self._interval_seconds)
 
 
 class CampaignWorker:
@@ -132,11 +140,7 @@ class CampaignWorker:
         max_concurrent_calls = self._normalize_concurrency(campaign.max_concurrent_calls)
         batch_size = max(5, max_concurrent_calls)
         provider = campaign.voice_provider.value if hasattr(campaign.voice_provider, "value") else str(campaign.voice_provider)
-        start_rate_limiter = (
-            _ThreadSafeStartRateLimiter(TWILIO_MIN_START_INTERVAL_SECONDS)
-            if provider == VoiceProvider.TWILIO.value
-            else None
-        )
+        start_rate_limiter = self._build_start_rate_limiter(provider)
 
         # Keep batches bounded so multiple running campaigns still take turns.
         pending_numbers = self.db.query(CampaignNumber).filter(
@@ -484,6 +488,21 @@ class CampaignWorker:
         """Clamp campaign concurrency to a safe range."""
         raw = value or MIN_CONCURRENT_CALLS
         return max(MIN_CONCURRENT_CALLS, min(MAX_CONCURRENT_CALLS, int(raw)))
+
+    def _build_start_rate_limiter(self, provider: str) -> Optional[_ThreadSafeStartRateLimiter]:
+        """Return provider-specific outbound call pacing rules."""
+        if provider == VoiceProvider.TWILIO.value:
+            return _ThreadSafeStartRateLimiter(TWILIO_MIN_START_INTERVAL_SECONDS)
+
+        if provider == VoiceProvider.SIGNALWIRE.value:
+            return _ThreadSafeStartRateLimiter(
+                lambda: random.uniform(
+                    SIGNALWIRE_MIN_START_INTERVAL_SECONDS,
+                    SIGNALWIRE_MAX_START_INTERVAL_SECONDS,
+                )
+            )
+
+        return None
 
     def _build_voice_service(self, campaign: Campaign, user: User, db: Optional[Session] = None):
         session = db or self.db
