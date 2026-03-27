@@ -181,6 +181,9 @@ class CampaignWorker:
                         pending_number_ids.clear()
                         break
 
+                    if start_rate_limiter:
+                        start_rate_limiter.wait_turn()
+
                     number_id = pending_number_ids.pop(0)
                     future = executor.submit(
                         self.process_number_by_id,
@@ -321,9 +324,6 @@ class CampaignWorker:
             return
 
         try:
-            if start_rate_limiter:
-                start_rate_limiter.wait_turn()
-
             # Make the call using campaign-configured TwiML flow.
             call_result = voice_service.make_call(
                 to_number=phone_number,
