@@ -330,7 +330,7 @@ class SignalWireSupportTests(unittest.TestCase):
             def __exit__(self, exc_type, exc, tb):
                 return False
 
-            def post(self, url, headers=None, json=None):
+            def post(self, url, headers=None, json=None, timeout=None):
                 attempts["count"] += 1
                 if attempts["count"] == 1:
                     raise runtime_module.httpx.TimeoutException("temporary timeout")
@@ -355,6 +355,34 @@ class SignalWireSupportTests(unittest.TestCase):
 
         self.assertIsNotNone(response)
         self.assertEqual(attempts["count"], 2)
+
+    def test_ai_runtime_reuses_http_client_within_service_instance(self):
+        import app.services.ai_call_runtime_service as runtime_module
+
+        original_client = runtime_module.httpx.Client
+        created_clients = {"count": 0}
+
+        class DummyResponse:
+            def raise_for_status(self):
+                return None
+
+        class DummyClient:
+            def __init__(self, *args, **kwargs):
+                created_clients["count"] += 1
+
+            def post(self, url, headers=None, json=None, timeout=None):
+                return DummyResponse()
+
+        runtime_module.httpx.Client = DummyClient
+        try:
+            service = AICallRuntimeService.__new__(AICallRuntimeService)
+            first = service._get_http_client()
+            second = service._get_http_client()
+        finally:
+            runtime_module.httpx.Client = original_client
+
+        self.assertIs(first, second)
+        self.assertEqual(created_clients["count"], 1)
 
     def test_ai_runtime_sanitizes_long_assistant_text(self):
         import app.services.ai_call_runtime_service as runtime_module
@@ -411,6 +439,43 @@ class SignalWireSupportTests(unittest.TestCase):
 
         self.assertEqual(result["assistant_text"], "Hello, this is a quick follow-up call.")
         self.assertFalse(result["should_transfer"])
+
+    def test_ai_runtime_request_openai_turn_uses_low_latency_payload(self):
+        import app.services.ai_call_runtime_service as runtime_module
+
+        original_live_history = runtime_module.LIVE_MAX_HISTORY_MESSAGES
+        original_max_tokens = runtime_module.settings.AI_OPENAI_MAX_COMPLETION_TOKENS
+        captured = {}
+
+        service = AICallRuntimeService.__new__(AICallRuntimeService)
+        service.openai_api_key = "sk-test"
+        service.openai_org_id = ""
+
+        def fake_post_json_with_retries(**kwargs):
+            captured.update(kwargs)
+            return {"choices": [{"message": {"content": "Short reply.", "tool_calls": []}}]}
+
+        service._post_json_with_retries = fake_post_json_with_retries
+        agent = SimpleNamespace(
+            system_prompt="Be helpful.",
+            handoff_description="Transfer on request.",
+            model="gpt-4o-mini",
+            temperature=0.3,
+        )
+        history = [{"role": "user", "content": f"message {i}"} for i in range(8)]
+
+        runtime_module.LIVE_MAX_HISTORY_MESSAGES = 3
+        runtime_module.settings.AI_OPENAI_MAX_COMPLETION_TOKENS = 64
+        try:
+            result = service._request_openai_turn(agent, history)
+        finally:
+            runtime_module.LIVE_MAX_HISTORY_MESSAGES = original_live_history
+            runtime_module.settings.AI_OPENAI_MAX_COMPLETION_TOKENS = original_max_tokens
+
+        self.assertEqual(result["assistant_text"], "Short reply.")
+        self.assertEqual(captured["json_payload"]["max_completion_tokens"], 64)
+        self.assertEqual(len(captured["json_payload"]["messages"]), 4)
+        self.assertIn("one short sentence", captured["json_payload"]["messages"][0]["content"])
 
     def test_ai_runtime_request_openai_turn_extracts_handoff_reason(self):
         service = AICallRuntimeService.__new__(AICallRuntimeService)
@@ -486,6 +551,37 @@ class SignalWireSupportTests(unittest.TestCase):
 
         self.assertIn('<Pause length="2"/>', twiml)
 
+    def test_ai_runtime_synthesize_uses_live_elevenlabs_settings(self):
+        import app.services.ai_call_runtime_service as runtime_module
+
+        original_live_model = runtime_module.settings.ELEVENLABS_LIVE_MODEL
+        original_output_format = runtime_module.settings.ELEVENLABS_OUTPUT_FORMAT
+        original_opt_latency = runtime_module.settings.ELEVENLABS_OPTIMIZE_STREAMING_LATENCY
+        captured = {}
+
+        service = AICallRuntimeService.__new__(AICallRuntimeService)
+        service.elevenlabs_api_key = "xi-test"
+
+        def fake_post_binary_with_retries(**kwargs):
+            captured.update(kwargs)
+            return b"audio-bytes"
+
+        service._post_binary_with_retries = fake_post_binary_with_retries
+        runtime_module.settings.ELEVENLABS_LIVE_MODEL = "eleven_flash_v2_5"
+        runtime_module.settings.ELEVENLABS_OUTPUT_FORMAT = "mp3_22050_32"
+        runtime_module.settings.ELEVENLABS_OPTIMIZE_STREAMING_LATENCY = 3
+        try:
+            result = service._synthesize_text_to_speech("Hello there", voice_id="voice_123")
+        finally:
+            runtime_module.settings.ELEVENLABS_LIVE_MODEL = original_live_model
+            runtime_module.settings.ELEVENLABS_OUTPUT_FORMAT = original_output_format
+            runtime_module.settings.ELEVENLABS_OPTIMIZE_STREAMING_LATENCY = original_opt_latency
+
+        self.assertEqual(result, b"audio-bytes")
+        self.assertEqual(captured["json_payload"]["model_id"], "eleven_flash_v2_5")
+        self.assertIn("output_format=mp3_22050_32", captured["url"])
+        self.assertIn("optimize_streaming_latency=3", captured["url"])
+
     def test_ai_runtime_post_binary_with_retries_retries_on_empty_audio(self):
         import app.services.ai_call_runtime_service as runtime_module
 
@@ -514,7 +610,7 @@ class SignalWireSupportTests(unittest.TestCase):
             def __exit__(self, exc_type, exc, tb):
                 return False
 
-            def post(self, url, headers=None, json=None):
+            def post(self, url, headers=None, json=None, timeout=None):
                 attempts["count"] += 1
                 if attempts["count"] == 1:
                     return DummyResponse(b"")
@@ -566,7 +662,7 @@ class SignalWireSupportTests(unittest.TestCase):
             def __exit__(self, exc_type, exc, tb):
                 return False
 
-            def post(self, url, headers=None, json=None):
+            def post(self, url, headers=None, json=None, timeout=None):
                 return DummyResponse()
 
         runtime_module.httpx.Client = DummyClient
@@ -589,6 +685,54 @@ class SignalWireSupportTests(unittest.TestCase):
 
         self.assertIn("application/json", str(ctx.exception))
         self.assertIn("voice not found", str(ctx.exception))
+
+    def test_ai_runtime_post_with_retries_uses_live_retry_settings(self):
+        import app.services.ai_call_runtime_service as runtime_module
+
+        original_client = runtime_module.httpx.Client
+        original_sleep = runtime_module.time.sleep
+        original_live_retries = runtime_module.settings.AI_HTTP_MAX_RETRIES_LIVE
+        original_live_backoff = runtime_module.settings.AI_HTTP_RETRY_BACKOFF_SECONDS_LIVE
+        attempts = {"count": 0}
+        sleeps = []
+
+        class DummyResponse:
+            def raise_for_status(self):
+                return None
+
+        class DummyClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def post(self, url, headers=None, json=None, timeout=None):
+                attempts["count"] += 1
+                if attempts["count"] == 1:
+                    raise runtime_module.httpx.TimeoutException("temporary timeout")
+                return DummyResponse()
+
+        runtime_module.httpx.Client = DummyClient
+        runtime_module.time.sleep = lambda seconds: sleeps.append(seconds)
+        runtime_module.settings.AI_HTTP_MAX_RETRIES_LIVE = 1
+        runtime_module.settings.AI_HTTP_RETRY_BACKOFF_SECONDS_LIVE = 0.15
+        try:
+            service = AICallRuntimeService.__new__(AICallRuntimeService)
+            service._post_with_retries(
+                provider_name="OpenAI",
+                url="https://example.com",
+                headers={},
+                json_payload={},
+                timeout_seconds=1.0,
+                max_retries=runtime_module.settings.AI_HTTP_MAX_RETRIES_LIVE,
+                retry_backoff_seconds=runtime_module.settings.AI_HTTP_RETRY_BACKOFF_SECONDS_LIVE,
+            )
+        finally:
+            runtime_module.httpx.Client = original_client
+            runtime_module.time.sleep = original_sleep
+            runtime_module.settings.AI_HTTP_MAX_RETRIES_LIVE = original_live_retries
+            runtime_module.settings.AI_HTTP_RETRY_BACKOFF_SECONDS_LIVE = original_live_backoff
+
+        self.assertEqual(attempts["count"], 2)
+        self.assertEqual(sleeps, [0.15])
 
     def test_ai_runtime_policy_error_enforces_duration_and_cost_limits(self):
         import app.services.campaign_worker as worker_module

@@ -309,19 +309,23 @@ class AICampaignRouteTests(unittest.TestCase):
 
     def test_ai_runtime_audio_endpoint_returns_audio_bytes(self):
         original_getter = api_router_module.get_ai_runtime_audio
+        original_media_type = api_router_module.get_ai_runtime_audio_media_type
         api_router_module.get_ai_runtime_audio = (
             lambda campaign_number_id, audio_token: b"mp3-bytes"
             if campaign_number_id == 55 and audio_token == "token"
             else None
         )
+        api_router_module.get_ai_runtime_audio_media_type = lambda: "audio/mpeg"
         try:
             response = self.client.get("/api/ai-runtime/audio/55/token")
         finally:
             api_router_module.get_ai_runtime_audio = original_getter
+            api_router_module.get_ai_runtime_audio_media_type = original_media_type
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.content, b"mp3-bytes")
         self.assertIn("audio/mpeg", response.headers["content-type"])
+        self.assertEqual(response.headers["cache-control"], "public, max-age=3600, immutable")
 
 
 if __name__ == "__main__":
