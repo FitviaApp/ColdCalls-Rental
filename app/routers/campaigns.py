@@ -9,17 +9,20 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Form, Request, UploadFile, File, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.dependencies import require_active_rental
 from app.models import (
-    User, Campaign, CampaignNumber, CallerID, Country, Audio,
-    CampaignStatus, CallStatus, VoiceProvider, VoxCallerIDVerificationStatus
+    User, Campaign, CampaignNumber, CallerID, Country, Audio, AIAgent,
+    CampaignStatus, CallStatus, VoiceProvider, VoxCallerIDVerificationStatus, CampaignMode
 )
+from app.services.ai_agent_service import list_user_ai_agents
 from app.services.user_voice_provider_service import (
     get_user_voice_provider_status,
     has_any_user_voice_provider_credentials,
+    has_user_ai_runtime_credentials,
     has_user_voice_provider_credentials,
     provider_supports_press_1,
     supported_voice_providers,
@@ -43,6 +46,128 @@ def validate_phone_number(number: str) -> Optional[str]:
     return None
 
 
+def _parse_campaign_numbers(numbers_raw: str) -> tuple[list[str], int]:
+    """Parse pasted/uploaded numbers, keeping valid E.164 entries and counting invalid rows."""
+    lines = (numbers_raw or "").strip().split('\n')
+    valid_numbers: list[str] = []
+    invalid_count = 0
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+
+        if ',' in line:
+            line = line.split(',')[0].strip()
+
+        number = validate_phone_number(line)
+        if number:
+            valid_numbers.append(number)
+        else:
+            invalid_count += 1
+
+    return valid_numbers, invalid_count
+
+
+def _normalized_campaign_mode(value: str | None) -> str:
+    return (value or CampaignMode.AUDIO.value).strip().lower()
+
+
+def _campaign_form_validation_error(
+    *,
+    voice_provider: str,
+    campaign_mode: str,
+    press_1_to_talk_with_agent: bool,
+    max_concurrent_calls: int,
+    provider_configured: bool,
+    ai_runtime_configured: bool,
+) -> str | None:
+    if voice_provider not in supported_voice_providers():
+        return "Invalid voice provider selected."
+    if not provider_configured:
+        return f"Selected provider ({voice_provider}) is not configured in Settings."
+    if campaign_mode == CampaignMode.AI_AGENT.value and voice_provider != VoiceProvider.SIGNALWIRE.value:
+        return "AI agent campaigns currently require SignalWire as the voice provider."
+    if campaign_mode == CampaignMode.AI_AGENT.value and not ai_runtime_configured:
+        return "Configure SignalWire, OpenAI, and ElevenLabs in Settings before creating an AI agent campaign."
+    if press_1_to_talk_with_agent and not provider_supports_press_1(voice_provider):
+        return "Press 1 flow is not available for the selected provider."
+    if campaign_mode == CampaignMode.AI_AGENT.value and press_1_to_talk_with_agent:
+        return "Press 1 flow is not available for AI agent campaigns."
+    if not (MIN_CONCURRENT_CALLS <= max_concurrent_calls <= MAX_CONCURRENT_CALLS):
+        return (
+            f"Concurrent calls must be between {MIN_CONCURRENT_CALLS} "
+            f"and {MAX_CONCURRENT_CALLS}."
+        )
+    return None
+
+
+def _campaign_resource_validation_error(
+    *,
+    campaign_mode: str,
+    voice_provider: str,
+    caller_id,
+    audio,
+    ai_agent,
+    selected_audio_id: int | None,
+    selected_ai_agent_id: int | None,
+) -> str | None:
+    if not caller_id:
+        return "Invalid caller ID selection."
+    if selected_audio_id is not None and not audio:
+        return "Invalid audio selection."
+    if campaign_mode == CampaignMode.AI_AGENT.value and not ai_agent:
+        return "Select an active AI agent for AI agent campaigns."
+    if campaign_mode == CampaignMode.AUDIO.value and selected_ai_agent_id is not None:
+        return "AI agents can only be used with AI agent campaigns."
+    if (
+        voice_provider == VoiceProvider.VOXIMPLANT.value
+        and caller_id.vox_verification_status != VoxCallerIDVerificationStatus.VERIFIED
+    ):
+        return "Selected Caller ID is not verified in Voximplant yet."
+    return None
+
+
+def _campaign_start_validation_error(
+    *,
+    campaign,
+    user,
+    provider_configured: bool,
+    ai_runtime_configured: bool,
+) -> str | None:
+    provider = campaign.voice_provider.value if hasattr(campaign.voice_provider, "value") else str(campaign.voice_provider)
+
+    if not user.transfer_number:
+        return "Please configure your Transfer Number (3CX) in Settings first"
+    if campaign.campaign_mode == CampaignMode.AI_AGENT:
+        if campaign.voice_provider != VoiceProvider.SIGNALWIRE:
+            return "AI agent campaigns require SignalWire"
+        if not campaign.ai_agent_id or not campaign.ai_agent or campaign.ai_agent.user_id != user.id:
+            return "Campaign AI agent is missing or invalid"
+        if not campaign.ai_agent.is_active:
+            return "Selected AI agent is inactive"
+        if not ai_runtime_configured:
+            return "Please configure SignalWire, OpenAI, and ElevenLabs credentials in Settings first"
+    if not provider_configured:
+        return f"Please configure {provider.title()} credentials in Settings first"
+    if campaign.press_1_to_talk_with_agent and not provider_supports_press_1(provider):
+        return "Press 1 flow is not available for the selected provider"
+    if (
+        provider == VoiceProvider.VOXIMPLANT.value
+        and campaign.caller_id.vox_verification_status != VoxCallerIDVerificationStatus.VERIFIED
+    ):
+        return "Selected Caller ID is not verified in Voximplant yet"
+    if campaign.caller_id.user_id != user.id:
+        return "Campaign resources ownership mismatch. Please create a new campaign with your own assets."
+    if campaign.audio_id is not None and campaign.audio is None:
+        return "Campaign audio not found. Please update the campaign audio."
+    if campaign.audio and campaign.audio.user_id != user.id:
+        return "Campaign resources ownership mismatch. Please create a new campaign with your own assets."
+    if campaign.ai_agent and campaign.ai_agent.user_id != user.id:
+        return "Campaign AI agent ownership mismatch. Please create a new campaign with your own AI agent."
+    return None
+
+
 def _load_create_dependencies(db: Session, user_id: int) -> dict:
     caller_ids = db.query(CallerID).filter(
         CallerID.is_active == True,
@@ -55,8 +180,57 @@ def _load_create_dependencies(db: Session, user_id: int) -> dict:
     return {
         "caller_ids": caller_ids,
         "audios": audios,
+        "ai_agents": list_user_ai_agents(db, user_id),
+        "ai_runtime_configured": has_user_ai_runtime_credentials(db, user_id),
         "voice_providers": get_user_voice_provider_status(db, user_id),
     }
+
+
+def _create_form_data(
+    *,
+    name: str = "",
+    caller_id_id: int | None = None,
+    audio_id: str | None = None,
+    ai_agent_id: str | None = None,
+    campaign_mode: str = CampaignMode.AUDIO.value,
+    voice_provider: str = VoiceProvider.TWILIO.value,
+    press_1_to_talk_with_agent: bool = False,
+    max_concurrent_calls: int = 1,
+    numbers_text: str = "",
+) -> dict:
+    return {
+        "name": name,
+        "caller_id_id": str(caller_id_id) if caller_id_id is not None else "",
+        "audio_id": str(audio_id or "").strip(),
+        "ai_agent_id": str(ai_agent_id or "").strip(),
+        "campaign_mode": campaign_mode,
+        "voice_provider": voice_provider,
+        "press_1_to_talk_with_agent": bool(press_1_to_talk_with_agent),
+        "max_concurrent_calls": max_concurrent_calls,
+        "numbers_text": numbers_text,
+    }
+
+
+def _render_create_campaign_error(
+    request: Request,
+    user: User,
+    deps: dict,
+    *,
+    error: str,
+    form_data: dict,
+    status_code: int = 400,
+):
+    return templates.TemplateResponse(
+        "campaigns/create.html",
+        {
+            "request": request,
+            "user": user,
+            **deps,
+            "error": error,
+            "form_data": form_data,
+        },
+        status_code=status_code,
+    )
 
 
 def _is_worker_online(max_age_seconds: int = 60) -> bool:
@@ -80,13 +254,47 @@ async def list_campaigns(
     campaigns = db.query(Campaign).filter(
         Campaign.user_id == user.id
     ).order_by(Campaign.created_at.desc()).all()
+    ai_campaign_ids = [
+        campaign.id for campaign in campaigns if campaign.campaign_mode == CampaignMode.AI_AGENT
+    ]
+    ai_runtime_summary_by_campaign: dict[int, dict[str, int | bool]] = {}
+    if ai_campaign_ids:
+        rows = db.query(
+            CampaignNumber.campaign_id,
+            func.count(CampaignNumber.id),
+            func.sum(case((CampaignNumber.ai_runtime_error.isnot(None), 1), else_=0)),
+            func.sum(case((CampaignNumber.ai_handoff_reason.isnot(None), 1), else_=0)),
+        ).filter(
+            CampaignNumber.campaign_id.in_(ai_campaign_ids)
+        ).group_by(CampaignNumber.campaign_id).all()
+        for campaign_id, total_numbers, runtime_errors, handoffs in rows:
+            ai_runtime_summary_by_campaign[int(campaign_id)] = {
+                "total_numbers": int(total_numbers or 0),
+                "runtime_errors": int(runtime_errors or 0),
+                "handoffs": int(handoffs or 0),
+                "policy_paused": False,
+            }
+
+        latest_errors = db.query(CampaignNumber).filter(
+            CampaignNumber.campaign_id.in_(ai_campaign_ids),
+            CampaignNumber.ai_runtime_error.isnot(None),
+        ).order_by(CampaignNumber.processed_at.desc(), CampaignNumber.id.desc()).all()
+        for number in latest_errors:
+            summary = ai_runtime_summary_by_campaign.setdefault(
+                number.campaign_id,
+                {"total_numbers": 0, "runtime_errors": 0, "handoffs": 0, "policy_paused": False},
+            )
+            if "last_runtime_error" not in summary:
+                summary["last_runtime_error"] = number.ai_runtime_error or ""
+                summary["policy_paused"] = "policy" in (number.ai_runtime_error or "").lower()
 
     return templates.TemplateResponse(
         "campaigns/list.html",
         {
             "request": request,
             "user": user,
-            "campaigns": campaigns
+            "campaigns": campaigns,
+            "ai_runtime_summary_by_campaign": ai_runtime_summary_by_campaign,
         }
     )
 
@@ -112,7 +320,8 @@ async def create_campaign_page(
             "request": request,
             "user": user,
             **deps,
-            "error": setup_error
+            "error": setup_error,
+            "form_data": _create_form_data(),
         }
     )
 
@@ -123,6 +332,8 @@ async def create_campaign(
     name: str = Form(...),
     caller_id_id: int = Form(...),
     audio_id: Optional[str] = Form(default=None),
+    ai_agent_id: Optional[str] = Form(default=None),
+    campaign_mode: str = Form(default=CampaignMode.AUDIO.value),
     voice_provider: str = Form(default=VoiceProvider.TWILIO.value),
     press_1_to_talk_with_agent: bool = Form(False),
     max_concurrent_calls: int = Form(default=1),
@@ -133,78 +344,64 @@ async def create_campaign(
 ):
     """Create a new campaign"""
     deps = _load_create_dependencies(db, user.id)
+    form_data = _create_form_data(
+        name=name,
+        caller_id_id=caller_id_id,
+        audio_id=audio_id,
+        ai_agent_id=ai_agent_id,
+        campaign_mode=campaign_mode,
+        voice_provider=voice_provider,
+        press_1_to_talk_with_agent=press_1_to_talk_with_agent,
+        max_concurrent_calls=max_concurrent_calls,
+        numbers_text=numbers_text,
+    )
 
     # Check if user has transfer number configured
     if not user.transfer_number:
-        return templates.TemplateResponse(
-            "campaigns/create.html",
-            {
-                "request": request,
-                "user": user,
-                **deps,
-                "error": "Please configure your Transfer Number (3CX) in Settings before creating a campaign."
-            },
-            status_code=400
+        return _render_create_campaign_error(
+            request,
+            user,
+            deps,
+            error="Please configure your Transfer Number (3CX) in Settings before creating a campaign.",
+            form_data=form_data,
         )
     if not has_any_user_voice_provider_credentials(db, user.id):
-        return templates.TemplateResponse(
-            "campaigns/create.html",
-            {
-                "request": request,
-                "user": user,
-                **deps,
-                "error": "Please configure at least one voice provider (Twilio, SignalWire, Telnyx, Vonage, or Voximplant) in Settings."
-            },
-            status_code=400
+        return _render_create_campaign_error(
+            request,
+            user,
+            deps,
+            error="Please configure at least one voice provider (Twilio, SignalWire, Telnyx, Vonage, or Voximplant) in Settings.",
+            form_data=form_data,
+        )
+
+    campaign_mode = _normalized_campaign_mode(campaign_mode)
+    form_data["campaign_mode"] = campaign_mode
+    if campaign_mode not in {CampaignMode.AUDIO.value, CampaignMode.AI_AGENT.value}:
+        return _render_create_campaign_error(
+            request,
+            user,
+            deps,
+            error="Invalid campaign mode selected.",
+            form_data=form_data,
         )
 
     voice_provider = (voice_provider or "").strip().lower()
-    if voice_provider not in supported_voice_providers():
-        return templates.TemplateResponse(
-            "campaigns/create.html",
-            {
-                "request": request,
-                "user": user,
-                **deps,
-                "error": "Invalid voice provider selected."
-            },
-            status_code=400
-        )
-    if not has_user_voice_provider_credentials(db, user.id, voice_provider):
-        return templates.TemplateResponse(
-            "campaigns/create.html",
-            {
-                "request": request,
-                "user": user,
-                **deps,
-                "error": f"Selected provider ({voice_provider}) is not configured in Settings."
-            },
-            status_code=400
-        )
-    if press_1_to_talk_with_agent and not provider_supports_press_1(voice_provider):
-        return templates.TemplateResponse(
-            "campaigns/create.html",
-            {
-                "request": request,
-                "user": user,
-                **deps,
-                "error": "Press 1 flow is not available for the selected provider."
-            },
-            status_code=400
-        )
-    if not (MIN_CONCURRENT_CALLS <= max_concurrent_calls <= MAX_CONCURRENT_CALLS):
-        return templates.TemplateResponse(
-            "campaigns/create.html",
-            {
-                "request": request,
-                "user": user,
-                **deps,
-                "error": (
-                    f"Concurrent calls must be between {MIN_CONCURRENT_CALLS} "
-                    f"and {MAX_CONCURRENT_CALLS}."
-                )
-            },
-            status_code=400
+    form_data["voice_provider"] = voice_provider
+    form_error = _campaign_form_validation_error(
+        voice_provider=voice_provider,
+        campaign_mode=campaign_mode,
+        press_1_to_talk_with_agent=press_1_to_talk_with_agent,
+        max_concurrent_calls=max_concurrent_calls,
+        provider_configured=has_user_voice_provider_credentials(db, user.id, voice_provider),
+        ai_runtime_configured=has_user_ai_runtime_credentials(db, user.id),
+    )
+    if form_error:
+        return _render_create_campaign_error(
+            request,
+            user,
+            deps,
+            error=form_error,
+            form_data=form_data,
         )
 
     # Parse numbers from text or file
@@ -215,35 +412,19 @@ async def create_campaign(
         numbers_raw = content.decode('utf-8')
 
     # Parse and validate numbers
-    lines = numbers_raw.strip().split('\n')
-    valid_numbers = []
-    invalid_count = 0
-
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-
-        # Handle CSV format (take first column)
-        if ',' in line:
-            line = line.split(',')[0].strip()
-
-        number = validate_phone_number(line)
-        if number:
-            valid_numbers.append(number)
-        else:
-            invalid_count += 1
+    valid_numbers, invalid_count = _parse_campaign_numbers(numbers_raw)
 
     if not valid_numbers:
-        return templates.TemplateResponse(
-            "campaigns/create.html",
-            {
-                "request": request,
-                "user": user,
-                **deps,
-                "error": f"No valid phone numbers found. Numbers must be in E.164 format (e.g., +5511999999999). {invalid_count} invalid numbers skipped."
-            },
-            status_code=400
+        return _render_create_campaign_error(
+            request,
+            user,
+            deps,
+            error=(
+                "No valid phone numbers found. Numbers must be in E.164 format "
+                f"(e.g., +5511999999999). {invalid_count} invalid numbers skipped."
+            ),
+            form_data=form_data,
+            status_code=400,
         )
 
     # Verify foreign keys exist
@@ -253,65 +434,66 @@ async def create_campaign(
         CallerID.user_id == user.id
     ).first()
     selected_audio_id: Optional[int] = None
-    if audio_id is not None and str(audio_id).strip():
+    selected_ai_agent_id: Optional[int] = None
+    if campaign_mode == CampaignMode.AUDIO.value and audio_id is not None and str(audio_id).strip():
         try:
             selected_audio_id = int(str(audio_id).strip())
         except ValueError:
-            return templates.TemplateResponse(
-                "campaigns/create.html",
-                {
-                    "request": request,
-                    "user": user,
-                    **deps,
-                    "error": "Invalid audio selection."
-                },
-                status_code=400
+            return _render_create_campaign_error(
+                request,
+                user,
+                deps,
+                error="Invalid audio selection.",
+                form_data=form_data,
+            )
+
+    if campaign_mode == CampaignMode.AI_AGENT.value and ai_agent_id is not None and str(ai_agent_id).strip():
+        try:
+            selected_ai_agent_id = int(str(ai_agent_id).strip())
+        except ValueError:
+            return _render_create_campaign_error(
+                request,
+                user,
+                deps,
+                error="Invalid AI agent selection.",
+                form_data=form_data,
             )
 
     audio = None
+    ai_agent = None
     if selected_audio_id is not None:
         audio = db.query(Audio).filter(
             Audio.id == selected_audio_id,
             Audio.is_active == True,
             Audio.user_id == user.id
         ).first()
+    if selected_ai_agent_id is not None:
+        ai_agent = db.query(AIAgent).filter(
+            AIAgent.id == selected_ai_agent_id,
+            AIAgent.user_id == user.id,
+            AIAgent.is_active == True,
+        ).first()
 
-    if not caller_id:
-        return templates.TemplateResponse(
-            "campaigns/create.html",
-            {
-                "request": request,
-                "user": user,
-                **deps,
-                "error": "Invalid caller ID selection."
-            },
-            status_code=400
+    resource_error = _campaign_resource_validation_error(
+        campaign_mode=campaign_mode,
+        voice_provider=voice_provider,
+        caller_id=caller_id,
+        audio=audio,
+        ai_agent=ai_agent,
+        selected_audio_id=selected_audio_id,
+        selected_ai_agent_id=selected_ai_agent_id,
+    )
+    if resource_error:
+        return _render_create_campaign_error(
+            request,
+            user,
+            deps,
+            error=resource_error,
+            form_data=form_data,
         )
-    if selected_audio_id is not None and not audio:
-        return templates.TemplateResponse(
-            "campaigns/create.html",
-            {
-                "request": request,
-                "user": user,
-                **deps,
-                "error": "Invalid audio selection."
-            },
-            status_code=400
-        )
-    if (
-        voice_provider == VoiceProvider.VOXIMPLANT.value
-        and caller_id.vox_verification_status != VoxCallerIDVerificationStatus.VERIFIED
-    ):
-        return templates.TemplateResponse(
-            "campaigns/create.html",
-            {
-                "request": request,
-                "user": user,
-                **deps,
-                "error": "Selected Caller ID is not verified in Voximplant yet."
-            },
-            status_code=400,
-        )
+    if campaign_mode == CampaignMode.AUDIO.value and selected_audio_id is None and not press_1_to_talk_with_agent:
+        # Direct transfer without audio remains valid.
+        pass
 
     country_code = caller_id.country_code.strip().upper()[:5]
     country = db.query(Country).filter(
@@ -334,6 +516,8 @@ async def create_campaign(
         caller_id_id=caller_id_id,
         country_id=country.id,
         audio_id=audio.id if audio else None,
+        ai_agent_id=ai_agent.id if ai_agent else None,
+        campaign_mode=campaign_mode,
         voice_provider=voice_provider,
         press_1_to_talk_with_agent=press_1_to_talk_with_agent,
         max_concurrent_calls=max_concurrent_calls,
@@ -376,6 +560,33 @@ async def campaign_detail(
     numbers = db.query(CampaignNumber).filter(
         CampaignNumber.campaign_id == campaign_id
     ).order_by(CampaignNumber.id).all()
+    ai_runtime_summary = None
+    if campaign.campaign_mode == CampaignMode.AI_AGENT:
+        ai_runtime_summary = {
+            "total_numbers": len(numbers),
+            "handoffs": sum(1 for n in numbers if n.ai_handoff_reason),
+            "runtime_errors": sum(1 for n in numbers if n.ai_runtime_error),
+            "lead_reprompts": sum(int(n.ai_no_input_turns or 0) for n in numbers),
+            "avg_turns": float(
+                db.query(func.coalesce(func.avg(CampaignNumber.ai_turn_count), 0)).filter(
+                    CampaignNumber.campaign_id == campaign_id,
+                    CampaignNumber.ai_turn_count.isnot(None),
+                ).scalar() or 0.0
+            ),
+            "last_handoff_reason": next(
+                (n.ai_handoff_reason for n in reversed(numbers) if n.ai_handoff_reason),
+                None,
+            ),
+            "last_runtime_error": next(
+                (n.ai_runtime_error for n in reversed(numbers) if n.ai_runtime_error),
+                None,
+            ),
+            "policy_paused": any(
+                "policy" in (n.ai_runtime_error or "").lower()
+                for n in numbers
+                if n.ai_runtime_error
+            ) and campaign.status == CampaignStatus.PAUSED,
+        }
     numbers_payload = [
         {
             "id": n.id,
@@ -384,6 +595,12 @@ async def campaign_detail(
             "duration_seconds": n.duration_seconds,
             "cost": n.cost,
             "answered_by": n.answered_by,
+            "ai_turn_count": n.ai_turn_count,
+            "ai_no_input_turns": n.ai_no_input_turns,
+            "ai_last_user_input": n.ai_last_user_input,
+            "ai_last_assistant_text": n.ai_last_assistant_text,
+            "ai_handoff_reason": n.ai_handoff_reason,
+            "ai_runtime_error": n.ai_runtime_error,
             "processed_at": n.processed_at.isoformat() if n.processed_at else None,
         }
         for n in numbers
@@ -397,6 +614,7 @@ async def campaign_detail(
             "campaign": campaign,
             "numbers": numbers,
             "numbers_payload": numbers_payload,
+            "ai_runtime_summary": ai_runtime_summary,
         }
     )
 
@@ -425,44 +643,15 @@ async def start_campaign(
             detail="Worker is offline. Start/restart worker.py and try again."
         )
 
-    if not user.transfer_number:
-        raise HTTPException(status_code=400, detail="Please configure your Transfer Number (3CX) in Settings first")
-
     provider = campaign.voice_provider.value if hasattr(campaign.voice_provider, "value") else str(campaign.voice_provider)
-    if not has_user_voice_provider_credentials(db, user.id, provider):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Please configure {provider.title()} credentials in Settings first"
-        )
-    if campaign.press_1_to_talk_with_agent and not provider_supports_press_1(provider):
-        raise HTTPException(
-            status_code=400,
-            detail="Press 1 flow is not available for the selected provider"
-        )
-    if (
-        provider == VoiceProvider.VOXIMPLANT.value
-        and campaign.caller_id.vox_verification_status != VoxCallerIDVerificationStatus.VERIFIED
-    ):
-        raise HTTPException(
-            status_code=400,
-            detail="Selected Caller ID is not verified in Voximplant yet"
-        )
-
-    if campaign.caller_id.user_id != user.id:
-        raise HTTPException(
-            status_code=400,
-            detail="Campaign resources ownership mismatch. Please create a new campaign with your own assets."
-        )
-    if campaign.audio_id is not None and campaign.audio is None:
-        raise HTTPException(
-            status_code=400,
-            detail="Campaign audio not found. Please update the campaign audio."
-        )
-    if campaign.audio and campaign.audio.user_id != user.id:
-        raise HTTPException(
-            status_code=400,
-            detail="Campaign resources ownership mismatch. Please create a new campaign with your own assets."
-        )
+    start_error = _campaign_start_validation_error(
+        campaign=campaign,
+        user=user,
+        provider_configured=has_user_voice_provider_credentials(db, user.id, provider),
+        ai_runtime_configured=has_user_ai_runtime_credentials(db, user.id),
+    )
+    if start_error:
+        raise HTTPException(status_code=400, detail=start_error)
 
     campaign.status = CampaignStatus.RUNNING
     campaign.started_at = datetime.utcnow()

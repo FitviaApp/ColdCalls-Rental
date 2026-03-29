@@ -16,8 +16,15 @@ from sqlalchemy.orm import Session
 from app.database import SessionLocal, init_db
 from app.models import (
     Campaign, CampaignNumber, User,
-    CampaignStatus, CallStatus, VoiceProvider, VoxCallerIDVerificationStatus
+    CampaignStatus, CallStatus, VoiceProvider, VoxCallerIDVerificationStatus, CampaignMode
 )
+from app.services.ai_call_runtime_service import (
+    AICallRuntimeService,
+    cleanup_ai_runtime_artifacts,
+    prune_stale_ai_runtime_artifacts,
+    update_campaign_number_ai_observability,
+)
+from app.config import get_settings
 from app.services.telnyx_service import TelnyxService
 from app.services.twilio_service import TwilioService
 from app.services.signalwire_service import SignalWireService
@@ -36,6 +43,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+settings = get_settings()
 WORKER_HEARTBEAT_FILE = Path("/tmp/coldcalls_worker_heartbeat")
 MIN_CONCURRENT_CALLS = 1
 MAX_CONCURRENT_CALLS = 20
@@ -75,6 +83,10 @@ class CampaignWorker:
 
     def process_pending_campaigns(self):
         """Find and process all running campaigns"""
+        removed_artifacts = prune_stale_ai_runtime_artifacts()
+        if removed_artifacts:
+            logger.info("Pruned %s stale AI runtime artifact(s)", removed_artifacts)
+
         campaigns = self.db.query(Campaign).filter(
             Campaign.status == CampaignStatus.RUNNING
         ).all()
@@ -124,6 +136,11 @@ class CampaignWorker:
             return
         if campaign.audio and campaign.audio.user_id != user.id:
             logger.warning(f"Campaign {campaign.id}: Resource ownership mismatch, pausing")
+            campaign.status = CampaignStatus.PAUSED
+            self.db.commit()
+            return
+        if campaign.ai_agent and campaign.ai_agent.user_id != user.id:
+            logger.warning(f"Campaign {campaign.id}: AI agent ownership mismatch, pausing")
             campaign.status = CampaignStatus.PAUSED
             self.db.commit()
             return
@@ -276,6 +293,11 @@ class CampaignWorker:
                 campaign.status = CampaignStatus.PAUSED
                 db.commit()
                 return
+            if campaign.ai_agent and campaign.ai_agent.user_id != user.id:
+                logger.warning(f"Campaign {campaign.id}: AI agent ownership mismatch while processing number {number.id}")
+                campaign.status = CampaignStatus.PAUSED
+                db.commit()
+                return
 
             try:
                 voice_service = self._build_voice_service(campaign, user, db=db)
@@ -387,6 +409,11 @@ class CampaignWorker:
             # Poll for completion
             final_result = voice_service.poll_call_status(
                 call_result['call_sid'],
+                max_wait=(
+                    int(settings.AI_POLL_MAX_WAIT_SECONDS)
+                    if campaign.campaign_mode == CampaignMode.AI_AGENT
+                    else 70
+                ),
                 status_callback=persist_status_update,
                 metadata={"campaign_number_id": number.id},
             )
@@ -402,6 +429,16 @@ class CampaignWorker:
             else:
                 cost = 0.0
 
+            ai_policy_error = self._ai_runtime_policy_error(campaign, final_duration, cost)
+            error_message = None
+            if ai_policy_error:
+                final_status = CallStatus.FAILED
+                error_message = ai_policy_error
+                update_campaign_number_ai_observability(
+                    number.id,
+                    ai_runtime_error=ai_policy_error,
+                )
+
             db.query(CampaignNumber).filter(
                 CampaignNumber.id == number.id
             ).update(
@@ -411,6 +448,7 @@ class CampaignWorker:
                     CampaignNumber.answered_by: final_answered_by,
                     CampaignNumber.processed_at: datetime.utcnow(),
                     CampaignNumber.cost: cost,
+                    CampaignNumber.error_message: error_message,
                 },
                 synchronize_session=False
             )
@@ -428,6 +466,22 @@ class CampaignWorker:
                 Campaign.id == campaign.id
             ).update(campaign_updates, synchronize_session=False)
             db.commit()
+
+            if ai_policy_error:
+                db.query(Campaign).filter(Campaign.id == campaign.id).update(
+                    {Campaign.status: CampaignStatus.PAUSED},
+                    synchronize_session=False,
+                )
+                db.commit()
+                logger.warning(
+                    "Campaign %s paused due to AI runtime policy violation on number %s: %s",
+                    campaign.id,
+                    number.id,
+                    ai_policy_error,
+                )
+
+            if campaign.campaign_mode == CampaignMode.AI_AGENT:
+                cleanup_ai_runtime_artifacts(number.id)
 
             logger.info(
                 f"Call to {phone_number}: "
@@ -458,6 +512,12 @@ class CampaignWorker:
                 synchronize_session=False
             )
             db.commit()
+            if campaign.campaign_mode == CampaignMode.AI_AGENT:
+                update_campaign_number_ai_observability(
+                    number.id,
+                    ai_runtime_error=str(e),
+                )
+                cleanup_ai_runtime_artifacts(number.id)
 
     def _map_status(self, provider_status: str, default: CallStatus = CallStatus.FAILED) -> CallStatus:
         """Map provider status to CallStatus enum"""
@@ -504,9 +564,35 @@ class CampaignWorker:
 
         return None
 
+    def _ai_runtime_policy_error(
+        self,
+        campaign: Campaign,
+        final_duration: int,
+        cost: float,
+    ) -> str | None:
+        if campaign.campaign_mode != CampaignMode.AI_AGENT:
+            return None
+
+        max_duration = int(settings.AI_MAX_CALL_DURATION_SECONDS)
+        max_cost = float(settings.AI_MAX_CALL_COST_USD)
+        if max_duration > 0 and final_duration > max_duration:
+            return (
+                f"AI call exceeded max duration policy: {final_duration}s > {max_duration}s"
+            )
+        if max_cost > 0 and cost > max_cost:
+            return f"AI call exceeded max cost policy: ${cost:.3f} > ${max_cost:.3f}"
+        return None
+
     def _build_voice_service(self, campaign: Campaign, user: User, db: Optional[Session] = None):
         session = db or self.db
         provider = campaign.voice_provider.value if hasattr(campaign.voice_provider, "value") else str(campaign.voice_provider)
+
+        if campaign.campaign_mode == CampaignMode.AI_AGENT:
+            if provider != VoiceProvider.SIGNALWIRE.value:
+                raise ValueError("AI agent campaigns require SignalWire")
+            if not campaign.ai_agent or not campaign.ai_agent.is_active:
+                raise ValueError("AI agent is not configured or inactive")
+            return AICallRuntimeService(session, user.id)
 
         if provider == VoiceProvider.TWILIO.value:
             account_sid, auth_token = get_user_twilio_credentials(session, user.id)

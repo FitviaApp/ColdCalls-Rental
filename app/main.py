@@ -75,11 +75,12 @@ templates = Jinja2Templates(directory="app/templates")
 
 
 # Include routers
-from app.routers import auth, dashboard, campaigns, admin, api, assets, billing  # noqa: E402
+from app.routers import auth, dashboard, campaigns, admin, api, assets, billing, ai_agents  # noqa: E402
 
 app.include_router(auth.router)
 app.include_router(dashboard.router)
 app.include_router(campaigns.router)
+app.include_router(ai_agents.router)
 app.include_router(billing.router)
 app.include_router(assets.router)
 app.include_router(admin.router)

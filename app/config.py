@@ -43,6 +43,23 @@ class Settings(BaseSettings):
     # User limits
     MAX_USERS: int = 4
 
+    # AI runtime defaults
+    OPENAI_API_BASE: str = "https://api.openai.com/v1"
+    OPENAI_DEFAULT_MODEL: str = "gpt-4o-mini"
+    OPENAI_REQUEST_TIMEOUT_SECONDS: float = 45.0
+    ELEVENLABS_TTS_MODEL: str = "eleven_multilingual_v2"
+    ELEVENLABS_REQUEST_TIMEOUT_SECONDS: float = 60.0
+    AI_MAX_AGENT_TURNS: int = 6
+    AI_MAX_HISTORY_MESSAGES: int = 12
+    AI_MAX_NO_INPUT_TURNS: int = 2
+    AI_MAX_ASSISTANT_TEXT_CHARS: int = 320
+    AI_HTTP_MAX_RETRIES: int = 2
+    AI_HTTP_RETRY_BACKOFF_SECONDS: float = 0.5
+    AI_MAX_CALL_DURATION_SECONDS: int = 600
+    AI_MAX_CALL_COST_USD: float = 5.0
+    AI_POLL_MAX_WAIT_SECONDS: int = 120
+    AI_RUNTIME_ARTIFACT_TTL_SECONDS: int = 3600
+
     @field_validator("DEBUG", mode="before")
     @classmethod
     def normalize_debug(cls, value):

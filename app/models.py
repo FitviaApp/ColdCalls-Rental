@@ -52,6 +52,11 @@ class VoiceProvider(str, enum.Enum):
     VOXIMPLANT = "voximplant"
 
 
+class CampaignMode(str, enum.Enum):
+    AUDIO = "audio"
+    AI_AGENT = "ai_agent"
+
+
 class VoxCallerIDVerificationStatus(str, enum.Enum):
     NOT_STARTED = "not_started"
     PENDING = "pending"
@@ -110,6 +115,19 @@ class User(Base):
         cascade="all, delete-orphan",
         uselist=False
     )
+    openai_credentials = relationship(
+        "UserOpenAICredential",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        uselist=False
+    )
+    elevenlabs_credentials = relationship(
+        "UserElevenLabsCredential",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        uselist=False
+    )
+    ai_agents = relationship("AIAgent", back_populates="user", cascade="all, delete-orphan")
 
     def __repr__(self):
         return f"<User {self.email}>"
@@ -190,6 +208,13 @@ class Campaign(Base):
     caller_id_id = Column(Integer, ForeignKey("caller_ids.id"), nullable=False)
     country_id = Column(Integer, ForeignKey("countries.id"), nullable=False)
     audio_id = Column(Integer, ForeignKey("audios.id"), nullable=True)
+    ai_agent_id = Column(Integer, ForeignKey("ai_agents.id"), nullable=True, index=True)
+    campaign_mode = Column(
+        Enum(CampaignMode, values_callable=lambda enum_cls: [member.value for member in enum_cls]),
+        default=CampaignMode.AUDIO,
+        nullable=False,
+        index=True,
+    )
     status = Column(Enum(CampaignStatus), default=CampaignStatus.DRAFT, index=True)
     press_1_to_talk_with_agent = Column(Boolean, default=False, nullable=False)
     voice_provider = Column(
@@ -216,6 +241,7 @@ class Campaign(Base):
     caller_id = relationship("CallerID", back_populates="campaigns")
     country = relationship("Country", back_populates="campaigns")
     audio = relationship("Audio", back_populates="campaigns")
+    ai_agent = relationship("AIAgent", back_populates="campaigns")
     numbers = relationship("CampaignNumber", back_populates="campaign", cascade="all, delete-orphan")
 
     def __repr__(self):
@@ -239,6 +265,12 @@ class CampaignNumber(Base):
     duration_seconds = Column(Integer, nullable=True)
     cost = Column(Float, nullable=True)
     answered_by = Column(String(50), nullable=True)  # human, machine, unknown
+    ai_turn_count = Column(Integer, nullable=True)
+    ai_no_input_turns = Column(Integer, nullable=True)
+    ai_last_user_input = Column(Text, nullable=True)
+    ai_last_assistant_text = Column(Text, nullable=True)
+    ai_handoff_reason = Column(Text, nullable=True)
+    ai_runtime_error = Column(Text, nullable=True)
     processed_at = Column(DateTime, nullable=True)
     error_message = Column(Text, nullable=True)
 
@@ -342,6 +374,60 @@ class UserVoximplantCredential(Base):
 
     def __repr__(self):
         return f"<UserVoximplantCredential user_id={self.user_id}>"
+
+
+class UserOpenAICredential(Base):
+    __tablename__ = "user_openai_credentials"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, unique=True, index=True)
+    api_key_encrypted = Column(Text, nullable=False)
+    organization_id_encrypted = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    user = relationship("User", back_populates="openai_credentials")
+
+    def __repr__(self):
+        return f"<UserOpenAICredential user_id={self.user_id}>"
+
+
+class UserElevenLabsCredential(Base):
+    __tablename__ = "user_elevenlabs_credentials"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, unique=True, index=True)
+    api_key_encrypted = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    user = relationship("User", back_populates="elevenlabs_credentials")
+
+    def __repr__(self):
+        return f"<UserElevenLabsCredential user_id={self.user_id}>"
+
+
+class AIAgent(Base):
+    __tablename__ = "ai_agents"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    system_prompt = Column(Text, nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False, index=True)
+    language = Column(String(10), default="en", nullable=False)
+    voice_id = Column(String(100), nullable=False)
+    model = Column(String(100), nullable=False, default="gpt-4o-mini")
+    temperature = Column(Float, nullable=False, default=0.7)
+    handoff_description = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    user = relationship("User", back_populates="ai_agents")
+    campaigns = relationship("Campaign", back_populates="ai_agent")
+
+    def __repr__(self):
+        return f"<AIAgent {self.name}>"
 
 
 class RentalPlan(Base):

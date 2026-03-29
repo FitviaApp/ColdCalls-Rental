@@ -6,16 +6,25 @@ import re
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.auth import hash_password, verify_password
 from app.database import get_db
 from app.dependencies import get_current_user, require_active_rental
-from app.models import User, Campaign, CampaignStatus
+from app.models import User, Campaign, CampaignNumber, CampaignStatus, CampaignMode, AIAgent
 from app.services.rental_service import get_active_rental
 from app.services.user_telnyx_service import (
     has_user_telnyx_credentials,
     upsert_user_telnyx_credentials,
+)
+from app.services.user_openai_service import (
+    has_user_openai_credentials,
+    upsert_user_openai_credentials,
+)
+from app.services.user_elevenlabs_service import (
+    has_user_elevenlabs_credentials,
+    upsert_user_elevenlabs_credentials,
 )
 from app.services.user_signalwire_service import (
     has_user_signalwire_credentials,
@@ -36,6 +45,7 @@ from app.services.user_voximplant_service import (
     upsert_user_voximplant_credentials,
 )
 from app.services.user_voice_provider_service import has_any_user_voice_provider_credentials
+from app.services.user_voice_provider_service import has_user_ai_runtime_credentials
 from app.services.twilio_service import TwilioService
 from app.services.voximplant_management_service import ensure_user_voximplant_resources
 
@@ -57,6 +67,8 @@ def _settings_context(
     telnyx_saved: bool = False,
     vonage_saved: bool = False,
     voximplant_saved: bool = False,
+    openai_saved: bool = False,
+    elevenlabs_saved: bool = False,
     voximplant_provisioned: bool = False,
     password_saved: bool = False,
     error: str | None = None,
@@ -71,6 +83,8 @@ def _settings_context(
         "telnyx_saved": telnyx_saved,
         "vonage_saved": vonage_saved,
         "voximplant_saved": voximplant_saved,
+        "openai_saved": openai_saved,
+        "elevenlabs_saved": elevenlabs_saved,
         "voximplant_provisioned": voximplant_provisioned,
         "password_saved": password_saved,
         "twilio_configured": has_user_twilio_credentials(db, user.id),
@@ -78,6 +92,8 @@ def _settings_context(
         "telnyx_configured": has_user_telnyx_credentials(db, user.id),
         "vonage_configured": has_user_vonage_credentials(db, user.id),
         "voximplant_configured": has_user_voximplant_credentials(db, user.id),
+        "openai_configured": has_user_openai_credentials(db, user.id),
+        "elevenlabs_configured": has_user_elevenlabs_credentials(db, user.id),
         "voximplant_status": voximplant_credentials.provision_status if voximplant_credentials else None,
         "voximplant_error": voximplant_credentials.provision_error if voximplant_credentials else None,
         "error": error,
@@ -98,6 +114,44 @@ async def dashboard(
 
     # Calculate stats
     all_campaigns = db.query(Campaign).filter(Campaign.user_id == user.id).all()
+    ai_campaigns = [c for c in all_campaigns if c.campaign_mode == CampaignMode.AI_AGENT]
+    ai_campaign_ids = [c.id for c in ai_campaigns]
+    ai_runtime_totals = {
+        "numbers": 0,
+        "handoffs": 0,
+        "errors": 0,
+        "silent_turns": 0,
+        "avg_turns": 0.0,
+    }
+    if ai_campaign_ids:
+        ai_runtime_totals = {
+            "numbers": db.query(func.count(CampaignNumber.id)).filter(
+                CampaignNumber.campaign_id.in_(ai_campaign_ids)
+            ).scalar() or 0,
+            "handoffs": db.query(func.count(CampaignNumber.id)).filter(
+                CampaignNumber.campaign_id.in_(ai_campaign_ids),
+                CampaignNumber.ai_handoff_reason.isnot(None),
+            ).scalar() or 0,
+            "errors": db.query(func.count(CampaignNumber.id)).filter(
+                CampaignNumber.campaign_id.in_(ai_campaign_ids),
+                CampaignNumber.ai_runtime_error.isnot(None),
+            ).scalar() or 0,
+            "silent_turns": db.query(func.coalesce(func.sum(CampaignNumber.ai_no_input_turns), 0)).filter(
+                CampaignNumber.campaign_id.in_(ai_campaign_ids)
+            ).scalar() or 0,
+            "avg_turns": float(
+                db.query(func.coalesce(func.avg(CampaignNumber.ai_turn_count), 0)).filter(
+                    CampaignNumber.campaign_id.in_(ai_campaign_ids),
+                    CampaignNumber.ai_turn_count.isnot(None),
+                ).scalar() or 0.0
+            ),
+        }
+    ai_agents_total = db.query(func.count(AIAgent.id)).filter(AIAgent.user_id == user.id).scalar() or 0
+    active_ai_agents_total = db.query(func.count(AIAgent.id)).filter(
+        AIAgent.user_id == user.id,
+        AIAgent.is_active == True,
+    ).scalar() or 0
+    recent_ai_campaigns = [c for c in campaigns if c.campaign_mode == CampaignMode.AI_AGENT][:3]
 
     twilio_balance = None
     twilio_balance_currency = "USD"
@@ -128,9 +182,20 @@ async def dashboard(
         "rental_active": False,
         "twilio_configured": twilio_configured,
         "voximplant_configured": has_user_voximplant_credentials(db, user.id),
+        "openai_configured": has_user_openai_credentials(db, user.id),
+        "elevenlabs_configured": has_user_elevenlabs_credentials(db, user.id),
+        "ai_runtime_configured": has_user_ai_runtime_credentials(db, user.id),
         "twilio_balance": twilio_balance,
         "twilio_balance_currency": twilio_balance_currency,
         "twilio_balance_error": twilio_balance_error,
+        "ai_campaigns": len(ai_campaigns),
+        "ai_agents_total": ai_agents_total,
+        "ai_agents_active": active_ai_agents_total,
+        "ai_runtime_numbers": ai_runtime_totals["numbers"],
+        "ai_runtime_handoffs": ai_runtime_totals["handoffs"],
+        "ai_runtime_errors": ai_runtime_totals["errors"],
+        "ai_runtime_silent_turns": ai_runtime_totals["silent_turns"],
+        "ai_runtime_avg_turns": ai_runtime_totals["avg_turns"],
     }
     active_rental = get_active_rental(db, user.id)
     stats["rental_active"] = bool(active_rental)
@@ -141,6 +206,7 @@ async def dashboard(
             "request": request,
             "user": user,
             "campaigns": campaigns,
+            "recent_ai_campaigns": recent_ai_campaigns,
             "stats": stats,
             "active_rental": active_rental,
         }
@@ -157,6 +223,8 @@ async def settings_page(
     telnyx_saved: bool = False,
     vonage_saved: bool = False,
     voximplant_saved: bool = False,
+    openai_saved: bool = False,
+    elevenlabs_saved: bool = False,
     voximplant_provisioned: bool = False,
     password_saved: bool = False,
     db: Session = Depends(get_db)
@@ -174,6 +242,8 @@ async def settings_page(
             telnyx_saved=telnyx_saved,
             vonage_saved=vonage_saved,
             voximplant_saved=voximplant_saved,
+            openai_saved=openai_saved,
+            elevenlabs_saved=elevenlabs_saved,
             voximplant_provisioned=voximplant_provisioned,
             password_saved=password_saved,
         ),
@@ -502,3 +572,47 @@ async def reprovision_voximplant(
         url="/dashboard/settings?voximplant_provisioned=true",
         status_code=302,
     )
+
+
+@router.post("/settings/openai")
+async def save_openai_credentials(
+    request: Request,
+    api_key: str = Form(...),
+    organization_id: str = Form(default=""),
+    user: User = Depends(require_active_rental),
+    db: Session = Depends(get_db)
+):
+    api_key = api_key.strip()
+    organization_id = organization_id.strip()
+
+    if not api_key.startswith("sk-"):
+        return templates.TemplateResponse(
+            "dashboard/settings.html",
+            _settings_context(request, user, db, error="OpenAI API key must start with sk-."),
+            status_code=400,
+        )
+
+    upsert_user_openai_credentials(db, user.id, api_key, organization_id)
+    db.commit()
+    return RedirectResponse(url="/dashboard/settings?openai_saved=true", status_code=302)
+
+
+@router.post("/settings/elevenlabs")
+async def save_elevenlabs_credentials(
+    request: Request,
+    api_key: str = Form(...),
+    user: User = Depends(require_active_rental),
+    db: Session = Depends(get_db)
+):
+    api_key = api_key.strip()
+
+    if len(api_key) < 20:
+        return templates.TemplateResponse(
+            "dashboard/settings.html",
+            _settings_context(request, user, db, error="ElevenLabs API key looks invalid."),
+            status_code=400,
+        )
+
+    upsert_user_elevenlabs_credentials(db, user.id, api_key)
+    db.commit()
+    return RedirectResponse(url="/dashboard/settings?elevenlabs_saved=true", status_code=302)

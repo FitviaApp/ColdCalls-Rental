@@ -182,6 +182,17 @@ def _apply_schema_patches():
                 )
             )
 
+        if _column_exists("campaigns", "campaign_mode") is False:
+            conn.execute(
+                text(
+                    "ALTER TABLE campaigns "
+                    "ADD COLUMN campaign_mode VARCHAR(20) NOT NULL DEFAULT 'audio'"
+                )
+            )
+
+        if _column_exists("campaigns", "ai_agent_id") is False:
+            conn.execute(text("ALTER TABLE campaigns ADD COLUMN ai_agent_id INTEGER"))
+
         if _column_exists("campaigns", "audio_id") and not _column_is_nullable("campaigns", "audio_id"):
             _ensure_campaign_audio_nullable(conn)
 
@@ -198,3 +209,19 @@ def _apply_schema_patches():
 
         if _column_exists("caller_ids", "vox_last_verification_at") is False:
             conn.execute(text("ALTER TABLE caller_ids ADD COLUMN vox_last_verification_at DATETIME"))
+
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_campaigns_campaign_mode ON campaigns(campaign_mode)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_campaigns_ai_agent_id ON campaigns(ai_agent_id)"))
+
+        if _column_exists("campaign_numbers", "ai_turn_count") is False:
+            conn.execute(text("ALTER TABLE campaign_numbers ADD COLUMN ai_turn_count INTEGER"))
+        if _column_exists("campaign_numbers", "ai_no_input_turns") is False:
+            conn.execute(text("ALTER TABLE campaign_numbers ADD COLUMN ai_no_input_turns INTEGER"))
+        if _column_exists("campaign_numbers", "ai_last_user_input") is False:
+            conn.execute(text("ALTER TABLE campaign_numbers ADD COLUMN ai_last_user_input TEXT"))
+        if _column_exists("campaign_numbers", "ai_last_assistant_text") is False:
+            conn.execute(text("ALTER TABLE campaign_numbers ADD COLUMN ai_last_assistant_text TEXT"))
+        if _column_exists("campaign_numbers", "ai_handoff_reason") is False:
+            conn.execute(text("ALTER TABLE campaign_numbers ADD COLUMN ai_handoff_reason TEXT"))
+        if _column_exists("campaign_numbers", "ai_runtime_error") is False:
+            conn.execute(text("ALTER TABLE campaign_numbers ADD COLUMN ai_runtime_error TEXT"))

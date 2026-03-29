@@ -4,6 +4,20 @@
 
 {% block content %}
 <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8" x-data="campaignDetail()" x-init="init()">
+    {% if ai_runtime_summary and ai_runtime_summary.policy_paused %}
+    <div class="mb-6 rounded-lg border border-amber-200 bg-amber-50 p-4">
+        <div class="flex items-start justify-between gap-4">
+            <div>
+                <h2 class="text-sm font-semibold text-amber-900">Campaign paused by AI safety policy</h2>
+                <p class="mt-1 text-sm text-amber-800">
+                    This campaign was paused automatically because an AI call exceeded a configured duration or cost limit.
+                </p>
+            </div>
+            <a href="/dashboard/settings" class="text-sm font-medium text-amber-900 underline">Review settings</a>
+        </div>
+    </div>
+    {% endif %}
+
     <div class="mb-8 flex justify-between items-start">
         <div>
             <div class="flex items-center space-x-3">
@@ -116,6 +130,17 @@
             <div class="border-t border-gray-200 px-4 py-5 sm:px-6">
                 <dl class="space-y-3">
                     <div>
+                        <dt class="text-sm font-medium text-gray-500">Campaign mode</dt>
+                        <dd class="text-sm text-gray-900">
+                            {% set campaign_mode_value = campaign.campaign_mode.value if campaign.campaign_mode.value is defined else campaign.campaign_mode %}
+                            {% if campaign_mode_value == 'ai_agent' %}
+                            AI agent
+                            {% else %}
+                            Audio / transfer
+                            {% endif %}
+                        </dd>
+                    </div>
+                    <div>
                         <dt class="text-sm font-medium text-gray-500">Country</dt>
                         <dd class="text-sm text-gray-900">{{ campaign.country.name }} ({{ campaign.country.code }})</dd>
                     </div>
@@ -130,10 +155,42 @@
                     <div>
                         <dt class="text-sm font-medium text-gray-500">Audio</dt>
                         <dd class="text-sm text-gray-900">
-                            {% if campaign.audio %}
+                            {% if campaign.ai_agent %}
+                            Not used in AI mode
+                            {% elif campaign.audio %}
                             {{ campaign.audio.name }}
                             {% else %}
                             No audio (direct transfer)
+                            {% endif %}
+                        </dd>
+                    </div>
+                    <div>
+                        <dt class="text-sm font-medium text-gray-500">AI Agent</dt>
+                        <dd class="text-sm text-gray-900">
+                            {% if campaign.ai_agent %}
+                            {{ campaign.ai_agent.name }}
+                            {% else %}
+                            Not used
+                            {% endif %}
+                        </dd>
+                    </div>
+                    <div>
+                        <dt class="text-sm font-medium text-gray-500">AI Model</dt>
+                        <dd class="text-sm text-gray-900">
+                            {% if campaign.ai_agent %}
+                            {{ campaign.ai_agent.model }}
+                            {% else %}
+                            Not used
+                            {% endif %}
+                        </dd>
+                    </div>
+                    <div>
+                        <dt class="text-sm font-medium text-gray-500">AI Voice</dt>
+                        <dd class="text-sm text-gray-900 font-mono">
+                            {% if campaign.ai_agent %}
+                            {{ campaign.ai_agent.voice_id }}
+                            {% else %}
+                            Not used
                             {% endif %}
                         </dd>
                     </div>
@@ -150,7 +207,13 @@
                     <div>
                         <dt class="text-sm font-medium text-gray-500">Press 1 flow</dt>
                         <dd class="text-sm text-gray-900">
-                            {% if campaign.press_1_to_talk_with_agent %}Enabled{% else %}Disabled{% endif %}
+                            {% if campaign_mode_value == 'ai_agent' %}
+                            Not used in AI mode
+                            {% elif campaign.press_1_to_talk_with_agent %}
+                            Enabled
+                            {% else %}
+                            Disabled
+                            {% endif %}
                         </dd>
                     </div>
                     <div>
@@ -184,6 +247,13 @@
                                       :class="statusBadgeClass(number.status)"
                                       x-text="formatStatus(number.status)"></span>
                                 <span x-show="number.answered_by" class="ml-1 text-xs text-gray-500" x-text="'(' + number.answered_by + ')'"></span>
+                                <div x-show="number.ai_turn_count || number.ai_handoff_reason || number.ai_runtime_error" class="mt-1 space-y-1">
+                                    <div x-show="number.ai_turn_count" class="text-xs text-gray-500" x-text="'AI turns: ' + number.ai_turn_count + (number.ai_no_input_turns ? ' | silent reprompts: ' + number.ai_no_input_turns : '')"></div>
+                                    <div x-show="number.ai_handoff_reason" class="text-xs text-violet-700" x-text="'Handoff: ' + number.ai_handoff_reason"></div>
+                                    <div x-show="number.ai_last_user_input" class="text-xs text-gray-500" x-text="'Lead: ' + number.ai_last_user_input"></div>
+                                    <div x-show="number.ai_last_assistant_text" class="text-xs text-gray-500" x-text="'AI: ' + number.ai_last_assistant_text"></div>
+                                    <div x-show="number.ai_runtime_error" class="text-xs text-red-600" x-text="'AI runtime issue: ' + humanizeRuntimeError(number.ai_runtime_error)"></div>
+                                </div>
                             </td>
                             <td class="px-4 py-2 whitespace-nowrap text-sm text-gray-500" x-text="formatDuration(number.duration_seconds)"></td>
                             <td class="px-4 py-2 whitespace-nowrap text-sm text-gray-500" x-text="formatCost(number.cost)"></td>
@@ -194,6 +264,75 @@
             </div>
         </div>
     </div>
+
+    {% if ai_runtime_summary %}
+    <div class="mb-8">
+        <div class="bg-white shadow rounded-lg">
+            <div class="px-4 py-5 sm:px-6">
+                <h3 class="text-lg font-medium text-gray-900">AI Runtime Health</h3>
+                <p class="mt-1 text-sm text-gray-500">Operational summary for this AI campaign.</p>
+            </div>
+            <div class="border-t border-gray-200 px-4 py-5 sm:px-6">
+                <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                    <div class="rounded-lg bg-violet-50 px-4 py-3">
+                        <div class="text-sm text-violet-700">Handoffs completed</div>
+                        <div class="mt-1 text-2xl font-semibold text-violet-900">{{ ai_runtime_summary.handoffs }}</div>
+                    </div>
+                    <div class="rounded-lg bg-red-50 px-4 py-3">
+                        <div class="text-sm text-red-700">Runtime errors</div>
+                        <div class="mt-1 text-2xl font-semibold text-red-900">{{ ai_runtime_summary.runtime_errors }}</div>
+                    </div>
+                    <div class="rounded-lg bg-amber-50 px-4 py-3">
+                        <div class="text-sm text-amber-700">Silent reprompts</div>
+                        <div class="mt-1 text-2xl font-semibold text-amber-900">{{ ai_runtime_summary.lead_reprompts }}</div>
+                    </div>
+                    <div class="rounded-lg bg-sky-50 px-4 py-3">
+                        <div class="text-sm text-sky-700">Average AI turns</div>
+                        <div class="mt-1 text-2xl font-semibold text-sky-900">{{ "%.1f"|format(ai_runtime_summary.avg_turns) }}</div>
+                    </div>
+                </div>
+                <div class="mt-5 grid grid-cols-1 gap-4 lg:grid-cols-2">
+                    <div class="rounded-lg border border-gray-200 px-4 py-3">
+                        <div class="text-sm font-medium text-gray-700">Latest handoff reason</div>
+                        <div class="mt-1 text-sm text-gray-600">
+                            {% if ai_runtime_summary.last_handoff_reason %}
+                            {{ ai_runtime_summary.last_handoff_reason }}
+                            {% else %}
+                            No handoff has been recorded yet.
+                            {% endif %}
+                        </div>
+                    </div>
+                    <div class="rounded-lg border border-gray-200 px-4 py-3">
+                        <div class="text-sm font-medium text-gray-700">Latest runtime issue</div>
+                        <div class="mt-1 text-sm {% if ai_runtime_summary.last_runtime_error %}text-red-600{% else %}text-gray-600{% endif %}">
+                            {% if ai_runtime_summary.last_runtime_error %}
+                            <div>{{ ai_runtime_summary.last_runtime_error }}</div>
+                            <div class="mt-1 text-xs text-gray-500">
+                                Friendly summary:
+                                {% if 'max duration policy' in ai_runtime_summary.last_runtime_error %}
+                                the call ran longer than the configured AI duration limit.
+                                {% elif 'max cost policy' in ai_runtime_summary.last_runtime_error %}
+                                the call cost exceeded the configured AI budget limit.
+                                {% elif 'OpenAI request failed' in ai_runtime_summary.last_runtime_error %}
+                                OpenAI did not respond successfully after retries.
+                                {% elif 'ElevenLabs request failed' in ai_runtime_summary.last_runtime_error %}
+                                ElevenLabs did not return voice audio after retries.
+                                {% elif 'SignalWire' in ai_runtime_summary.last_runtime_error %}
+                                SignalWire could not complete the live call flow.
+                                {% else %}
+                                the runtime hit an operational error and the call was stopped.
+                                {% endif %}
+                            </div>
+                            {% else %}
+                            No runtime errors recorded.
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
 </div>
 {% endblock %}
 
@@ -266,6 +405,17 @@ function campaignDetail() {
         formatCost(cost) {
             if (!cost) return '-';
             return `$${Number(cost).toFixed(3)}`;
+        },
+        humanizeRuntimeError(error) {
+            const value = String(error || '').trim();
+            if (!value) return '';
+            const normalized = value.toLowerCase();
+            if (normalized.includes('max duration policy')) return 'Call exceeded the configured AI duration limit';
+            if (normalized.includes('max cost policy')) return 'Call exceeded the configured AI cost limit';
+            if (normalized.includes('openai request failed')) return 'OpenAI did not respond successfully after retries';
+            if (normalized.includes('elevenlabs request failed')) return 'ElevenLabs did not return voice audio after retries';
+            if (normalized.includes('signalwire')) return 'SignalWire could not complete the call flow';
+            return value;
         },
         statusBadgeClass(status) {
             const normalized = String(status || '').toLowerCase();

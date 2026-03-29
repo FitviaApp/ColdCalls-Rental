@@ -1,0 +1,67 @@
+<div class="bg-white shadow rounded-lg">
+    {% set form = form_data if form_data is defined else {} %}
+    <div class="px-4 py-5 sm:px-6">
+        <h3 class="text-lg font-medium text-gray-900">Agent Configuration</h3>
+        <p class="mt-1 text-sm text-gray-500">
+            AI agents speak in English, qualify the lead, and transfer when the model triggers the handoff tool.
+        </p>
+    </div>
+    <div class="border-t border-gray-200 px-4 py-5 sm:px-6 space-y-4">
+        <div>
+            <label for="name" class="block text-sm font-medium text-gray-700">Agent Name</label>
+            <input type="text" name="name" id="name" required
+                value="{{ form.get('name', agent.name if agent else '') }}"
+                class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border px-3 py-2"
+                placeholder="e.g., Real Estate Qualifier">
+        </div>
+        <div>
+            <label for="voice_id" class="block text-sm font-medium text-gray-700">ElevenLabs Voice ID</label>
+            <input type="text" name="voice_id" id="voice_id" required
+                value="{{ form.get('voice_id', agent.voice_id if agent else '') }}"
+                class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border px-3 py-2"
+                placeholder="Enter the ElevenLabs voice ID">
+        </div>
+        <div class="grid grid-cols-1 gap-4 sm:grid-cols-3">
+            <div>
+                <label for="model" class="block text-sm font-medium text-gray-700">OpenAI Model</label>
+                <input type="text" name="model" id="model"
+                    value="{{ form.get('model', agent.model if agent else default_model) }}"
+                    class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border px-3 py-2">
+            </div>
+            <div>
+                <label for="language" class="block text-sm font-medium text-gray-700">Language</label>
+                <input type="text" name="language" id="language"
+                    value="{{ form.get('language', agent.language if agent else default_language) }}"
+                    class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border px-3 py-2">
+            </div>
+            <div>
+                <label for="temperature" class="block text-sm font-medium text-gray-700">Temperature</label>
+                <input type="number" step="0.1" min="0" max="2" name="temperature" id="temperature"
+                    value="{{ form.get('temperature', agent.temperature if agent else default_temperature) }}"
+                    class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border px-3 py-2">
+            </div>
+        </div>
+        <div>
+            <label for="handoff_description" class="block text-sm font-medium text-gray-700">Handoff Description</label>
+            <textarea name="handoff_description" id="handoff_description" rows="3"
+                class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border px-3 py-2"
+                placeholder="Describe when the AI should transfer to the human agent.">{{ form.get('handoff_description', agent.handoff_description if agent and agent.handoff_description else '') }}</textarea>
+        </div>
+        <div>
+            <label for="system_prompt" class="block text-sm font-medium text-gray-700">System Prompt</label>
+            <textarea name="system_prompt" id="system_prompt" rows="12" required
+                class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border px-3 py-2"
+                placeholder="Describe your offer, qualification criteria, objections handling, and tone.">{{ form.get('system_prompt', agent.system_prompt if agent else '') }}</textarea>
+        </div>
+        <div class="border rounded-md p-3 bg-gray-50">
+            <label class="flex items-start space-x-3 cursor-pointer">
+                <input type="checkbox" name="is_active" class="mt-1 h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                    {% if form.get('is_active', (not agent or agent.is_active)) %}checked{% endif %}>
+                <span>
+                    <span class="block text-sm font-medium text-gray-700">Agent is active</span>
+                    <span class="block text-xs text-gray-500">Inactive agents stay in the library but cannot be selected for new AI campaigns.</span>
+                </span>
+            </label>
+        </div>
+    </div>
+</div>

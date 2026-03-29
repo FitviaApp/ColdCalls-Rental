@@ -9,9 +9,14 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.config import get_settings
 from app.dependencies import require_active_rental
-from app.models import User, Campaign, CampaignNumber, CallerID, Country, Audio, CampaignStatus, VoiceProvider, CallStatus
+from app.models import User, Campaign, CampaignNumber, CallerID, Country, Audio, CampaignStatus, VoiceProvider, CallStatus, CampaignMode
 from app.schemas import DashboardStats, CampaignProgress, DropdownCallerID, DropdownCountry, DropdownAudio
 from app.services.rental_service import has_active_rental
+from app.services.ai_call_runtime_service import (
+    build_ai_runtime_followup_twiml,
+    build_ai_runtime_twiml,
+    get_ai_runtime_audio,
+)
 from app.services.voximplant_service import decode_voximplant_callback_token
 
 logger = logging.getLogger(__name__)
@@ -40,6 +45,13 @@ def _build_press_1_gather_block(base_url: str, campaign_id: int) -> str:
         f'action="{base_url}/api/twiml/{campaign_id}/gather" method="POST" actionOnEmptyResult="true">'
         "<Say voice=\"alice\">Press 1 to talk with an agent.</Say>"
         "</Gather>"
+    )
+
+
+def _ai_runtime_hangup_response() -> Response:
+    return Response(
+        content='<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>',
+        media_type="application/xml",
     )
 
 
@@ -258,7 +270,39 @@ async def voximplant_callback(
         number.error_message = str(error_message)[:500]
     db.commit()
 
-    return {"ok": True}
+
+@router.get("/ai-runtime/twiml/{campaign_number_id}")
+@router.post("/ai-runtime/twiml/{campaign_number_id}")
+async def ai_runtime_twiml(campaign_number_id: int):
+    twiml = build_ai_runtime_twiml(campaign_number_id)
+    return Response(content=twiml, media_type="application/xml")
+
+
+@router.post("/ai-runtime/twiml/{campaign_number_id}/gather")
+async def ai_runtime_twiml_gather(
+    campaign_number_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    number = db.query(CampaignNumber).filter(CampaignNumber.id == campaign_number_id).first()
+    if not number or not number.campaign or number.campaign.campaign_mode != CampaignMode.AI_AGENT:
+        return _ai_runtime_hangup_response()
+
+    form_data = await request.form()
+    speech_result = str(form_data.get("SpeechResult") or "").strip()
+    digits = str(form_data.get("Digits") or "").strip()
+    user_input = speech_result or digits
+
+    twiml = build_ai_runtime_followup_twiml(campaign_number_id, user_input)
+    return Response(content=twiml, media_type="application/xml")
+
+
+@router.get("/ai-runtime/audio/{campaign_number_id}/{audio_token}")
+async def ai_runtime_audio(campaign_number_id: int, audio_token: str):
+    audio_bytes = get_ai_runtime_audio(campaign_number_id, audio_token)
+    if not audio_bytes:
+        raise HTTPException(status_code=404, detail="Audio not found")
+    return Response(content=audio_bytes, media_type="audio/mpeg")
 
 
 @router.get("/stats", response_model=DashboardStats)
@@ -339,6 +383,12 @@ async def get_campaign_numbers(
                 "duration_seconds": n.duration_seconds,
                 "cost": n.cost,
                 "answered_by": n.answered_by,
+                "ai_turn_count": n.ai_turn_count,
+                "ai_no_input_turns": n.ai_no_input_turns,
+                "ai_last_user_input": n.ai_last_user_input,
+                "ai_last_assistant_text": n.ai_last_assistant_text,
+                "ai_handoff_reason": n.ai_handoff_reason,
+                "ai_runtime_error": n.ai_runtime_error,
                 "processed_at": n.processed_at.isoformat() if n.processed_at else None
             }
             for n in numbers

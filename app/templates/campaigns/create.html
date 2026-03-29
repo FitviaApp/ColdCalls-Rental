@@ -4,6 +4,7 @@
 
 {% block content %}
 <div class="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8">
+    {% set form = form_data if form_data is defined else {} %}
     <div class="mb-8">
         <h1 class="text-2xl font-bold text-gray-900">New Campaign</h1>
         <p class="text-gray-500">Configure your cold call campaign</p>
@@ -22,6 +23,20 @@
     </div>
     {% endif %}
 
+    {% if ai_agents|length == 0 %}
+    <div class="mb-6 bg-blue-50 border border-blue-200 text-blue-800 px-4 py-3 rounded">
+        AI agent campaigns require at least one reusable agent.
+        <a href="/ai-agents/create" class="underline font-medium">Create an AI agent</a>.
+    </div>
+    {% endif %}
+
+    {% if not ai_runtime_configured %}
+    <div class="mb-6 bg-blue-50 border border-blue-200 text-blue-800 px-4 py-3 rounded">
+        To run AI agent campaigns, configure SignalWire, OpenAI, and ElevenLabs in
+        <a href="/dashboard/settings#openai" class="underline font-medium">Settings</a>.
+    </div>
+    {% endif %}
+
     <form action="/campaigns/create" method="POST" enctype="multipart/form-data" class="space-y-6">
         <div class="bg-white shadow rounded-lg">
             <div class="px-4 py-5 sm:px-6">
@@ -29,11 +44,21 @@
             </div>
             <div class="border-t border-gray-200 px-4 py-5 sm:px-6 space-y-4">
                 <div>
+                    <label for="campaign_mode" class="block text-sm font-medium text-gray-700">Campaign Mode</label>
+                    <select name="campaign_mode" id="campaign_mode" required
+                        class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border px-3 py-2">
+                        <option value="audio" {% if form.get('campaign_mode', 'audio') == 'audio' %}selected{% endif %}>Audio / transfer campaign</option>
+                        <option value="ai_agent" {% if form.get('campaign_mode') == 'ai_agent' %}selected{% endif %}>AI agent campaign</option>
+                    </select>
+                    <p class="mt-1 text-xs text-gray-500">Audio campaigns use recorded assets. AI agent campaigns use SignalWire + OpenAI + ElevenLabs and talk in English.</p>
+                </div>
+
+                <div>
                     <label for="voice_provider" class="block text-sm font-medium text-gray-700">Voice Provider</label>
                     <select name="voice_provider" id="voice_provider" required
                         class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border px-3 py-2">
                         {% for provider in voice_providers %}
-                        <option value="{{ provider.value }}" {% if not provider.configured %}disabled{% endif %}>
+                        <option value="{{ provider.value }}" {% if form.get('voice_provider', 'twilio') == provider.value %}selected{% endif %} {% if not provider.configured %}disabled{% endif %}>
                             {{ provider.label }}{% if not provider.configured %} (not configured){% endif %}
                         </option>
                         {% endfor %}
@@ -45,7 +70,8 @@
                     <label for="name" class="block text-sm font-medium text-gray-700">Campaign Name</label>
                     <input type="text" name="name" id="name" required
                         class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border px-3 py-2"
-                        placeholder="e.g., January 2025 Campaign">
+                        placeholder="e.g., January 2025 Campaign"
+                        value="{{ form.get('name', '') }}">
                 </div>
 
                 <div>
@@ -54,7 +80,7 @@
                         class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border px-3 py-2">
                         <option value="">Select a source number</option>
                         {% for caller_id in caller_ids %}
-                        <option value="{{ caller_id.id }}">
+                        <option value="{{ caller_id.id }}" {% if form.get('caller_id_id') == (caller_id.id|string) %}selected{% endif %}>
                             {{ caller_id.phone_number }} {% if caller_id.description %}({{ caller_id.description }}){% endif %}
                         </option>
                         {% endfor %}
@@ -62,24 +88,39 @@
                     <p class="mt-1 text-xs text-gray-500">Country and pricing are inferred from this number.</p>
                 </div>
 
-                <div>
+                <div id="audio_section">
                     <label for="audio_id" class="block text-sm font-medium text-gray-700">Audio</label>
                     <select name="audio_id" id="audio_id"
                         class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border px-3 py-2">
-                        <option value="">No audio (direct transfer)</option>
+                        <option value="" {% if not form.get('audio_id') %}selected{% endif %}>No audio (direct transfer)</option>
                         {% for audio in audios %}
-                        <option value="{{ audio.id }}">{{ audio.name }} {% if audio.duration_seconds %}({{ audio.duration_seconds }}s){% endif %}</option>
+                        <option value="{{ audio.id }}" {% if form.get('audio_id') == (audio.id|string) %}selected{% endif %}>{{ audio.name }} {% if audio.duration_seconds %}({{ audio.duration_seconds }}s){% endif %}</option>
                         {% endfor %}
                     </select>
                     <p class="mt-1 text-xs text-gray-500">When no audio is selected, the call is transferred directly. If "Press 1" is enabled, a short TTS prompt is used before transfer.</p>
                 </div>
 
-                <div class="border rounded-md p-3 bg-gray-50">
+                <div id="ai_agent_section" class="hidden">
+                    <label for="ai_agent_id" class="block text-sm font-medium text-gray-700">AI Agent</label>
+                    <select name="ai_agent_id" id="ai_agent_id"
+                        class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border px-3 py-2">
+                        <option value="" {% if not form.get('ai_agent_id') %}selected{% endif %}>Select an AI agent</option>
+                        {% for agent in ai_agents %}
+                        <option value="{{ agent.id }}" {% if form.get('ai_agent_id') == (agent.id|string) %}selected{% endif %} {% if not agent.is_active %}disabled{% endif %}>
+                            {{ agent.name }}{% if not agent.is_active %} (inactive){% endif %}
+                        </option>
+                        {% endfor %}
+                    </select>
+                    <p class="mt-1 text-xs text-gray-500">AI agent campaigns will use the selected reusable prompt, OpenAI model, and ElevenLabs voice.</p>
+                </div>
+
+                <div class="border rounded-md p-3 bg-gray-50" id="press1_section">
                     <label class="flex items-start space-x-3 cursor-pointer">
                         <input type="checkbox" name="press_1_to_talk_with_agent" id="press_1_to_talk_with_agent"
-                            class="mt-1 h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
-                            <span>
-                                <span class="block text-sm font-medium text-gray-700">Enable "Press 1 to talk with an agent"</span>
+                            class="mt-1 h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                            {% if form.get('press_1_to_talk_with_agent') %}checked{% endif %}>
+                        <span>
+                            <span class="block text-sm font-medium text-gray-700">Enable "Press 1 to talk with an agent"</span>
                             <span class="block text-xs text-gray-500">If enabled, the call is only transferred when the callee presses 1 (supported by Twilio, SignalWire, and Voximplant).</span>
                         </span>
                     </label>
@@ -87,7 +128,7 @@
 
                 <div>
                     <label for="max_concurrent_calls" class="block text-sm font-medium text-gray-700">Concurrent Calls</label>
-                    <input type="number" name="max_concurrent_calls" id="max_concurrent_calls" min="1" max="20" value="1" required
+                    <input type="number" name="max_concurrent_calls" id="max_concurrent_calls" min="1" max="20" value="{{ form.get('max_concurrent_calls', 1) }}" required
                         class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border px-3 py-2">
                     <p class="mt-1 text-xs text-gray-500">
                         Defines how many calls can run at the same time. For Twilio, new calls still start at a maximum of 1 per second.
@@ -109,7 +150,7 @@
                         class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border px-3 py-2 font-mono"
                         placeholder="+15551234567
 +15559876543
-+15551112222"></textarea>
++15551112222">{{ form.get('numbers_text', '') }}</textarea>
                     <p class="mt-1 text-xs text-gray-500">E.164 format: +[country code][number]. Example: +15551234567</p>
                 </div>
 
@@ -158,18 +199,53 @@
 {% block scripts %}
 <script>
 (function() {
+    const campaignModeSelect = document.getElementById('campaign_mode');
     const providerSelect = document.getElementById('voice_provider');
     const press1 = document.getElementById('press_1_to_talk_with_agent');
+    const audioSection = document.getElementById('audio_section');
+    const aiAgentSection = document.getElementById('ai_agent_section');
+    const press1Section = document.getElementById('press1_section');
+    const audioSelect = document.getElementById('audio_id');
+    const aiAgentSelect = document.getElementById('ai_agent_id');
 
     function syncPress1Availability() {
-        const supportsPress1 = ['twilio', 'signalwire', 'voximplant'].includes(providerSelect.value);
+        const aiMode = campaignModeSelect.value === 'ai_agent';
+        const supportsPress1 = !aiMode && ['twilio', 'signalwire', 'voximplant'].includes(providerSelect.value);
         press1.disabled = !supportsPress1;
         if (!supportsPress1) {
             press1.checked = false;
         }
+        press1Section.classList.toggle('hidden', aiMode);
     }
 
+    function syncCampaignMode() {
+        const aiMode = campaignModeSelect.value === 'ai_agent';
+        audioSection.classList.toggle('hidden', aiMode);
+        aiAgentSection.classList.toggle('hidden', !aiMode);
+
+        for (const option of providerSelect.options) {
+            if (aiMode) {
+                option.disabled = option.value !== 'signalwire' || option.textContent.includes('(not configured)');
+            } else if (option.textContent.includes('(not configured)')) {
+                option.disabled = true;
+            } else {
+                option.disabled = false;
+            }
+        }
+
+        if (aiMode) {
+            providerSelect.value = 'signalwire';
+            audioSelect.value = '';
+        } else {
+            aiAgentSelect.value = '';
+        }
+
+        syncPress1Availability();
+    }
+
+    campaignModeSelect.addEventListener('change', syncCampaignMode);
     providerSelect.addEventListener('change', syncPress1Availability);
+    syncCampaignMode();
     syncPress1Availability();
 })();
 </script>

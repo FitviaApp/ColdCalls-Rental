@@ -18,6 +18,15 @@
         </a>
     </div>
 
+    <div class="mb-4 flex flex-wrap items-center gap-2 text-xs">
+        <span class="inline-flex items-center rounded-full bg-violet-100 px-2.5 py-1 font-medium text-violet-800">AI agent</span>
+        <span class="text-gray-500">Reusable voice agent workflow</span>
+        <span class="inline-flex items-center rounded-full bg-red-100 px-2.5 py-1 font-medium text-red-800">Runtime issue</span>
+        <span class="text-gray-500">At least one call recorded an AI runtime error</span>
+        <span class="inline-flex items-center rounded-full bg-amber-100 px-2.5 py-1 font-medium text-amber-800">Policy paused</span>
+        <span class="text-gray-500">Paused automatically after hitting duration or cost limits</span>
+    </div>
+
     {% if campaigns %}
     <div class="bg-white shadow overflow-hidden rounded-lg">
         <table class="min-w-full divide-y divide-gray-200">
@@ -48,7 +57,35 @@
                 <tr class="hover:bg-gray-50">
                     <td class="px-6 py-4 whitespace-nowrap">
                         <div class="text-sm font-medium text-gray-900">{{ campaign.name }}</div>
-                        <div class="text-sm text-gray-500">{{ campaign.total_numbers }} numbers</div>
+                        <div class="mt-1 flex items-center gap-2">
+                            {% set campaign_mode_value = campaign.campaign_mode.value if campaign.campaign_mode.value is defined else campaign.campaign_mode %}
+                            {% set ai_summary = ai_runtime_summary_by_campaign.get(campaign.id, {}) %}
+                            <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium {% if campaign_mode_value == 'ai_agent' %}bg-violet-100 text-violet-800{% else %}bg-gray-100 text-gray-800{% endif %}">
+                                {% if campaign_mode_value == 'ai_agent' %}AI agent{% else %}Audio{% endif %}
+                            </span>
+                            {% if campaign_mode_value == 'ai_agent' and ai_summary.get('runtime_errors') %}
+                            <span class="inline-flex items-center rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-800">
+                                {{ ai_summary.get('runtime_errors') }} runtime issue{% if ai_summary.get('runtime_errors') != 1 %}s{% endif %}
+                            </span>
+                            {% endif %}
+                            {% if campaign_mode_value == 'ai_agent' and ai_summary.get('policy_paused') %}
+                            <span class="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800">
+                                Policy paused
+                            </span>
+                            {% endif %}
+                            <span class="text-sm text-gray-500">{{ campaign.total_numbers }} numbers</span>
+                        </div>
+                        {% if campaign.ai_agent %}
+                        <div class="text-xs text-gray-500 mt-1">Agent: {{ campaign.ai_agent.name }}</div>
+                        {% endif %}
+                        {% if campaign_mode_value == 'ai_agent' %}
+                        <div class="text-xs text-gray-500 mt-1">
+                            {{ ai_summary.get('handoffs', 0) }} handoff{% if ai_summary.get('handoffs', 0) != 1 %}s{% endif %}
+                            {% if ai_summary.get('last_runtime_error') %}
+                            <span class="text-red-600">• {{ ai_summary.get('last_runtime_error')[:80] }}{% if ai_summary.get('last_runtime_error')|length > 80 %}...{% endif %}</span>
+                            {% endif %}
+                        </div>
+                        {% endif %}
                     </td>
                     <td class="px-6 py-4 whitespace-nowrap">
                         <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium

@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Optional, List
 from pydantic import BaseModel, EmailStr, Field
 
-from app.models import CampaignStatus, CallStatus, VoiceProvider, VoxCallerIDVerificationStatus
+from app.models import CampaignStatus, CallStatus, VoiceProvider, VoxCallerIDVerificationStatus, CampaignMode
 
 
 # ============== User Schemas ==============
@@ -141,6 +141,8 @@ class CampaignCreate(CampaignBase):
     caller_id_id: int
     country_id: int
     audio_id: Optional[int] = None
+    ai_agent_id: Optional[int] = None
+    campaign_mode: CampaignMode = CampaignMode.AUDIO
     phone_numbers: List[str]  # List of phone numbers to call
 
 
@@ -154,6 +156,8 @@ class CampaignResponse(CampaignBase):
     caller_id_id: int
     country_id: int
     audio_id: Optional[int]
+    ai_agent_id: Optional[int]
+    campaign_mode: CampaignMode
     press_1_to_talk_with_agent: bool
     voice_provider: VoiceProvider
     max_concurrent_calls: int

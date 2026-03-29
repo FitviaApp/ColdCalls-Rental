@@ -47,6 +47,8 @@ class SignalWireService:
         press_1_to_talk_with_agent: bool = False,
         timeout: int = 60,
         metadata: Optional[dict] = None,
+        answer_url: Optional[str] = None,
+        enable_machine_detection: bool = True,
     ) -> dict:
         del metadata
         logger.info(f"Initiating SignalWire call to {to_number} from {from_number}")
@@ -56,7 +58,9 @@ class SignalWireService:
             "From": from_number,
             "Timeout": int(timeout),
         }
-        if press_1_to_talk_with_agent:
+        if answer_url:
+            payload["Url"] = answer_url
+        elif press_1_to_talk_with_agent:
             if campaign_id is None:
                 raise ValueError("campaign_id is required when press_1_to_talk_with_agent is enabled")
             base_url = settings.BASE_URL.rstrip("/")
@@ -78,7 +82,7 @@ class SignalWireService:
             payload["Twiml"] = twiml
 
         machine_detection_payload: dict[str, str | int] = {}
-        if not press_1_to_talk_with_agent:
+        if enable_machine_detection and not press_1_to_talk_with_agent and not answer_url:
             machine_detection_payload = {
                 "MachineDetection": "Enable",
                 "MachineDetectionTimeout": 5,

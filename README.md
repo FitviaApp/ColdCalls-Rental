@@ -5,6 +5,7 @@ Plataforma web para gerenciamento de campanhas de cold calls multiusuario com:
 - FastAPI + Jinja2
 - SQLAlchemy + SQLite
 - Twilio, SignalWire, Telnyx, Vonage e Voximplant
+- Agentes de IA reutilizaveis com OpenAI + ElevenLabs + SignalWire
 - Cloudflare R2 (audios)
 - Cobranca de aluguel via USDT (verificacao on-chain)
 
@@ -51,6 +52,7 @@ README.md
 
 - Python 3.11+
 - Pelo menos um provider de voz configurado por usuario
+- Para campanhas com agente IA: SignalWire + credenciais OpenAI + ElevenLabs por usuario
 - Bucket Cloudflare R2 (para audios)
 - Chave Etherscan (verificacao de pagamento)
 - `BASE_URL` publica para callbacks de providers
@@ -79,6 +81,10 @@ SECRET_KEY=change-me-in-production-min-32-chars
 DEBUG=false
 # URL publica para callbacks Twilio, SignalWire, Telnyx e Voximplant
 BASE_URL=http://localhost:8000
+OPENAI_API_BASE=https://api.openai.com/v1
+OPENAI_DEFAULT_MODEL=gpt-4o-mini
+ELEVENLABS_TTS_MODEL=eleven_multilingual_v2
+AI_MAX_AGENT_TURNS=6
 
 # Banco
 DATABASE_URL=sqlite:///./coldcalls.db
@@ -142,16 +148,21 @@ O worker verifica campanhas `running` a cada 10 segundos.
 5. Cada usuario configura:
    - Numero de transferencia em `/dashboard/settings`
    - Credenciais de voz em `/dashboard/settings`
+   - Credenciais OpenAI e ElevenLabs em `/dashboard/settings`
    - Caller IDs em `/assets/caller-ids`
    - Audios em `/assets/audios`
+   - Agentes IA reutilizaveis em `/ai-agents`
    - Se usar Voximplant, verifica cada Caller ID pelo fluxo de codigo em `/assets/caller-ids`
 6. O usuario paga aluguel em `/billing`.
 7. Crie e inicie campanhas em `/campaigns`.
+   - `audio`: usa audio gravado e/ou transferencia direta
+   - `ai_agent`: usa SignalWire + OpenAI + ElevenLabs para conversar em tempo real e transferir via ferramenta explicita
 
 ## Rotas principais
 
 - Auth: `/auth/login`, `/auth/logout`
 - Dashboard: `/dashboard`, `/dashboard/settings`
+- AI Agents: `/ai-agents`, `/ai-agents/create`, `/ai-agents/{id}/edit`
 - Assets: `/assets/caller-ids`, `/assets/audios`
 - Campanhas: `/campaigns`, `/campaigns/create`, `/campaigns/{id}`
 - Billing: `/billing`, `POST /billing/verify`
@@ -165,7 +176,33 @@ O worker verifica campanhas `running` a cada 10 segundos.
   - `/api/data/audios`
   - `/api/twiml/{campaign_id}` (Twilio/SignalWire)
   - `/api/telnyx/texml/{campaign_id}`
+  - `/api/ai-runtime/twiml/{campaign_number_id}` (SignalWire + IA)
+  - `/api/ai-runtime/audio/{campaign_number_id}/{audio_token}`
   - `/api/voximplant/callback`
+
+## Campanhas com Agente IA
+
+Fluxo da v1:
+
+1. O usuario cadastra SignalWire, OpenAI e ElevenLabs em `/dashboard/settings`.
+2. O usuario cria um agente reutilizavel em `/ai-agents` com:
+   - nome
+   - prompt do sistema
+   - `voice_id` da ElevenLabs
+   - modelo OpenAI
+   - regra de handoff
+3. Em `/campaigns/create`, escolhe `Campaign Mode = AI agent`.
+4. A campanha usa SignalWire para originar a chamada.
+5. OpenAI decide as falas e quando chamar a ferramenta `transfer_call`.
+6. ElevenLabs sintetiza cada resposta em audio.
+7. Quando o modelo decide transferir, a chamada vai para o `transfer_number` do usuario.
+
+Observacoes:
+
+- O idioma padrao da v1 e ingles.
+- O modo IA nao usa `audio_id`.
+- O modo IA nao usa o fluxo `Press 1`.
+- `BASE_URL` precisa estar acessivel publicamente para os callbacks `/api/ai-runtime/*`.
 
 ## Voximplant
 

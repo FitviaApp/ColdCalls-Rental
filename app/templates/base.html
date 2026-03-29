@@ -31,6 +31,9 @@
                         <a href="/assets/caller-ids" class="{% if '/assets' in request.url.path %}border-indigo-500 text-gray-900{% else %}border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700{% endif %} inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">
                             Assets
                         </a>
+                        <a href="/ai-agents" class="{% if '/ai-agents' in request.url.path %}border-indigo-500 text-gray-900{% else %}border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700{% endif %} inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">
+                            AI Agents
+                        </a>
                         <a href="/billing" class="{% if '/billing' in request.url.path %}border-indigo-500 text-gray-900{% else %}border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700{% endif %} inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">
                             Billing
                         </a>
@@ -72,6 +75,7 @@
                 <a href="/dashboard" class="block pl-3 pr-4 py-2 text-base font-medium text-gray-700 hover:bg-gray-50">Dashboard</a>
                 <a href="/campaigns" class="block pl-3 pr-4 py-2 text-base font-medium text-gray-700 hover:bg-gray-50">Campaigns</a>
                 <a href="/assets/caller-ids" class="block pl-3 pr-4 py-2 text-base font-medium text-gray-700 hover:bg-gray-50">Assets</a>
+                <a href="/ai-agents" class="block pl-3 pr-4 py-2 text-base font-medium text-gray-700 hover:bg-gray-50">AI Agents</a>
                 <a href="/billing" class="block pl-3 pr-4 py-2 text-base font-medium text-gray-700 hover:bg-gray-50">Billing</a>
                 {% if user.is_admin %}
                 <a href="/admin" class="block pl-3 pr-4 py-2 text-base font-medium text-gray-700 hover:bg-gray-50">Admin</a>
