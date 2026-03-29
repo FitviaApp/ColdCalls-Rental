@@ -443,6 +443,49 @@ class SignalWireSupportTests(unittest.TestCase):
         self.assertTrue(result["should_transfer"])
         self.assertEqual(result["handoff_reason"], "Strong purchase intent")
 
+    def test_ai_runtime_twiml_uses_low_latency_gather_defaults(self):
+        import app.services.ai_call_runtime_service as runtime_module
+
+        original_timeout = runtime_module.settings.AI_GATHER_TIMEOUT_SECONDS
+        original_speech_timeout = runtime_module.settings.AI_GATHER_SPEECH_TIMEOUT_SECONDS
+        original_pause = runtime_module.settings.AI_GATHER_POST_PLAY_PAUSE_SECONDS
+
+        runtime_module.settings.AI_GATHER_TIMEOUT_SECONDS = 3
+        runtime_module.settings.AI_GATHER_SPEECH_TIMEOUT_SECONDS = 1
+        runtime_module.settings.AI_GATHER_POST_PLAY_PAUSE_SECONDS = 0
+        try:
+            service = AICallRuntimeService.__new__(AICallRuntimeService)
+            twiml = service._twiml_for_turn(
+                55,
+                {"from_number": "+15550001111", "transfer_number": "+15550002222"},
+                {"audio_token": "token", "should_transfer": False},
+            )
+        finally:
+            runtime_module.settings.AI_GATHER_TIMEOUT_SECONDS = original_timeout
+            runtime_module.settings.AI_GATHER_SPEECH_TIMEOUT_SECONDS = original_speech_timeout
+            runtime_module.settings.AI_GATHER_POST_PLAY_PAUSE_SECONDS = original_pause
+
+        self.assertIn('speechTimeout="1"', twiml)
+        self.assertIn('timeout="3"', twiml)
+        self.assertNotIn("<Pause", twiml)
+
+    def test_ai_runtime_twiml_includes_optional_post_play_pause(self):
+        import app.services.ai_call_runtime_service as runtime_module
+
+        original_pause = runtime_module.settings.AI_GATHER_POST_PLAY_PAUSE_SECONDS
+        runtime_module.settings.AI_GATHER_POST_PLAY_PAUSE_SECONDS = 2
+        try:
+            service = AICallRuntimeService.__new__(AICallRuntimeService)
+            twiml = service._twiml_for_turn(
+                55,
+                {"from_number": "+15550001111", "transfer_number": "+15550002222"},
+                {"audio_token": "token", "should_transfer": False},
+            )
+        finally:
+            runtime_module.settings.AI_GATHER_POST_PLAY_PAUSE_SECONDS = original_pause
+
+        self.assertIn('<Pause length="2"/>', twiml)
+
     def test_ai_runtime_post_binary_with_retries_retries_on_empty_audio(self):
         import app.services.ai_call_runtime_service as runtime_module
 

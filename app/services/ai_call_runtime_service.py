@@ -556,11 +556,19 @@ class AICallRuntimeService:
     </Dial>
 </Response>"""
 
+        gather_timeout_seconds = max(1, int(settings.AI_GATHER_TIMEOUT_SECONDS))
+        speech_timeout_seconds = max(1, int(settings.AI_GATHER_SPEECH_TIMEOUT_SECONDS))
+        post_play_pause_seconds = max(0, int(settings.AI_GATHER_POST_PLAY_PAUSE_SECONDS))
+        pause_block = (
+            f"\n        <Pause length=\"{post_play_pause_seconds}\"/>"
+            if post_play_pause_seconds
+            else ""
+        )
+
         return f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Play>{audio_url}</Play>
-    <Gather input="speech dtmf" speechTimeout="auto" timeout="6" action="{settings.BASE_URL.rstrip('/')}/api/ai-runtime/twiml/{campaign_number_id}/gather" method="POST" actionOnEmptyResult="true">
-        <Pause length="1"/>
+    <Gather input="speech dtmf" speechTimeout="{speech_timeout_seconds}" timeout="{gather_timeout_seconds}" action="{settings.BASE_URL.rstrip('/')}/api/ai-runtime/twiml/{campaign_number_id}/gather" method="POST" actionOnEmptyResult="true">{pause_block}
     </Gather>
     <Hangup/>
 </Response>"""
