@@ -8,7 +8,7 @@ import logging
 import secrets
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import httpx
 from sqlalchemy.orm import Session
@@ -31,6 +31,10 @@ MAX_AGENT_TURNS = settings.AI_MAX_AGENT_TURNS
 MAX_HISTORY_MESSAGES = settings.AI_MAX_HISTORY_MESSAGES
 MAX_NO_INPUT_TURNS = settings.AI_MAX_NO_INPUT_TURNS
 MAX_ASSISTANT_TEXT_CHARS = settings.AI_MAX_ASSISTANT_TEXT_CHARS
+
+
+class InvalidProviderResponseError(RuntimeError):
+    """Raised when a provider responds successfully but with unusable content."""
 
 
 def _truncate_text(value: str | None, limit: int = 500) -> str | None:
@@ -463,6 +467,7 @@ class AICallRuntimeService:
             headers=headers,
             json_payload=json_payload,
             timeout_seconds=timeout_seconds,
+            response_validator=self._validate_audio_response,
         )
         return response.content
 
@@ -474,6 +479,7 @@ class AICallRuntimeService:
         headers: dict[str, str],
         json_payload: dict[str, Any],
         timeout_seconds: float,
+        response_validator: Callable[[httpx.Response], None] | None = None,
     ) -> httpx.Response:
         max_attempts = max(1, int(settings.AI_HTTP_MAX_RETRIES) + 1)
         last_error: Exception | None = None
@@ -487,8 +493,15 @@ class AICallRuntimeService:
                         json=json_payload,
                     )
                 response.raise_for_status()
+                if response_validator is not None:
+                    response_validator(response)
                 return response
-            except (httpx.TimeoutException, httpx.RequestError, httpx.HTTPStatusError) as exc:
+            except (
+                httpx.TimeoutException,
+                httpx.RequestError,
+                httpx.HTTPStatusError,
+                InvalidProviderResponseError,
+            ) as exc:
                 last_error = exc
                 if attempt >= max_attempts:
                     break
@@ -506,6 +519,16 @@ class AICallRuntimeService:
         raise RuntimeError(
             f"{provider_name} request failed after {max_attempts} attempt(s): {last_error}"
         )
+
+    def _validate_audio_response(self, response: httpx.Response) -> None:
+        content_type = str(response.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
+        if not response.content:
+            raise InvalidProviderResponseError("provider returned an empty audio response")
+        if content_type and not content_type.startswith("audio/"):
+            body_preview = _truncate_text(response.text, 160) or "no response body"
+            raise InvalidProviderResponseError(
+                f"provider returned {content_type} instead of audio: {body_preview}"
+            )
 
     def _agent_voice_id(self, session_payload: dict[str, Any]) -> str:
         agent_id = int(session_payload.get("ai_agent_id") or 0)

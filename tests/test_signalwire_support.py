@@ -443,6 +443,110 @@ class SignalWireSupportTests(unittest.TestCase):
         self.assertTrue(result["should_transfer"])
         self.assertEqual(result["handoff_reason"], "Strong purchase intent")
 
+    def test_ai_runtime_post_binary_with_retries_retries_on_empty_audio(self):
+        import app.services.ai_call_runtime_service as runtime_module
+
+        original_client = runtime_module.httpx.Client
+        original_retries = runtime_module.settings.AI_HTTP_MAX_RETRIES
+        original_backoff = runtime_module.settings.AI_HTTP_RETRY_BACKOFF_SECONDS
+
+        attempts = {"count": 0}
+
+        class DummyResponse:
+            def __init__(self, content, content_type="audio/mpeg"):
+                self.content = content
+                self.headers = {"content-type": content_type}
+                self.text = ""
+
+            def raise_for_status(self):
+                return None
+
+        class DummyClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def post(self, url, headers=None, json=None):
+                attempts["count"] += 1
+                if attempts["count"] == 1:
+                    return DummyResponse(b"")
+                return DummyResponse(b"mp3-bytes")
+
+        runtime_module.httpx.Client = DummyClient
+        runtime_module.settings.AI_HTTP_MAX_RETRIES = 2
+        runtime_module.settings.AI_HTTP_RETRY_BACKOFF_SECONDS = 0
+        try:
+            service = AICallRuntimeService.__new__(AICallRuntimeService)
+            audio_bytes = service._post_binary_with_retries(
+                provider_name="ElevenLabs",
+                url="https://example.com",
+                headers={},
+                json_payload={},
+                timeout_seconds=1.0,
+            )
+        finally:
+            runtime_module.httpx.Client = original_client
+            runtime_module.settings.AI_HTTP_MAX_RETRIES = original_retries
+            runtime_module.settings.AI_HTTP_RETRY_BACKOFF_SECONDS = original_backoff
+
+        self.assertEqual(audio_bytes, b"mp3-bytes")
+        self.assertEqual(attempts["count"], 2)
+
+    def test_ai_runtime_post_binary_with_retries_raises_for_non_audio_payload(self):
+        import app.services.ai_call_runtime_service as runtime_module
+
+        original_client = runtime_module.httpx.Client
+        original_retries = runtime_module.settings.AI_HTTP_MAX_RETRIES
+        original_backoff = runtime_module.settings.AI_HTTP_RETRY_BACKOFF_SECONDS
+
+        class DummyResponse:
+            def __init__(self):
+                self.content = b'{"detail":"voice not found"}'
+                self.headers = {"content-type": "application/json"}
+                self.text = '{"detail":"voice not found"}'
+
+            def raise_for_status(self):
+                return None
+
+        class DummyClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def post(self, url, headers=None, json=None):
+                return DummyResponse()
+
+        runtime_module.httpx.Client = DummyClient
+        runtime_module.settings.AI_HTTP_MAX_RETRIES = 0
+        runtime_module.settings.AI_HTTP_RETRY_BACKOFF_SECONDS = 0
+        try:
+            service = AICallRuntimeService.__new__(AICallRuntimeService)
+            with self.assertRaises(RuntimeError) as ctx:
+                service._post_binary_with_retries(
+                    provider_name="ElevenLabs",
+                    url="https://example.com",
+                    headers={},
+                    json_payload={},
+                    timeout_seconds=1.0,
+                )
+        finally:
+            runtime_module.httpx.Client = original_client
+            runtime_module.settings.AI_HTTP_MAX_RETRIES = original_retries
+            runtime_module.settings.AI_HTTP_RETRY_BACKOFF_SECONDS = original_backoff
+
+        self.assertIn("application/json", str(ctx.exception))
+        self.assertIn("voice not found", str(ctx.exception))
+
     def test_ai_runtime_policy_error_enforces_duration_and_cost_limits(self):
         import app.services.campaign_worker as worker_module
 
