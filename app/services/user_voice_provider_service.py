@@ -83,10 +83,25 @@ def get_user_voice_provider_status(db: Session, user_id: int) -> list[dict]:
     return providers
 
 
-def has_user_ai_runtime_credentials(db: Session, user_id: int) -> bool:
-    """True when the user can run AI-agent campaigns via SignalWire + OpenAI + ElevenLabs."""
+def has_user_legacy_ai_runtime_credentials(db: Session, user_id: int) -> bool:
+    """Legacy runtime requires SignalWire + OpenAI + ElevenLabs."""
     return (
         has_user_signalwire_credentials(db, user_id)
         and has_user_openai_credentials(db, user_id)
         and has_user_elevenlabs_credentials(db, user_id)
     )
+
+
+def has_user_elevenlabs_agent_runtime_credentials(db: Session, user_id: int) -> bool:
+    """ElevenLabs SIP runtime requires SignalWire + ElevenLabs."""
+    return (
+        has_user_signalwire_credentials(db, user_id)
+        and has_user_elevenlabs_credentials(db, user_id)
+    )
+
+
+def has_user_ai_runtime_credentials(db: Session, user_id: int) -> bool:
+    """
+    Backward-compatible alias used by legacy code/tests.
+    """
+    return has_user_legacy_ai_runtime_credentials(db, user_id)

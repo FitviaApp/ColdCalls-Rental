@@ -6,13 +6,14 @@ from __future__ import annotations
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.models import AIAgent
+from app.models import AIAgent, AIAgentRuntimeProvider
 
 settings = get_settings()
 
 DEFAULT_AI_AGENT_MODEL = settings.OPENAI_DEFAULT_MODEL
 DEFAULT_AI_AGENT_LANGUAGE = "en"
 DEFAULT_AI_AGENT_TEMPERATURE = 0.7
+DEFAULT_AI_AGENT_RUNTIME_PROVIDER = AIAgentRuntimeProvider.ELEVENLABS_AGENT.value
 
 
 def list_user_ai_agents(db: Session, user_id: int) -> list[AIAgent]:
@@ -38,9 +39,16 @@ def create_user_ai_agent(
     model: str = DEFAULT_AI_AGENT_MODEL,
     temperature: float = DEFAULT_AI_AGENT_TEMPERATURE,
     language: str = DEFAULT_AI_AGENT_LANGUAGE,
+    runtime_provider: str = DEFAULT_AI_AGENT_RUNTIME_PROVIDER,
     handoff_description: str = "",
     is_active: bool = True,
 ) -> AIAgent:
+    normalized_runtime_provider = (runtime_provider or DEFAULT_AI_AGENT_RUNTIME_PROVIDER).strip().lower()
+    if normalized_runtime_provider not in {
+        AIAgentRuntimeProvider.LEGACY_OPENAI.value,
+        AIAgentRuntimeProvider.ELEVENLABS_AGENT.value,
+    }:
+        raise ValueError("Invalid AI agent runtime provider")
     agent = AIAgent(
         user_id=user_id,
         name=name.strip(),
@@ -49,6 +57,7 @@ def create_user_ai_agent(
         model=(model or DEFAULT_AI_AGENT_MODEL).strip(),
         temperature=float(temperature),
         language=(language or DEFAULT_AI_AGENT_LANGUAGE).strip().lower(),
+        runtime_provider=normalized_runtime_provider,
         handoff_description=handoff_description.strip() or None,
         is_active=bool(is_active),
     )
@@ -66,15 +75,23 @@ def update_user_ai_agent(
     model: str,
     temperature: float,
     language: str,
+    runtime_provider: str,
     handoff_description: str,
     is_active: bool,
 ) -> AIAgent:
+    normalized_runtime_provider = (runtime_provider or DEFAULT_AI_AGENT_RUNTIME_PROVIDER).strip().lower()
+    if normalized_runtime_provider not in {
+        AIAgentRuntimeProvider.LEGACY_OPENAI.value,
+        AIAgentRuntimeProvider.ELEVENLABS_AGENT.value,
+    }:
+        raise ValueError("Invalid AI agent runtime provider")
     agent.name = name.strip()
     agent.system_prompt = system_prompt.strip()
     agent.voice_id = voice_id.strip()
     agent.model = (model or DEFAULT_AI_AGENT_MODEL).strip()
     agent.temperature = float(temperature)
     agent.language = (language or DEFAULT_AI_AGENT_LANGUAGE).strip().lower()
+    agent.runtime_provider = normalized_runtime_provider
     agent.handoff_description = handoff_description.strip() or None
     agent.is_active = bool(is_active)
     return agent

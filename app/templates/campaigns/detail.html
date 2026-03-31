@@ -185,12 +185,37 @@
                         </dd>
                     </div>
                     <div>
+                        <dt class="text-sm font-medium text-gray-500">AI Runtime</dt>
+                        <dd class="text-sm text-gray-900">
+                            {% if campaign.ai_agent %}
+                            {% set runtime_provider = campaign.ai_agent.runtime_provider.value if campaign.ai_agent.runtime_provider and campaign.ai_agent.runtime_provider.value is defined else campaign.ai_agent.runtime_provider %}
+                            {% if runtime_provider == 'elevenlabs_agent' %}
+                            ElevenLabs SIP
+                            {% else %}
+                            Legacy OpenAI + ElevenLabs TTS
+                            {% endif %}
+                            {% else %}
+                            Not used
+                            {% endif %}
+                        </dd>
+                    </div>
+                    <div>
                         <dt class="text-sm font-medium text-gray-500">AI Voice</dt>
                         <dd class="text-sm text-gray-900 font-mono">
                             {% if campaign.ai_agent %}
                             {{ campaign.ai_agent.voice_id }}
                             {% else %}
                             Not used
+                            {% endif %}
+                        </dd>
+                    </div>
+                    <div>
+                        <dt class="text-sm font-medium text-gray-500">ElevenLabs Agent ID</dt>
+                        <dd class="text-sm text-gray-900 font-mono">
+                            {% if campaign.ai_agent and campaign.ai_agent.external_agent_id %}
+                            {{ campaign.ai_agent.external_agent_id }}
+                            {% else %}
+                            Not set
                             {% endif %}
                         </dd>
                     </div>

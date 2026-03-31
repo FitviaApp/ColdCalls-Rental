@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     ELEVENLABS_OUTPUT_FORMAT: str = "mp3_22050_32"
     ELEVENLABS_OPTIMIZE_STREAMING_LATENCY: int = 3
     ELEVENLABS_REQUEST_TIMEOUT_SECONDS: float = 60.0
+    ELEVENLABS_SYNC_API_BASE: str = "https://api.elevenlabs.io/v1"
+    ELEVENLABS_SYNC_TIMEOUT_SECONDS: float = 20.0
+    ELEVENLABS_SIP_DOMAIN: str = "sip.elevenlabs.io"
     AI_MAX_AGENT_TURNS: int = 6
     AI_MAX_HISTORY_MESSAGES: int = 12
     AI_LIVE_MAX_HISTORY_MESSAGES: int = 6

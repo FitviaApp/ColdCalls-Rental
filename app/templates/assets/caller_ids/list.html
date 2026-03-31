@@ -43,6 +43,7 @@
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Number</th>
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Country</th>
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Description</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ElevenLabs Mapping</th>
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Voximplant</th>
                     <th class="relative px-6 py-3"><span class="sr-only">Actions</span></th>
@@ -54,6 +55,9 @@
                     <td class="px-6 py-4 whitespace-nowrap text-sm font-mono text-gray-900">{{ caller_id.phone_number }}</td>
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{{ caller_id.country_code }}</td>
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{ caller_id.description or '-' }}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 font-mono">
+                        {{ caller_id.elevenlabs_phone_number_id or '-' }}
+                    </td>
                     <td class="px-6 py-4 whitespace-nowrap">
                         {% if caller_id.is_active %}
                         <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">Active</span>

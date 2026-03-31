@@ -12,6 +12,7 @@ from app.database import Base, get_db
 from app.dependencies import require_active_rental
 from app.models import (
     AIAgent,
+    AIAgentRuntimeProvider,
     Audio,
     CallStatus,
     Campaign,
@@ -259,6 +260,43 @@ class AICampaignRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("application/xml", response.headers["content-type"])
         self.assertIn("<Say>Hello</Say>", response.text)
+
+    def test_ai_runtime_elevenlabs_twiml_endpoint_returns_xml(self):
+        original_builder = api_router_module.build_elevenlabs_sip_twiml
+        api_router_module.build_elevenlabs_sip_twiml = (
+            lambda campaign_number_id: '<?xml version="1.0"?><Response><Dial><Sip>sip:test@sip.elevenlabs.io</Sip></Dial></Response>'
+        )
+        try:
+            response = self.client.get("/api/ai-runtime/elevenlabs/twiml/888")
+        finally:
+            api_router_module.build_elevenlabs_sip_twiml = original_builder
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("application/xml", response.headers["content-type"])
+        self.assertIn("<Sip>sip:test@sip.elevenlabs.io</Sip>", response.text)
+
+    def test_create_ai_agent_campaign_requires_caller_mapping_for_elevenlabs_runtime(self):
+        self.ai_agent.runtime_provider = AIAgentRuntimeProvider.ELEVENLABS_AGENT
+        self.ai_agent.external_agent_id = "ext_agent_1"
+        self.db.commit()
+
+        response = self.client.post(
+            "/campaigns/create",
+            data={
+                "name": "AI Campaign",
+                "caller_id_id": str(self.caller_id.id),
+                "campaign_mode": CampaignMode.AI_AGENT.value,
+                "ai_agent_id": str(self.ai_agent.id),
+                "voice_provider": VoiceProvider.SIGNALWIRE.value,
+                "max_concurrent_calls": "2",
+                "numbers_text": "+15551234567",
+            },
+            files={},
+            follow_redirects=False,
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("missing ElevenLabs Phone Number ID", response.text)
 
     def test_ai_runtime_gather_uses_speech_result_for_ai_campaign(self):
         campaign = Campaign(

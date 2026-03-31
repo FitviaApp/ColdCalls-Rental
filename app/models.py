@@ -57,6 +57,11 @@ class CampaignMode(str, enum.Enum):
     AI_AGENT = "ai_agent"
 
 
+class AIAgentRuntimeProvider(str, enum.Enum):
+    LEGACY_OPENAI = "legacy_openai"
+    ELEVENLABS_AGENT = "elevenlabs_agent"
+
+
 class VoxCallerIDVerificationStatus(str, enum.Enum):
     NOT_STARTED = "not_started"
     PENDING = "pending"
@@ -143,6 +148,7 @@ class CallerID(Base):
     description = Column(String(255), default="")
     is_active = Column(Boolean, default=True)
     vox_callerid_id = Column(Integer, nullable=True, index=True)
+    elevenlabs_phone_number_id = Column(String(120), nullable=True, index=True)
     vox_verification_status = Column(
         Enum(
             VoxCallerIDVerificationStatus,
@@ -419,6 +425,17 @@ class AIAgent(Base):
     voice_id = Column(String(100), nullable=False)
     model = Column(String(100), nullable=False, default="gpt-4o-mini")
     temperature = Column(Float, nullable=False, default=0.7)
+    runtime_provider = Column(
+        Enum(
+            AIAgentRuntimeProvider,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=False,
+        default=AIAgentRuntimeProvider.LEGACY_OPENAI,
+        index=True,
+    )
+    external_agent_id = Column(String(120), nullable=True, index=True)
+    last_sync_status = Column(Text, nullable=True)
     handoff_description = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

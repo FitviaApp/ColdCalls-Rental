@@ -32,8 +32,8 @@
 
     {% if not ai_runtime_configured %}
     <div class="mb-6 bg-blue-50 border border-blue-200 text-blue-800 px-4 py-3 rounded">
-        To run AI agent campaigns, configure SignalWire, OpenAI, and ElevenLabs in
-        <a href="/dashboard/settings#openai" class="underline font-medium">Settings</a>.
+        To run ElevenLabs SIP AI campaigns, configure SignalWire and ElevenLabs in
+        <a href="/dashboard/settings#elevenlabs" class="underline font-medium">Settings</a>.
     </div>
     {% endif %}
 
@@ -50,7 +50,7 @@
                         <option value="audio" {% if form.get('campaign_mode', 'audio') == 'audio' %}selected{% endif %}>Audio / transfer campaign</option>
                         <option value="ai_agent" {% if form.get('campaign_mode') == 'ai_agent' %}selected{% endif %}>AI agent campaign</option>
                     </select>
-                    <p class="mt-1 text-xs text-gray-500">Audio campaigns use recorded assets. AI agent campaigns use SignalWire + OpenAI + ElevenLabs and talk in English.</p>
+                    <p class="mt-1 text-xs text-gray-500">Audio campaigns use recorded assets. AI campaigns can run on ElevenLabs SIP (recommended) or the legacy OpenAI runtime.</p>
                 </div>
 
                 <div>
@@ -80,12 +80,13 @@
                         class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border px-3 py-2">
                         <option value="">Select a source number</option>
                         {% for caller_id in caller_ids %}
-                        <option value="{{ caller_id.id }}" {% if form.get('caller_id_id') == (caller_id.id|string) %}selected{% endif %}>
+                        <option value="{{ caller_id.id }}" {% if form.get('caller_id_id') == (caller_id.id|string) %}selected{% endif %}
+                            data-elevenlabs-phone-mapped="{{ '1' if caller_id.elevenlabs_phone_number_id else '0' }}">
                             {{ caller_id.phone_number }} {% if caller_id.description %}({{ caller_id.description }}){% endif %}
                         </option>
                         {% endfor %}
                     </select>
-                    <p class="mt-1 text-xs text-gray-500">Country and pricing are inferred from this number.</p>
+                    <p class="mt-1 text-xs text-gray-500">Country and pricing are inferred from this number. ElevenLabs SIP agents also require this caller ID to have an ElevenLabs Phone Number ID.</p>
                 </div>
 
                 <div id="audio_section">
@@ -106,12 +107,19 @@
                         class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border px-3 py-2">
                         <option value="" {% if not form.get('ai_agent_id') %}selected{% endif %}>Select an AI agent</option>
                         {% for agent in ai_agents %}
-                        <option value="{{ agent.id }}" {% if form.get('ai_agent_id') == (agent.id|string) %}selected{% endif %} {% if not agent.is_active %}disabled{% endif %}>
+                        {% set runtime_provider = agent.runtime_provider.value if agent.runtime_provider and agent.runtime_provider.value is defined else agent.runtime_provider %}
+                        <option value="{{ agent.id }}" {% if form.get('ai_agent_id') == (agent.id|string) %}selected{% endif %} {% if not agent.is_active %}disabled{% endif %}
+                            data-runtime-provider="{{ runtime_provider }}"
+                            data-sync-ready="{{ '1' if agent.external_agent_id else '0' }}">
                             {{ agent.name }}{% if not agent.is_active %} (inactive){% endif %}
                         </option>
                         {% endfor %}
                     </select>
-                    <p class="mt-1 text-xs text-gray-500">AI agent campaigns will use the selected reusable prompt, OpenAI model, and ElevenLabs voice.</p>
+                    <p class="mt-1 text-xs text-gray-500">AI agent campaigns use the selected reusable prompt, voice, and runtime provider.</p>
+                </div>
+
+                <div id="ai_runtime_requirements" class="hidden rounded-md border border-yellow-200 bg-yellow-50 px-4 py-3 text-sm text-yellow-800">
+                    Selected AI runtime requirements are not fully satisfied yet.
                 </div>
 
                 <div class="border rounded-md p-3 bg-gray-50" id="press1_section">
@@ -207,6 +215,8 @@
     const press1Section = document.getElementById('press1_section');
     const audioSelect = document.getElementById('audio_id');
     const aiAgentSelect = document.getElementById('ai_agent_id');
+    const callerIdSelect = document.getElementById('caller_id_id');
+    const aiRuntimeRequirements = document.getElementById('ai_runtime_requirements');
 
     function syncPress1Availability() {
         const aiMode = campaignModeSelect.value === 'ai_agent';
@@ -241,12 +251,60 @@
         }
 
         syncPress1Availability();
+        syncAiRuntimeRequirements();
+    }
+
+    function selectedAiAgentOption() {
+        if (!aiAgentSelect.value) return null;
+        return aiAgentSelect.options[aiAgentSelect.selectedIndex];
+    }
+
+    function selectedCallerIdOption() {
+        if (!callerIdSelect.value) return null;
+        return callerIdSelect.options[callerIdSelect.selectedIndex];
+    }
+
+    function syncAiRuntimeRequirements() {
+        const aiMode = campaignModeSelect.value === 'ai_agent';
+        if (!aiMode) {
+            aiRuntimeRequirements.classList.add('hidden');
+            aiRuntimeRequirements.textContent = '';
+            return;
+        }
+
+        const agentOption = selectedAiAgentOption();
+        const callerOption = selectedCallerIdOption();
+        if (!agentOption) {
+            aiRuntimeRequirements.classList.remove('hidden');
+            aiRuntimeRequirements.textContent = 'Select an AI agent to continue.';
+            return;
+        }
+
+        const runtimeProvider = (agentOption.dataset.runtimeProvider || 'legacy_openai').toLowerCase();
+        const syncReady = agentOption.dataset.syncReady === '1';
+        const callerMapped = callerOption && callerOption.dataset.elevenlabsPhoneMapped === '1';
+
+        if (runtimeProvider === 'elevenlabs_agent' && !syncReady) {
+            aiRuntimeRequirements.classList.remove('hidden');
+            aiRuntimeRequirements.textContent = 'This AI agent is not synced to ElevenLabs yet. Open AI Agents and sync it first.';
+            return;
+        }
+        if (runtimeProvider === 'elevenlabs_agent' && !callerMapped) {
+            aiRuntimeRequirements.classList.remove('hidden');
+            aiRuntimeRequirements.textContent = 'Selected Caller ID is missing ElevenLabs Phone Number ID.';
+            return;
+        }
+        aiRuntimeRequirements.classList.add('hidden');
+        aiRuntimeRequirements.textContent = '';
     }
 
     campaignModeSelect.addEventListener('change', syncCampaignMode);
     providerSelect.addEventListener('change', syncPress1Availability);
+    aiAgentSelect.addEventListener('change', syncAiRuntimeRequirements);
+    callerIdSelect.addEventListener('change', syncAiRuntimeRequirements);
     syncCampaignMode();
     syncPress1Availability();
+    syncAiRuntimeRequirements();
 })();
 </script>
 {% endblock %}

@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.database import SessionLocal
-from app.models import AIAgent, CampaignNumber, CampaignMode
+from app.models import AIAgent, AIAgentRuntimeProvider, CampaignNumber, CampaignMode
 from app.services.signalwire_service import SignalWireService
 from app.services.user_elevenlabs_service import get_user_elevenlabs_credentials
 from app.services.user_openai_service import get_user_openai_credentials
@@ -238,6 +238,13 @@ class AICallRuntimeService:
         agent = campaign.ai_agent
         if not agent or not agent.is_active:
             raise ValueError("AI agent is not available")
+        runtime_provider = (
+            agent.runtime_provider.value
+            if hasattr(agent.runtime_provider, "value")
+            else str(agent.runtime_provider or AIAgentRuntimeProvider.LEGACY_OPENAI.value)
+        ).strip().lower()
+        if runtime_provider != AIAgentRuntimeProvider.LEGACY_OPENAI.value:
+            raise ValueError("AI agent is configured for ElevenLabs SIP runtime")
 
         session_payload: dict[str, Any] = {
             "campaign_number_id": campaign_number_id,

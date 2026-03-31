@@ -16,13 +16,15 @@ from app.database import get_db
 from app.dependencies import require_active_rental
 from app.models import (
     User, Campaign, CampaignNumber, CallerID, Country, Audio, AIAgent,
+    AIAgentRuntimeProvider,
     CampaignStatus, CallStatus, VoiceProvider, VoxCallerIDVerificationStatus, CampaignMode
 )
 from app.services.ai_agent_service import list_user_ai_agents
 from app.services.user_voice_provider_service import (
     get_user_voice_provider_status,
     has_any_user_voice_provider_credentials,
-    has_user_ai_runtime_credentials,
+    has_user_elevenlabs_agent_runtime_credentials,
+    has_user_legacy_ai_runtime_credentials,
     has_user_voice_provider_credentials,
     provider_supports_press_1,
     supported_voice_providers,
@@ -73,6 +75,15 @@ def _normalized_campaign_mode(value: str | None) -> str:
     return (value or CampaignMode.AUDIO.value).strip().lower()
 
 
+def _runtime_provider_value(ai_agent) -> str:
+    if not ai_agent:
+        return AIAgentRuntimeProvider.LEGACY_OPENAI.value
+    runtime_provider = getattr(ai_agent, "runtime_provider", AIAgentRuntimeProvider.LEGACY_OPENAI.value)
+    if hasattr(runtime_provider, "value"):
+        runtime_provider = runtime_provider.value
+    return str(runtime_provider or AIAgentRuntimeProvider.LEGACY_OPENAI.value).strip().lower()
+
+
 def _campaign_form_validation_error(
     *,
     voice_provider: str,
@@ -80,7 +91,6 @@ def _campaign_form_validation_error(
     press_1_to_talk_with_agent: bool,
     max_concurrent_calls: int,
     provider_configured: bool,
-    ai_runtime_configured: bool,
 ) -> str | None:
     if voice_provider not in supported_voice_providers():
         return "Invalid voice provider selected."
@@ -88,8 +98,6 @@ def _campaign_form_validation_error(
         return f"Selected provider ({voice_provider}) is not configured in Settings."
     if campaign_mode == CampaignMode.AI_AGENT.value and voice_provider != VoiceProvider.SIGNALWIRE.value:
         return "AI agent campaigns currently require SignalWire as the voice provider."
-    if campaign_mode == CampaignMode.AI_AGENT.value and not ai_runtime_configured:
-        return "Configure SignalWire, OpenAI, and ElevenLabs in Settings before creating an AI agent campaign."
     if press_1_to_talk_with_agent and not provider_supports_press_1(voice_provider):
         return "Press 1 flow is not available for the selected provider."
     if campaign_mode == CampaignMode.AI_AGENT.value and press_1_to_talk_with_agent:
@@ -111,6 +119,8 @@ def _campaign_resource_validation_error(
     ai_agent,
     selected_audio_id: int | None,
     selected_ai_agent_id: int | None,
+    legacy_ai_runtime_configured: bool,
+    elevenlabs_sip_runtime_configured: bool,
 ) -> str | None:
     if not caller_id:
         return "Invalid caller ID selection."
@@ -118,6 +128,17 @@ def _campaign_resource_validation_error(
         return "Invalid audio selection."
     if campaign_mode == CampaignMode.AI_AGENT.value and not ai_agent:
         return "Select an active AI agent for AI agent campaigns."
+    if campaign_mode == CampaignMode.AI_AGENT.value and ai_agent:
+        runtime_provider = _runtime_provider_value(ai_agent)
+        if runtime_provider == AIAgentRuntimeProvider.LEGACY_OPENAI.value and not legacy_ai_runtime_configured:
+            return "Configure SignalWire, OpenAI, and ElevenLabs in Settings before using legacy AI runtime."
+        if runtime_provider == AIAgentRuntimeProvider.ELEVENLABS_AGENT.value and not elevenlabs_sip_runtime_configured:
+            return "Configure SignalWire and ElevenLabs in Settings before using ElevenLabs agent runtime."
+        if runtime_provider == AIAgentRuntimeProvider.ELEVENLABS_AGENT.value:
+            if not getattr(caller_id, "elevenlabs_phone_number_id", None):
+                return "Selected Caller ID is missing ElevenLabs Phone Number ID."
+            if not getattr(ai_agent, "external_agent_id", None):
+                return "Selected AI agent is not synced to ElevenLabs yet."
     if campaign_mode == CampaignMode.AUDIO.value and selected_ai_agent_id is not None:
         return "AI agents can only be used with AI agent campaigns."
     if (
@@ -133,7 +154,8 @@ def _campaign_start_validation_error(
     campaign,
     user,
     provider_configured: bool,
-    ai_runtime_configured: bool,
+    legacy_ai_runtime_configured: bool,
+    elevenlabs_sip_runtime_configured: bool,
 ) -> str | None:
     provider = campaign.voice_provider.value if hasattr(campaign.voice_provider, "value") else str(campaign.voice_provider)
 
@@ -146,8 +168,19 @@ def _campaign_start_validation_error(
             return "Campaign AI agent is missing or invalid"
         if not campaign.ai_agent.is_active:
             return "Selected AI agent is inactive"
-        if not ai_runtime_configured:
-            return "Please configure SignalWire, OpenAI, and ElevenLabs credentials in Settings first"
+        runtime_provider = _runtime_provider_value(campaign.ai_agent)
+        if runtime_provider == AIAgentRuntimeProvider.LEGACY_OPENAI.value:
+            if not legacy_ai_runtime_configured:
+                return "Please configure SignalWire, OpenAI, and ElevenLabs credentials in Settings first"
+        elif runtime_provider == AIAgentRuntimeProvider.ELEVENLABS_AGENT.value:
+            if not elevenlabs_sip_runtime_configured:
+                return "Please configure SignalWire and ElevenLabs credentials in Settings first"
+            if not campaign.caller_id.elevenlabs_phone_number_id:
+                return "Selected Caller ID is missing ElevenLabs Phone Number ID"
+            if not campaign.ai_agent.external_agent_id:
+                return "Selected AI agent is not synced to ElevenLabs yet"
+        else:
+            return "Unsupported AI runtime provider"
     if not provider_configured:
         return f"Please configure {provider.title()} credentials in Settings first"
     if campaign.press_1_to_talk_with_agent and not provider_supports_press_1(provider):
@@ -181,7 +214,9 @@ def _load_create_dependencies(db: Session, user_id: int) -> dict:
         "caller_ids": caller_ids,
         "audios": audios,
         "ai_agents": list_user_ai_agents(db, user_id),
-        "ai_runtime_configured": has_user_ai_runtime_credentials(db, user_id),
+        "ai_runtime_configured": has_user_elevenlabs_agent_runtime_credentials(db, user_id),
+        "legacy_ai_runtime_configured": has_user_legacy_ai_runtime_credentials(db, user_id),
+        "elevenlabs_sip_runtime_configured": has_user_elevenlabs_agent_runtime_credentials(db, user_id),
         "voice_providers": get_user_voice_provider_status(db, user_id),
     }
 
@@ -393,7 +428,6 @@ async def create_campaign(
         press_1_to_talk_with_agent=press_1_to_talk_with_agent,
         max_concurrent_calls=max_concurrent_calls,
         provider_configured=has_user_voice_provider_credentials(db, user.id, voice_provider),
-        ai_runtime_configured=has_user_ai_runtime_credentials(db, user.id),
     )
     if form_error:
         return _render_create_campaign_error(
@@ -482,6 +516,8 @@ async def create_campaign(
         ai_agent=ai_agent,
         selected_audio_id=selected_audio_id,
         selected_ai_agent_id=selected_ai_agent_id,
+        legacy_ai_runtime_configured=has_user_legacy_ai_runtime_credentials(db, user.id),
+        elevenlabs_sip_runtime_configured=has_user_elevenlabs_agent_runtime_credentials(db, user.id),
     )
     if resource_error:
         return _render_create_campaign_error(
@@ -648,7 +684,8 @@ async def start_campaign(
         campaign=campaign,
         user=user,
         provider_configured=has_user_voice_provider_credentials(db, user.id, provider),
-        ai_runtime_configured=has_user_ai_runtime_credentials(db, user.id),
+        legacy_ai_runtime_configured=has_user_legacy_ai_runtime_credentials(db, user.id),
+        elevenlabs_sip_runtime_configured=has_user_elevenlabs_agent_runtime_credentials(db, user.id),
     )
     if start_error:
         raise HTTPException(status_code=400, detail=start_error)

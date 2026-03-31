@@ -76,7 +76,11 @@
                             <span class="text-sm text-gray-500">{{ campaign.total_numbers }} numbers</span>
                         </div>
                         {% if campaign.ai_agent %}
-                        <div class="text-xs text-gray-500 mt-1">Agent: {{ campaign.ai_agent.name }}</div>
+                        {% set runtime_provider = campaign.ai_agent.runtime_provider.value if campaign.ai_agent.runtime_provider and campaign.ai_agent.runtime_provider.value is defined else campaign.ai_agent.runtime_provider %}
+                        <div class="text-xs text-gray-500 mt-1">
+                            Agent: {{ campaign.ai_agent.name }} • Runtime:
+                            {% if runtime_provider == 'elevenlabs_agent' %}ElevenLabs SIP{% else %}Legacy OpenAI{% endif %}
+                        </div>
                         {% endif %}
                         {% if campaign_mode_value == 'ai_agent' %}
                         <div class="text-xs text-gray-500 mt-1">

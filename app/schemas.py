@@ -63,6 +63,7 @@ class CallerIDUpdate(BaseModel):
     phone_number: Optional[str] = Field(None, pattern=r'^\+[1-9]\d{1,14}$')
     country_code: Optional[str] = Field(None, min_length=2, max_length=5)
     description: Optional[str] = None
+    elevenlabs_phone_number_id: Optional[str] = None
     is_active: Optional[bool] = None
 
 
@@ -70,6 +71,7 @@ class CallerIDResponse(CallerIDBase):
     id: int
     is_active: bool
     vox_callerid_id: Optional[int] = None
+    elevenlabs_phone_number_id: Optional[str] = None
     vox_verification_status: VoxCallerIDVerificationStatus
     vox_last_verification_at: Optional[datetime] = None
     created_at: datetime
