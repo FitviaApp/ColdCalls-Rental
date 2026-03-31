@@ -18,7 +18,6 @@ from app.config import get_settings
 from app.database import SessionLocal
 from app.models import AIAgent, AIAgentRuntimeProvider, CampaignNumber, CampaignMode
 from app.services.signalwire_service import SignalWireService
-from app.services.lead_template_service import parse_lead_variables_json, render_lead_template
 from app.services.user_elevenlabs_service import get_user_elevenlabs_credentials
 from app.services.user_openai_service import get_user_openai_credentials
 from app.services.user_signalwire_service import get_user_signalwire_credentials
@@ -260,11 +259,6 @@ class AICallRuntimeService:
             "history": [],
             "current_turn": None,
         }
-        lead_variables = parse_lead_variables_json(number.lead_variables_json)
-        if number.lead_name and not lead_variables.get("name"):
-            lead_variables["name"] = number.lead_name
-        session_payload["lead_name"] = number.lead_name
-        session_payload["lead_variables"] = lead_variables
         update_campaign_number_ai_observability(
             campaign_number_id,
             ai_turn_count=0,
@@ -300,11 +294,7 @@ class AICallRuntimeService:
             raise ValueError("AI agent not found")
 
         turn_started_at = time.monotonic()
-        reply = self._request_openai_turn(
-            agent,
-            session_payload.get("history") or [],
-            lead_variables=session_payload.get("lead_variables") or {},
-        )
+        reply = self._request_openai_turn(agent, session_payload.get("history") or [])
         assistant_text = self._sanitize_assistant_text(
             reply.get("assistant_text") or "Hello, this is a quick follow-up call."
         )
@@ -372,32 +362,16 @@ class AICallRuntimeService:
             "audio_token": audio_token,
         }
 
-    def _request_openai_turn(
-        self,
-        agent: AIAgent,
-        history: list[dict[str, str]],
-        *,
-        lead_variables: dict[str, str] | None = None,
-    ) -> dict[str, Any]:
-        lead_variables = lead_variables or {}
-        rendered_system_prompt = render_lead_template(agent.system_prompt.strip(), lead_variables)
-        rendered_handoff = render_lead_template(
-            (agent.handoff_description or "Transfer when the lead is ready for a human.").strip(),
-            lead_variables,
-        )
+    def _request_openai_turn(self, agent: AIAgent, history: list[dict[str, str]]) -> dict[str, Any]:
         system_prompt = (
             f"You are an outbound phone agent speaking only in English. "
             f"Your job is to pre-qualify the lead, keep replies concise for voice, "
             f"and call the transfer_call tool when the lead is qualified or explicitly asks for a human. "
             f"Keep each spoken reply to one short sentence by default. "
             f"Only add transfer wording when you are actually transferring the call. "
-            f"Agent instructions: {rendered_system_prompt} "
-            f"Handoff guidance: {rendered_handoff}"
+            f"Agent instructions: {agent.system_prompt.strip()} "
+            f"Handoff guidance: {(agent.handoff_description or 'Transfer when the lead is ready for a human.').strip()}"
         )
-        if lead_variables.get("name"):
-            system_prompt = (
-                f"{system_prompt} Address the lead naturally by name when appropriate: {lead_variables.get('name')}."
-            )
         messages = [{"role": "system", "content": system_prompt}]
         messages.extend((history or [])[-LIVE_MAX_HISTORY_MESSAGES:])
 

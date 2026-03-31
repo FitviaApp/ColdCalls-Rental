@@ -266,10 +266,7 @@
                     <tbody class="bg-white divide-y divide-gray-200">
                         <template x-for="number in numbers" :key="number.id">
                         <tr>
-                            <td class="px-4 py-2 whitespace-nowrap text-sm text-gray-900">
-                                <div class="font-mono" x-text="number.phone_number"></div>
-                                <div x-show="number.lead_name" class="text-xs text-gray-500" x-text="'Lead: ' + number.lead_name"></div>
-                            </td>
+                            <td class="px-4 py-2 whitespace-nowrap text-sm font-mono text-gray-900" x-text="number.phone_number"></td>
                             <td class="px-4 py-2 whitespace-nowrap">
                                 <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium"
                                       :class="statusBadgeClass(number.status)"

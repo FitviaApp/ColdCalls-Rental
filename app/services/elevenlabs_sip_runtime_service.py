@@ -4,7 +4,6 @@ SignalWire -> ElevenLabs SIP runtime for AI agent campaigns.
 from __future__ import annotations
 
 import logging
-import json
 from urllib.parse import urlencode
 
 from sqlalchemy.orm import Session
@@ -102,8 +101,6 @@ def build_elevenlabs_sip_twiml(campaign_number_id: int) -> str:
             campaign_number_id=campaign_number_id,
             campaign_id=campaign.id,
             caller_id_id=caller_id.id,
-            lead_name=number.lead_name,
-            lead_variables_json=number.lead_variables_json,
         )
         return f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -129,25 +126,13 @@ def _build_sip_uri(
     campaign_number_id: int,
     campaign_id: int,
     caller_id_id: int,
-    lead_name: str | None = None,
-    lead_variables_json: str | None = None,
 ) -> str:
-    compact_variables = ""
-    if lead_variables_json:
-        try:
-            data = json.loads(lead_variables_json)
-            if isinstance(data, dict):
-                compact_variables = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
-        except Exception:
-            compact_variables = ""
     query = urlencode(
         {
             "X-ElevenLabs-Phone-Number-Id": elevenlabs_phone_number_id,
             "X-Campaign-Number-Id": campaign_number_id,
             "X-Campaign-Id": campaign_id,
             "X-Caller-Id-Id": caller_id_id,
-            "X-Lead-Name": (lead_name or "").strip()[:120],
-            "X-Lead-Variables": compact_variables[:1000],
         }
     )
     sip_domain = settings.ELEVENLABS_SIP_DOMAIN.strip()

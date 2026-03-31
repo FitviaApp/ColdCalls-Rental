@@ -166,34 +166,6 @@ class AICampaignRouteTests(unittest.TestCase):
         finally:
             db.close()
 
-    def test_create_ai_agent_campaign_with_csv_header_persists_lead_name(self):
-        response = self.client.post(
-            "/campaigns/create",
-            data={
-                "name": "AI Campaign CSV",
-                "caller_id_id": str(self.caller_id.id),
-                "campaign_mode": CampaignMode.AI_AGENT.value,
-                "ai_agent_id": str(self.ai_agent.id),
-                "voice_provider": VoiceProvider.SIGNALWIRE.value,
-                "max_concurrent_calls": "1",
-                "numbers_text": "phone_number,name\n+15551234567,Ana",
-            },
-            files={},
-            follow_redirects=False,
-        )
-
-        self.assertEqual(response.status_code, 302)
-
-        db = self.SessionLocal()
-        try:
-            campaign = db.query(Campaign).filter(Campaign.name == "AI Campaign CSV").first()
-            self.assertIsNotNone(campaign)
-            number = db.query(CampaignNumber).filter(CampaignNumber.campaign_id == campaign.id).first()
-            self.assertEqual(number.lead_name, "Ana")
-            self.assertIn('"name":"Ana"', number.lead_variables_json or "")
-        finally:
-            db.close()
-
     def test_start_ai_agent_campaign(self):
         campaign = Campaign(
             user_id=self.user.id,
