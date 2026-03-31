@@ -283,12 +283,16 @@ class AICallRuntimeService:
         if not agent:
             raise ValueError("AI agent not found")
 
+<<<<<<< HEAD
         turn_started_at = time.monotonic()
         reply = self._request_openai_turn(
             agent,
             session_payload.get("history") or [],
             lead_variables=session_payload.get("lead_variables") or {},
         )
+=======
+        reply = self._request_openai_turn(agent, session_payload.get("history") or [])
+>>>>>>> parent of 39fbbc0 (Patch ElevenLabs)
         assistant_text = self._sanitize_assistant_text(
             reply.get("assistant_text") or "Hello, this is a quick follow-up call."
         )
@@ -355,10 +359,15 @@ class AICallRuntimeService:
             f"You are an outbound phone agent speaking only in English. "
             f"Your job is to pre-qualify the lead, keep replies concise for voice, "
             f"and call the transfer_call tool when the lead is qualified or explicitly asks for a human. "
+<<<<<<< HEAD
             f"Keep each spoken reply to one short sentence by default. "
             f"Only add transfer wording when you are actually transferring the call. "
             f"Agent instructions: {rendered_system_prompt} "
             f"Handoff guidance: {rendered_handoff}"
+=======
+            f"Agent instructions: {agent.system_prompt.strip()} "
+            f"Handoff guidance: {(agent.handoff_description or 'Transfer when the lead is ready for a human.').strip()}"
+>>>>>>> parent of 39fbbc0 (Patch ElevenLabs)
         )
         if lead_variables.get("name"):
             system_prompt = (
