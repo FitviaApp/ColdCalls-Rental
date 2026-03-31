@@ -45,14 +45,9 @@ from app.services.user_voximplant_service import (
     upsert_user_voximplant_credentials,
 )
 from app.services.user_voice_provider_service import has_any_user_voice_provider_credentials
-from app.services.user_voice_provider_service import (
-    has_user_ai_runtime_credentials,
-    has_user_elevenlabs_agent_runtime_credentials,
-    has_user_legacy_ai_runtime_credentials,
-)
+from app.services.user_voice_provider_service import has_user_ai_runtime_credentials
 from app.services.twilio_service import TwilioService
 from app.services.voximplant_management_service import ensure_user_voximplant_resources
-from app.services.elevenlabs_agent_sync_service import check_elevenlabs_credentials
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 templates = Jinja2Templates(directory="app/templates")
@@ -74,8 +69,6 @@ def _settings_context(
     voximplant_saved: bool = False,
     openai_saved: bool = False,
     elevenlabs_saved: bool = False,
-    elevenlabs_checked: bool = False,
-    elevenlabs_check_error: str | None = None,
     voximplant_provisioned: bool = False,
     password_saved: bool = False,
     error: str | None = None,
@@ -92,8 +85,6 @@ def _settings_context(
         "voximplant_saved": voximplant_saved,
         "openai_saved": openai_saved,
         "elevenlabs_saved": elevenlabs_saved,
-        "elevenlabs_checked": elevenlabs_checked,
-        "elevenlabs_check_error": elevenlabs_check_error,
         "voximplant_provisioned": voximplant_provisioned,
         "password_saved": password_saved,
         "twilio_configured": has_user_twilio_credentials(db, user.id),
@@ -103,8 +94,6 @@ def _settings_context(
         "voximplant_configured": has_user_voximplant_credentials(db, user.id),
         "openai_configured": has_user_openai_credentials(db, user.id),
         "elevenlabs_configured": has_user_elevenlabs_credentials(db, user.id),
-        "elevenlabs_sip_runtime_configured": has_user_elevenlabs_agent_runtime_credentials(db, user.id),
-        "legacy_ai_runtime_configured": has_user_legacy_ai_runtime_credentials(db, user.id),
         "voximplant_status": voximplant_credentials.provision_status if voximplant_credentials else None,
         "voximplant_error": voximplant_credentials.provision_error if voximplant_credentials else None,
         "error": error,
@@ -195,8 +184,7 @@ async def dashboard(
         "voximplant_configured": has_user_voximplant_credentials(db, user.id),
         "openai_configured": has_user_openai_credentials(db, user.id),
         "elevenlabs_configured": has_user_elevenlabs_credentials(db, user.id),
-        "ai_runtime_configured": has_user_elevenlabs_agent_runtime_credentials(db, user.id),
-        "legacy_ai_runtime_configured": has_user_ai_runtime_credentials(db, user.id),
+        "ai_runtime_configured": has_user_ai_runtime_credentials(db, user.id),
         "twilio_balance": twilio_balance,
         "twilio_balance_currency": twilio_balance_currency,
         "twilio_balance_error": twilio_balance_error,
@@ -237,8 +225,6 @@ async def settings_page(
     voximplant_saved: bool = False,
     openai_saved: bool = False,
     elevenlabs_saved: bool = False,
-    elevenlabs_checked: bool = False,
-    elevenlabs_check_error: str | None = None,
     voximplant_provisioned: bool = False,
     password_saved: bool = False,
     db: Session = Depends(get_db)
@@ -258,8 +244,6 @@ async def settings_page(
             voximplant_saved=voximplant_saved,
             openai_saved=openai_saved,
             elevenlabs_saved=elevenlabs_saved,
-            elevenlabs_checked=elevenlabs_checked,
-            elevenlabs_check_error=elevenlabs_check_error,
             voximplant_provisioned=voximplant_provisioned,
             password_saved=password_saved,
         ),
@@ -632,48 +616,3 @@ async def save_elevenlabs_credentials(
     upsert_user_elevenlabs_credentials(db, user.id, api_key)
     db.commit()
     return RedirectResponse(url="/dashboard/settings?elevenlabs_saved=true", status_code=302)
-
-
-@router.post("/settings/elevenlabs/check")
-async def check_elevenlabs_credentials_route(
-    request: Request,
-    api_key: str = Form(...),
-    user: User = Depends(require_active_rental),
-    db: Session = Depends(get_db),
-):
-    api_key = api_key.strip()
-    if len(api_key) < 20:
-        return templates.TemplateResponse(
-            "dashboard/settings.html",
-            _settings_context(
-                request,
-                user,
-                db,
-                error="ElevenLabs API key looks invalid.",
-            ),
-            status_code=400,
-        )
-
-    ok, message = check_elevenlabs_credentials(api_key)
-    if not ok:
-        return templates.TemplateResponse(
-            "dashboard/settings.html",
-            _settings_context(
-                request,
-                user,
-                db,
-                elevenlabs_checked=True,
-                elevenlabs_check_error=message,
-            ),
-            status_code=400,
-        )
-    return templates.TemplateResponse(
-        "dashboard/settings.html",
-        _settings_context(
-            request,
-            user,
-            db,
-            elevenlabs_checked=True,
-        ),
-        status_code=200,
-    )

@@ -21,17 +21,6 @@
                 class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border px-3 py-2"
                 placeholder="Enter the ElevenLabs voice ID">
         </div>
-        <div>
-            <label for="runtime_provider" class="block text-sm font-medium text-gray-700">Runtime Provider</label>
-            <select name="runtime_provider" id="runtime_provider"
-                class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border px-3 py-2">
-                {% set selected_runtime = form.get('runtime_provider', (agent.runtime_provider.value if agent and agent.runtime_provider and agent.runtime_provider.value is defined else (agent.runtime_provider if agent else default_runtime_provider))) %}
-                {% for option in runtime_provider_options %}
-                <option value="{{ option.value }}" {% if selected_runtime == option.value %}selected{% endif %}>{{ option.label }}</option>
-                {% endfor %}
-            </select>
-            <p class="mt-1 text-xs text-gray-500">ElevenLabs Agent uses SIP handoff through SignalWire. Legacy mode keeps the existing OpenAI + TTS runtime.</p>
-        </div>
         <div class="grid grid-cols-1 gap-4 sm:grid-cols-3">
             <div>
                 <label for="model" class="block text-sm font-medium text-gray-700">OpenAI Model</label>
@@ -58,15 +47,6 @@
                 class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border px-3 py-2"
                 placeholder="Describe when the AI should transfer to the human agent.">{{ form.get('handoff_description', agent.handoff_description if agent and agent.handoff_description else '') }}</textarea>
         </div>
-        {% if agent %}
-        <div class="rounded-md border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-700">
-            Sync status:
-            <span class="font-medium">{{ agent.last_sync_status or 'Not synced yet.' }}</span>
-            {% if agent.external_agent_id %}
-            <div class="mt-1 text-xs text-gray-500">External agent ID: <span class="font-mono">{{ agent.external_agent_id }}</span></div>
-            {% endif %}
-        </div>
-        {% endif %}
         <div>
             <label for="system_prompt" class="block text-sm font-medium text-gray-700">System Prompt</label>
             <textarea name="system_prompt" id="system_prompt" rows="12" required

@@ -10,25 +10,16 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.dependencies import require_active_rental
-from app.models import (
-    AIAgent,
-    AIAgentRuntimeProvider,
-    Campaign,
-    CampaignMode,
-    CampaignStatus,
-    User,
-)
+from app.models import AIAgent, Campaign, CampaignMode, CampaignStatus, User
 from app.services.ai_agent_service import (
     DEFAULT_AI_AGENT_LANGUAGE,
     DEFAULT_AI_AGENT_MODEL,
-    DEFAULT_AI_AGENT_RUNTIME_PROVIDER,
     DEFAULT_AI_AGENT_TEMPERATURE,
     create_user_ai_agent,
     get_user_ai_agent,
     list_user_ai_agents,
     update_user_ai_agent,
 )
-from app.services.elevenlabs_agent_sync_service import sync_ai_agent_to_elevenlabs
 
 router = APIRouter(prefix="/ai-agents", tags=["ai_agents"])
 templates = Jinja2Templates(directory="app/templates")
@@ -51,17 +42,6 @@ def _render_form(
         "default_language": DEFAULT_AI_AGENT_LANGUAGE,
         "default_model": DEFAULT_AI_AGENT_MODEL,
         "default_temperature": DEFAULT_AI_AGENT_TEMPERATURE,
-        "default_runtime_provider": DEFAULT_AI_AGENT_RUNTIME_PROVIDER,
-        "runtime_provider_options": [
-            {
-                "value": AIAgentRuntimeProvider.ELEVENLABS_AGENT.value,
-                "label": "ElevenLabs Agent (SIP, recommended)",
-            },
-            {
-                "value": AIAgentRuntimeProvider.LEGACY_OPENAI.value,
-                "label": "Legacy OpenAI + ElevenLabs TTS",
-            },
-        ],
     }
 
 
@@ -73,7 +53,6 @@ def _agent_form_data(
     model: str = DEFAULT_AI_AGENT_MODEL,
     temperature: float = DEFAULT_AI_AGENT_TEMPERATURE,
     language: str = DEFAULT_AI_AGENT_LANGUAGE,
-    runtime_provider: str = DEFAULT_AI_AGENT_RUNTIME_PROVIDER,
     handoff_description: str = "",
     is_active: bool = True,
 ) -> dict:
@@ -84,7 +63,6 @@ def _agent_form_data(
         "model": model,
         "temperature": temperature,
         "language": language,
-        "runtime_provider": runtime_provider,
         "handoff_description": handoff_description,
         "is_active": bool(is_active),
     }
@@ -96,7 +74,6 @@ async def list_agents(
     created: bool = False,
     updated: bool = False,
     toggled: bool = False,
-    sync_failed: bool = False,
     user: User = Depends(require_active_rental),
     db: Session = Depends(get_db),
 ):
@@ -110,7 +87,6 @@ async def list_agents(
             "created": created,
             "updated": updated,
             "toggled": toggled,
-            "sync_failed": sync_failed,
         },
     )
 
@@ -132,7 +108,6 @@ async def create_agent(
     model: str = Form(default=DEFAULT_AI_AGENT_MODEL),
     temperature: float = Form(default=DEFAULT_AI_AGENT_TEMPERATURE),
     language: str = Form(default=DEFAULT_AI_AGENT_LANGUAGE),
-    runtime_provider: str = Form(default=DEFAULT_AI_AGENT_RUNTIME_PROVIDER),
     handoff_description: str = Form(default=""),
     is_active: bool = Form(default=True),
     user: User = Depends(require_active_rental),
@@ -150,7 +125,6 @@ async def create_agent(
         model=model,
         temperature=temperature,
         language=language,
-        runtime_provider=runtime_provider,
         handoff_description=handoff_description,
         is_active=is_active,
     )
@@ -179,18 +153,8 @@ async def create_agent(
             _render_form(request, user, error="Temperature must be between 0.0 and 2.0.", form_data=form_data),
             status_code=400,
         )
-    runtime_provider = (runtime_provider or DEFAULT_AI_AGENT_RUNTIME_PROVIDER).strip().lower()
-    if runtime_provider not in {
-        AIAgentRuntimeProvider.ELEVENLABS_AGENT.value,
-        AIAgentRuntimeProvider.LEGACY_OPENAI.value,
-    }:
-        return templates.TemplateResponse(
-            "ai_agents/create.html",
-            _render_form(request, user, error="Invalid AI runtime provider.", form_data=form_data),
-            status_code=400,
-        )
 
-    agent = create_user_ai_agent(
+    create_user_ai_agent(
         db,
         user.id,
         name=name,
@@ -199,16 +163,11 @@ async def create_agent(
         model=model,
         temperature=temperature,
         language=language,
-        runtime_provider=runtime_provider,
         handoff_description=handoff_description,
         is_active=is_active,
     )
-    sync_ok = sync_ai_agent_to_elevenlabs(db, user.id, agent, user.transfer_number or "")
     db.commit()
-    url = "/ai-agents?created=true"
-    if not sync_ok and runtime_provider == AIAgentRuntimeProvider.ELEVENLABS_AGENT.value:
-        url = "/ai-agents?created=true&sync_failed=true"
-    return RedirectResponse(url=url, status_code=302)
+    return RedirectResponse(url="/ai-agents?created=true", status_code=302)
 
 
 @router.get("/{agent_id}/edit", response_class=HTMLResponse)
@@ -234,11 +193,6 @@ async def edit_agent_page(
                 model=agent.model,
                 temperature=agent.temperature,
                 language=agent.language,
-                runtime_provider=(
-                    agent.runtime_provider.value
-                    if hasattr(agent.runtime_provider, "value")
-                    else str(agent.runtime_provider)
-                ),
                 handoff_description=agent.handoff_description or "",
                 is_active=agent.is_active,
             ),
@@ -256,7 +210,6 @@ async def edit_agent(
     model: str = Form(default=DEFAULT_AI_AGENT_MODEL),
     temperature: float = Form(default=DEFAULT_AI_AGENT_TEMPERATURE),
     language: str = Form(default=DEFAULT_AI_AGENT_LANGUAGE),
-    runtime_provider: str = Form(default=DEFAULT_AI_AGENT_RUNTIME_PROVIDER),
     handoff_description: str = Form(default=""),
     is_active: bool = Form(default=False),
     user: User = Depends(require_active_rental),
@@ -272,7 +225,6 @@ async def edit_agent(
         model=model,
         temperature=temperature,
         language=language,
-        runtime_provider=runtime_provider,
         handoff_description=handoff_description,
         is_active=is_active,
     )
@@ -286,7 +238,6 @@ async def edit_agent(
             model=model,
             temperature=temperature,
             language=language,
-            runtime_provider=runtime_provider,
             handoff_description=handoff_description,
             is_active=is_active,
         )
@@ -297,13 +248,8 @@ async def edit_agent(
             status_code=400,
         )
 
-    runtime_provider = (runtime_provider or DEFAULT_AI_AGENT_RUNTIME_PROVIDER).strip().lower()
-    sync_ok = sync_ai_agent_to_elevenlabs(db, user.id, agent, user.transfer_number or "")
     db.commit()
-    url = "/ai-agents?updated=true"
-    if not sync_ok and runtime_provider == AIAgentRuntimeProvider.ELEVENLABS_AGENT.value:
-        url = "/ai-agents?updated=true&sync_failed=true"
-    return RedirectResponse(url=url, status_code=302)
+    return RedirectResponse(url="/ai-agents?updated=true", status_code=302)
 
 
 @router.post("/{agent_id}/toggle")

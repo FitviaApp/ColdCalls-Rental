@@ -67,7 +67,6 @@ async def create_caller_id_page(
             "request": request,
             "user": user,
             "error": None,
-            "form_data": {},
         }
     )
 
@@ -78,13 +77,11 @@ async def create_caller_id(
     phone_number: str = Form(...),
     country_code: str = Form(...),
     description: str = Form(default=""),
-    elevenlabs_phone_number_id: str = Form(default=""),
     user: User = Depends(require_active_rental),
     db: Session = Depends(get_db)
 ):
     phone_number = phone_number.strip()
     country_code = country_code.strip().upper()
-    elevenlabs_phone_number_id = elevenlabs_phone_number_id.strip()
 
     if not E164_PATTERN.match(phone_number):
         return templates.TemplateResponse(
@@ -93,12 +90,6 @@ async def create_caller_id(
                 "request": request,
                 "user": user,
                 "error": "Invalid phone number. Use E.164 format (e.g., +15551234567).",
-                "form_data": {
-                    "phone_number": phone_number,
-                    "country_code": country_code,
-                    "description": description,
-                    "elevenlabs_phone_number_id": elevenlabs_phone_number_id,
-                },
             },
             status_code=400,
         )
@@ -111,12 +102,6 @@ async def create_caller_id(
                 "request": request,
                 "user": user,
                 "error": "This phone number is already registered.",
-                "form_data": {
-                    "phone_number": phone_number,
-                    "country_code": country_code,
-                    "description": description,
-                    "elevenlabs_phone_number_id": elevenlabs_phone_number_id,
-                },
             },
             status_code=400,
         )
@@ -126,7 +111,6 @@ async def create_caller_id(
         phone_number=phone_number,
         country_code=country_code,
         description=description.strip(),
-        elevenlabs_phone_number_id=elevenlabs_phone_number_id or None,
         is_active=True,
         vox_verification_status=VoxCallerIDVerificationStatus.NOT_STARTED,
     )
@@ -157,7 +141,6 @@ async def edit_caller_id_page(
             "user": user,
             "caller_id": caller_id,
             "error": None,
-            "form_data": {},
         }
     )
 
@@ -169,7 +152,6 @@ async def edit_caller_id(
     phone_number: str = Form(...),
     country_code: str = Form(...),
     description: str = Form(default=""),
-    elevenlabs_phone_number_id: str = Form(default=""),
     is_active: bool = Form(default=False),
     user: User = Depends(require_active_rental),
     db: Session = Depends(get_db)
@@ -183,7 +165,6 @@ async def edit_caller_id(
 
     phone_number = phone_number.strip()
     country_code = country_code.strip().upper()
-    elevenlabs_phone_number_id = elevenlabs_phone_number_id.strip()
 
     if not E164_PATTERN.match(phone_number):
         return templates.TemplateResponse(
@@ -193,13 +174,6 @@ async def edit_caller_id(
                 "user": user,
                 "caller_id": caller_id,
                 "error": "Invalid phone number. Use E.164 format (e.g., +15551234567).",
-                "form_data": {
-                    "phone_number": phone_number,
-                    "country_code": country_code,
-                    "description": description,
-                    "is_active": is_active,
-                    "elevenlabs_phone_number_id": elevenlabs_phone_number_id,
-                },
             },
             status_code=400,
         )
@@ -216,13 +190,6 @@ async def edit_caller_id(
                 "user": user,
                 "caller_id": caller_id,
                 "error": "This phone number is already registered.",
-                "form_data": {
-                    "phone_number": phone_number,
-                    "country_code": country_code,
-                    "description": description,
-                    "is_active": is_active,
-                    "elevenlabs_phone_number_id": elevenlabs_phone_number_id,
-                },
             },
             status_code=400,
         )
@@ -231,7 +198,6 @@ async def edit_caller_id(
     caller_id.phone_number = phone_number
     caller_id.country_code = country_code
     caller_id.description = description.strip()
-    caller_id.elevenlabs_phone_number_id = elevenlabs_phone_number_id or None
     caller_id.is_active = is_active
     if phone_number_changed:
         caller_id.vox_callerid_id = None

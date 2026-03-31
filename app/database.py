@@ -199,9 +199,6 @@ def _apply_schema_patches():
         if _column_exists("caller_ids", "vox_callerid_id") is False:
             conn.execute(text("ALTER TABLE caller_ids ADD COLUMN vox_callerid_id INTEGER"))
 
-        if _column_exists("caller_ids", "elevenlabs_phone_number_id") is False:
-            conn.execute(text("ALTER TABLE caller_ids ADD COLUMN elevenlabs_phone_number_id VARCHAR(120)"))
-
         if _column_exists("caller_ids", "vox_verification_status") is False:
             conn.execute(
                 text(
@@ -228,19 +225,3 @@ def _apply_schema_patches():
             conn.execute(text("ALTER TABLE campaign_numbers ADD COLUMN ai_handoff_reason TEXT"))
         if _column_exists("campaign_numbers", "ai_runtime_error") is False:
             conn.execute(text("ALTER TABLE campaign_numbers ADD COLUMN ai_runtime_error TEXT"))
-
-        if _column_exists("ai_agents", "runtime_provider") is False:
-            conn.execute(
-                text(
-                    "ALTER TABLE ai_agents "
-                    "ADD COLUMN runtime_provider VARCHAR(30) NOT NULL DEFAULT 'legacy_openai'"
-                )
-            )
-        if _column_exists("ai_agents", "external_agent_id") is False:
-            conn.execute(text("ALTER TABLE ai_agents ADD COLUMN external_agent_id VARCHAR(120)"))
-        if _column_exists("ai_agents", "last_sync_status") is False:
-            conn.execute(text("ALTER TABLE ai_agents ADD COLUMN last_sync_status TEXT"))
-
-        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_caller_ids_elevenlabs_phone_number_id ON caller_ids(elevenlabs_phone_number_id)"))
-        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_ai_agents_runtime_provider ON ai_agents(runtime_provider)"))
-        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_ai_agents_external_agent_id ON ai_agents(external_agent_id)"))

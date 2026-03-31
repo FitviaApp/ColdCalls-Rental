@@ -9,19 +9,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.config import get_settings
 from app.dependencies import require_active_rental
-from app.models import (
-    AIAgentRuntimeProvider,
-    User,
-    Campaign,
-    CampaignNumber,
-    CallerID,
-    Country,
-    Audio,
-    CampaignStatus,
-    VoiceProvider,
-    CallStatus,
-    CampaignMode,
-)
+from app.models import User, Campaign, CampaignNumber, CallerID, Country, Audio, CampaignStatus, VoiceProvider, CallStatus, CampaignMode
 from app.schemas import DashboardStats, CampaignProgress, DropdownCallerID, DropdownCountry, DropdownAudio
 from app.services.rental_service import has_active_rental
 from app.services.ai_call_runtime_service import (
@@ -30,7 +18,6 @@ from app.services.ai_call_runtime_service import (
     get_ai_runtime_audio,
     get_ai_runtime_audio_media_type,
 )
-from app.services.elevenlabs_sip_runtime_service import build_elevenlabs_sip_twiml
 from app.services.voximplant_service import decode_voximplant_callback_token
 
 logger = logging.getLogger(__name__)
@@ -292,13 +279,6 @@ async def ai_runtime_twiml(campaign_number_id: int):
     return Response(content=twiml, media_type="application/xml")
 
 
-@router.get("/ai-runtime/elevenlabs/twiml/{campaign_number_id}")
-@router.post("/ai-runtime/elevenlabs/twiml/{campaign_number_id}")
-async def ai_runtime_elevenlabs_twiml(campaign_number_id: int):
-    twiml = build_elevenlabs_sip_twiml(campaign_number_id)
-    return Response(content=twiml, media_type="application/xml")
-
-
 @router.post("/ai-runtime/twiml/{campaign_number_id}/gather")
 async def ai_runtime_twiml_gather(
     campaign_number_id: int,
@@ -307,16 +287,6 @@ async def ai_runtime_twiml_gather(
 ):
     number = db.query(CampaignNumber).filter(CampaignNumber.id == campaign_number_id).first()
     if not number or not number.campaign or number.campaign.campaign_mode != CampaignMode.AI_AGENT:
-        return _ai_runtime_hangup_response()
-    ai_agent = number.campaign.ai_agent
-    if not ai_agent:
-        return _ai_runtime_hangup_response()
-    runtime_provider = (
-        ai_agent.runtime_provider.value
-        if ai_agent and hasattr(ai_agent.runtime_provider, "value")
-        else str(getattr(ai_agent, "runtime_provider", AIAgentRuntimeProvider.LEGACY_OPENAI.value) or AIAgentRuntimeProvider.LEGACY_OPENAI.value)
-    ).strip().lower()
-    if runtime_provider != AIAgentRuntimeProvider.LEGACY_OPENAI.value:
         return _ai_runtime_hangup_response()
 
     form_data = await request.form()

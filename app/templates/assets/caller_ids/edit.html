@@ -4,7 +4,6 @@
 
 {% block content %}
 <div class="max-w-2xl mx-auto px-4 sm:px-6 lg:px-8">
-    {% set form = form_data if form_data is defined and form_data else {} %}
     <div class="mb-8">
         <h1 class="text-2xl font-bold text-gray-900">Edit Caller ID</h1>
     </div>
@@ -19,34 +18,25 @@
                 <label for="phone_number" class="block text-sm font-medium text-gray-700">Phone Number</label>
                 <input type="text" name="phone_number" id="phone_number" required pattern="^\+[1-9]\d{1,14}$"
                     class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border px-3 py-2"
-                    value="{{ form.get('phone_number', caller_id.phone_number) }}">
+                    value="{{ caller_id.phone_number }}">
             </div>
 
             <div>
                 <label for="country_code" class="block text-sm font-medium text-gray-700">Country Code</label>
                 <input type="text" name="country_code" id="country_code" required maxlength="5"
                     class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border px-3 py-2"
-                    value="{{ form.get('country_code', caller_id.country_code) }}">
+                    value="{{ caller_id.country_code }}">
             </div>
 
             <div>
                 <label for="description" class="block text-sm font-medium text-gray-700">Description</label>
                 <input type="text" name="description" id="description"
                     class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border px-3 py-2"
-                    value="{{ form.get('description', caller_id.description or '') }}">
-            </div>
-
-            <div>
-                <label for="elevenlabs_phone_number_id" class="block text-sm font-medium text-gray-700">ElevenLabs Phone Number ID</label>
-                <input type="text" name="elevenlabs_phone_number_id" id="elevenlabs_phone_number_id"
-                    class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border px-3 py-2"
-                    value="{{ form.get('elevenlabs_phone_number_id', caller_id.elevenlabs_phone_number_id or '') }}"
-                    placeholder="pn_...">
-                <p class="mt-1 text-xs text-gray-500">Required when AI agent runtime is ElevenLabs SIP.</p>
+                    value="{{ caller_id.description or '' }}">
             </div>
 
             <div class="flex items-center">
-                <input type="checkbox" name="is_active" id="is_active" value="true" {% if form.get('is_active', caller_id.is_active) %}checked{% endif %}
+                <input type="checkbox" name="is_active" id="is_active" value="true" {% if caller_id.is_active %}checked{% endif %}
                     class="h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-gray-300 rounded">
                 <label for="is_active" class="ml-2 block text-sm text-gray-900">Active</label>
             </div>

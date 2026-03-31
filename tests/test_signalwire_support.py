@@ -1,7 +1,7 @@
 import unittest
 from types import SimpleNamespace
 
-from app.models import AIAgentRuntimeProvider, CallStatus, CampaignMode, VoiceProvider
+from app.models import CallStatus, CampaignMode, VoiceProvider
 from app.routers.ai_agents import _agent_form_data
 from app.routers.campaigns import (
     _create_form_data,
@@ -207,6 +207,7 @@ class SignalWireSupportTests(unittest.TestCase):
             press_1_to_talk_with_agent=False,
             max_concurrent_calls=1,
             provider_configured=True,
+            ai_runtime_configured=True,
         )
         self.assertEqual(error, "AI agent campaigns currently require SignalWire as the voice provider.")
 
@@ -217,6 +218,7 @@ class SignalWireSupportTests(unittest.TestCase):
             press_1_to_talk_with_agent=True,
             max_concurrent_calls=1,
             provider_configured=True,
+            ai_runtime_configured=True,
         )
         self.assertEqual(error, "Press 1 flow is not available for AI agent campaigns.")
 
@@ -230,8 +232,6 @@ class SignalWireSupportTests(unittest.TestCase):
             ai_agent=None,
             selected_audio_id=None,
             selected_ai_agent_id=10,
-            legacy_ai_runtime_configured=True,
-            elevenlabs_sip_runtime_configured=True,
         )
         self.assertEqual(error, "Select an active AI agent for AI agent campaigns.")
 
@@ -241,11 +241,7 @@ class SignalWireSupportTests(unittest.TestCase):
             user_id=1,
             vox_verification_status="verified",
         )
-        ai_agent = SimpleNamespace(
-            user_id=1,
-            is_active=True,
-            runtime_provider=AIAgentRuntimeProvider.LEGACY_OPENAI.value,
-        )
+        ai_agent = SimpleNamespace(user_id=1, is_active=True)
         campaign = SimpleNamespace(
             voice_provider=VoiceProvider.SIGNALWIRE,
             campaign_mode=CampaignMode.AI_AGENT,
@@ -260,67 +256,12 @@ class SignalWireSupportTests(unittest.TestCase):
             campaign=campaign,
             user=user,
             provider_configured=True,
-            legacy_ai_runtime_configured=False,
-            elevenlabs_sip_runtime_configured=True,
+            ai_runtime_configured=False,
         )
         self.assertEqual(
             error,
             "Please configure SignalWire, OpenAI, and ElevenLabs credentials in Settings first",
         )
-
-    def test_campaign_resource_validation_requires_caller_mapping_for_elevenlabs_runtime(self):
-        caller_id = SimpleNamespace(
-            vox_verification_status="verified",
-            elevenlabs_phone_number_id=None,
-        )
-        ai_agent = SimpleNamespace(
-            runtime_provider=AIAgentRuntimeProvider.ELEVENLABS_AGENT.value,
-            external_agent_id="ext_123",
-        )
-        error = _campaign_resource_validation_error(
-            campaign_mode=CampaignMode.AI_AGENT.value,
-            voice_provider=VoiceProvider.SIGNALWIRE.value,
-            caller_id=caller_id,
-            audio=None,
-            ai_agent=ai_agent,
-            selected_audio_id=None,
-            selected_ai_agent_id=9,
-            legacy_ai_runtime_configured=True,
-            elevenlabs_sip_runtime_configured=True,
-        )
-        self.assertEqual(error, "Selected Caller ID is missing ElevenLabs Phone Number ID.")
-
-    def test_campaign_start_validation_requires_synced_agent_for_elevenlabs_runtime(self):
-        user = SimpleNamespace(id=1, transfer_number="+15550001111")
-        caller_id = SimpleNamespace(
-            user_id=1,
-            vox_verification_status="verified",
-            elevenlabs_phone_number_id="pn_123",
-        )
-        ai_agent = SimpleNamespace(
-            user_id=1,
-            is_active=True,
-            runtime_provider=AIAgentRuntimeProvider.ELEVENLABS_AGENT.value,
-            external_agent_id=None,
-        )
-        campaign = SimpleNamespace(
-            voice_provider=VoiceProvider.SIGNALWIRE,
-            campaign_mode=CampaignMode.AI_AGENT,
-            ai_agent_id=5,
-            ai_agent=ai_agent,
-            press_1_to_talk_with_agent=False,
-            caller_id=caller_id,
-            audio_id=None,
-            audio=None,
-        )
-        error = _campaign_start_validation_error(
-            campaign=campaign,
-            user=user,
-            provider_configured=True,
-            legacy_ai_runtime_configured=True,
-            elevenlabs_sip_runtime_configured=True,
-        )
-        self.assertEqual(error, "Selected AI agent is not synced to ElevenLabs yet")
 
     def test_parse_campaign_numbers_accepts_csv_first_column_and_counts_invalid(self):
         valid_numbers, invalid_count = _parse_campaign_numbers(

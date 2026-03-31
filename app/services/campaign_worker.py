@@ -16,7 +16,6 @@ from sqlalchemy.orm import Session
 from app.database import SessionLocal, init_db
 from app.models import (
     Campaign, CampaignNumber, User,
-    AIAgentRuntimeProvider,
     CampaignStatus, CallStatus, VoiceProvider, VoxCallerIDVerificationStatus, CampaignMode
 )
 from app.services.ai_call_runtime_service import (
@@ -25,7 +24,6 @@ from app.services.ai_call_runtime_service import (
     prune_stale_ai_runtime_artifacts,
     update_campaign_number_ai_observability,
 )
-from app.services.elevenlabs_sip_runtime_service import ElevenLabsSipRuntimeService
 from app.config import get_settings
 from app.services.telnyx_service import TelnyxService
 from app.services.twilio_service import TwilioService
@@ -594,16 +592,7 @@ class CampaignWorker:
                 raise ValueError("AI agent campaigns require SignalWire")
             if not campaign.ai_agent or not campaign.ai_agent.is_active:
                 raise ValueError("AI agent is not configured or inactive")
-            runtime_provider = self._runtime_provider_value(campaign.ai_agent)
-            if runtime_provider == AIAgentRuntimeProvider.LEGACY_OPENAI.value:
-                return AICallRuntimeService(session, user.id)
-            if runtime_provider == AIAgentRuntimeProvider.ELEVENLABS_AGENT.value:
-                if not campaign.caller_id.elevenlabs_phone_number_id:
-                    raise ValueError("Caller ID is missing ElevenLabs Phone Number ID")
-                if not campaign.ai_agent.external_agent_id:
-                    raise ValueError("AI agent is not synced to ElevenLabs")
-                return ElevenLabsSipRuntimeService(session, user.id)
-            raise ValueError(f"Unsupported AI runtime provider: {runtime_provider}")
+            return AICallRuntimeService(session, user.id)
 
         if provider == VoiceProvider.TWILIO.value:
             account_sid, auth_token = get_user_twilio_credentials(session, user.id)
@@ -630,16 +619,6 @@ class CampaignWorker:
             return VoximplantService(session, credentials)
 
         raise ValueError(f"Unsupported voice provider: {provider}")
-
-    def _runtime_provider_value(self, ai_agent) -> str:
-        runtime_provider = getattr(
-            ai_agent,
-            "runtime_provider",
-            AIAgentRuntimeProvider.LEGACY_OPENAI.value,
-        )
-        if hasattr(runtime_provider, "value"):
-            runtime_provider = runtime_provider.value
-        return str(runtime_provider or AIAgentRuntimeProvider.LEGACY_OPENAI.value).strip().lower()
 
     def stop(self):
         """Signal worker to stop"""
