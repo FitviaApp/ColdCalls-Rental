@@ -16,6 +16,7 @@ from app.services.ai_call_runtime_service import (
     cleanup_ai_runtime_artifacts,
     prune_stale_ai_runtime_artifacts,
 )
+from app.services.lead_template_service import render_lead_template
 from app.services.campaign_worker import (
     CampaignWorker,
     SIGNALWIRE_MAX_START_INTERVAL_SECONDS,
@@ -24,6 +25,7 @@ from app.services.campaign_worker import (
 )
 from app.services.user_signalwire_service import _normalize_space_url
 from app.services.signalwire_service import SignalWireService
+from app.services.elevenlabs_sip_runtime_service import _build_sip_uri
 from app.services.user_voice_provider_service import (
     has_user_ai_runtime_credentials,
     provider_supports_press_1,
@@ -161,6 +163,20 @@ class SignalWireSupportTests(unittest.TestCase):
         self.assertEqual(captured["data"]["Url"], "https://example.com/api/ai-runtime/twiml/1")
         self.assertNotIn("Twiml", captured["data"])
         self.assertNotIn("MachineDetection", captured["data"])
+
+    def test_elevenlabs_sip_uri_includes_lead_headers(self):
+        sip_uri = _build_sip_uri(
+            external_agent_id="agent_123",
+            elevenlabs_phone_number_id="pn_123",
+            campaign_number_id=99,
+            campaign_id=7,
+            caller_id_id=3,
+            lead_name="Alice",
+            lead_variables_json='{"name":"Alice","city":"Austin"}',
+        )
+        self.assertIn("sip:agent_123@", sip_uri)
+        self.assertIn("X-Lead-Name=Alice", sip_uri)
+        self.assertIn("X-Lead-Variables=", sip_uri)
 
     def test_ai_runtime_cleanup_removes_session_and_audio_files(self):
         campaign_number_id = 4242
@@ -323,11 +339,47 @@ class SignalWireSupportTests(unittest.TestCase):
         self.assertEqual(error, "Selected AI agent is not synced to ElevenLabs yet")
 
     def test_parse_campaign_numbers_accepts_csv_first_column_and_counts_invalid(self):
-        valid_numbers, invalid_count = _parse_campaign_numbers(
+        contacts, invalid_count, parse_error = _parse_campaign_numbers(
             "+15551234567\n+15557654321,John Doe\ninvalid-number\n\n"
         )
-        self.assertEqual(valid_numbers, ["+15551234567", "+15557654321"])
+        self.assertIsNone(parse_error)
+        self.assertEqual([c["phone_number"] for c in contacts], ["+15551234567", "+15557654321"])
+        self.assertEqual(contacts[1]["lead_name"], "John Doe")
         self.assertEqual(invalid_count, 1)
+
+    def test_parse_campaign_numbers_supports_header_mapping(self):
+        contacts, invalid_count, parse_error = _parse_campaign_numbers(
+            "phone_number,name\n+15551234567,Ana\n+15557654321,Bruno\n"
+        )
+        self.assertIsNone(parse_error)
+        self.assertEqual(invalid_count, 0)
+        self.assertEqual(contacts[0]["lead_name"], "Ana")
+        self.assertIn('"name":"Ana"', contacts[0]["lead_variables_json"])
+
+    def test_parse_campaign_numbers_supports_header_aliases(self):
+        contacts, invalid_count, parse_error = _parse_campaign_numbers(
+            "telefone,nome\n+5511999999999,Joao\n"
+        )
+        self.assertIsNone(parse_error)
+        self.assertEqual(invalid_count, 0)
+        self.assertEqual(contacts[0]["phone_number"], "+5511999999999")
+        self.assertEqual(contacts[0]["lead_name"], "Joao")
+
+    def test_parse_campaign_numbers_requires_phone_header_when_header_mode_detected(self):
+        contacts, invalid_count, parse_error = _parse_campaign_numbers(
+            "nome,cidade\nAna,Sao Paulo\n"
+        )
+        self.assertEqual(contacts, [])
+        self.assertEqual(invalid_count, 0)
+        self.assertIn("missing a phone column", parse_error or "")
+
+    def test_render_lead_template_replaces_name_placeholder(self):
+        rendered = render_lead_template("Hello {{name}}", {"name": "Alice"})
+        self.assertEqual(rendered, "Hello Alice")
+
+    def test_render_lead_template_missing_variable_returns_empty(self):
+        rendered = render_lead_template("Hello {{name}}", {})
+        self.assertEqual(rendered, "Hello ")
 
     def test_create_form_data_preserves_expected_fields(self):
         form_data = _create_form_data(

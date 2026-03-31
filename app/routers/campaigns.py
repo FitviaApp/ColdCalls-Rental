@@ -1,6 +1,9 @@
 """
 Campaigns Router - CRUD and campaign management
 """
+import csv
+import io
+import json
 import re
 from datetime import datetime
 from pathlib import Path
@@ -38,6 +41,8 @@ MAX_CONCURRENT_CALLS = 20
 
 # E.164 phone number regex
 E164_PATTERN = re.compile(r'^\+[1-9]\d{1,14}$')
+CSV_PHONE_ALIASES = {"phone_number", "phone", "number", "telefone", "numero"}
+CSV_NAME_ALIASES = {"name", "lead_name", "first_name", "nome"}
 
 
 def validate_phone_number(number: str) -> Optional[str]:
@@ -48,27 +53,131 @@ def validate_phone_number(number: str) -> Optional[str]:
     return None
 
 
-def _parse_campaign_numbers(numbers_raw: str) -> tuple[list[str], int]:
-    """Parse pasted/uploaded numbers, keeping valid E.164 entries and counting invalid rows."""
-    lines = (numbers_raw or "").strip().split('\n')
-    valid_numbers: list[str] = []
+def _normalize_csv_key(value: str) -> str:
+    key = str(value or "").strip().lower()
+    key = re.sub(r"[^a-z0-9_]+", "_", key)
+    return key.strip("_")
+
+
+def _parse_campaign_numbers(numbers_raw: str) -> tuple[list[dict], int, str | None]:
+    """
+    Parse pasted/uploaded numbers.
+
+    Returns:
+    - contacts: list of dict(phone_number, lead_name, lead_variables_json)
+    - invalid_count: number of rejected rows
+    - parse_error: optional user-facing parser error
+    """
+    raw_text = (numbers_raw or "").strip()
+    if not raw_text:
+        return [], 0, None
+
+    lines = [line for line in raw_text.splitlines() if line.strip()]
+    if not lines:
+        return [], 0, None
+
+    first_line = lines[0]
+    has_csv_shape = "," in first_line
+    contacts: list[dict] = []
     invalid_count = 0
 
+    if has_csv_shape:
+        reader = csv.reader(io.StringIO(raw_text))
+        first_row = next(reader, [])
+        normalized_headers = [_normalize_csv_key(col) for col in first_row]
+        phone_header = next((h for h in normalized_headers if h in CSV_PHONE_ALIASES), None)
+        looks_like_header_without_phone = (
+            phone_header is None
+            and any(str(col or "").strip() for col in first_row)
+            and all(
+                not validate_phone_number(str(col or "").strip())
+                for col in first_row
+                if str(col or "").strip()
+            )
+        )
+
+        if looks_like_header_without_phone:
+            return [], 0, (
+                "CSV header is missing a phone column. Use one of: "
+                "phone_number, phone, number, telefone, numero."
+            )
+
+        if phone_header:
+            dict_reader = csv.DictReader(io.StringIO(raw_text))
+            for row in dict_reader:
+                normalized_row: dict[str, str] = {}
+                for key, value in (row or {}).items():
+                    normalized_key = _normalize_csv_key(key)
+                    if not normalized_key:
+                        continue
+                    normalized_row[normalized_key] = str(value or "").strip()
+
+                phone_value = ""
+                for alias in CSV_PHONE_ALIASES:
+                    if normalized_row.get(alias):
+                        phone_value = normalized_row.get(alias, "")
+                        break
+                phone_number = validate_phone_number(phone_value)
+                if not phone_number:
+                    invalid_count += 1
+                    continue
+
+                lead_name = ""
+                for alias in CSV_NAME_ALIASES:
+                    if normalized_row.get(alias):
+                        lead_name = normalized_row.get(alias, "")
+                        break
+                lead_name = lead_name.strip()
+
+                variables = {
+                    key: value
+                    for key, value in normalized_row.items()
+                    if key not in CSV_PHONE_ALIASES and value.strip()
+                }
+                if lead_name and not variables.get("name"):
+                    variables["name"] = lead_name
+
+                contacts.append(
+                    {
+                        "phone_number": phone_number,
+                        "lead_name": lead_name or None,
+                        "lead_variables_json": (
+                            json.dumps(variables, ensure_ascii=False, separators=(",", ":"))
+                            if variables
+                            else None
+                        ),
+                    }
+                )
+            return contacts, invalid_count, None
+
+    # Fallback (legacy): first column is number, optionally accept second as name.
     for line in lines:
-        line = line.strip()
-        if not line:
+        raw_line = line.strip()
+        if not raw_line:
             continue
 
-        if ',' in line:
-            line = line.split(',')[0].strip()
-
-        number = validate_phone_number(line)
-        if number:
-            valid_numbers.append(number)
-        else:
+        columns = [col.strip() for col in raw_line.split(",")]
+        phone_number = validate_phone_number(columns[0] if columns else "")
+        if not phone_number:
             invalid_count += 1
+            continue
 
-    return valid_numbers, invalid_count
+        lead_name = columns[1] if len(columns) > 1 else ""
+        lead_name = lead_name.strip()
+        variables = {"name": lead_name} if lead_name else {}
+        contacts.append(
+            {
+                "phone_number": phone_number,
+                "lead_name": lead_name or None,
+                "lead_variables_json": (
+                    json.dumps(variables, ensure_ascii=False, separators=(",", ":"))
+                    if variables
+                    else None
+                ),
+            }
+        )
+
+    return contacts, invalid_count, None
 
 
 def _normalized_campaign_mode(value: str | None) -> str:
@@ -446,15 +555,16 @@ async def create_campaign(
         numbers_raw = content.decode('utf-8')
 
     # Parse and validate numbers
-    valid_numbers, invalid_count = _parse_campaign_numbers(numbers_raw)
+    parsed_contacts, invalid_count, parse_error = _parse_campaign_numbers(numbers_raw)
 
-    if not valid_numbers:
+    if not parsed_contacts:
+        parser_hint = parse_error or "No valid phone numbers found."
         return _render_create_campaign_error(
             request,
             user,
             deps,
             error=(
-                "No valid phone numbers found. Numbers must be in E.164 format "
+                f"{parser_hint} Numbers must be in E.164 format "
                 f"(e.g., +5511999999999). {invalid_count} invalid numbers skipped."
             ),
             form_data=form_data,
@@ -558,16 +668,18 @@ async def create_campaign(
         press_1_to_talk_with_agent=press_1_to_talk_with_agent,
         max_concurrent_calls=max_concurrent_calls,
         status=CampaignStatus.DRAFT,
-        total_numbers=len(valid_numbers)
+        total_numbers=len(parsed_contacts)
     )
     db.add(campaign)
     db.flush()
 
     # Add numbers
-    for number in valid_numbers:
+    for contact in parsed_contacts:
         campaign_number = CampaignNumber(
             campaign_id=campaign.id,
-            phone_number=number,
+            phone_number=contact["phone_number"],
+            lead_name=contact.get("lead_name"),
+            lead_variables_json=contact.get("lead_variables_json"),
             status=CallStatus.PENDING
         )
         db.add(campaign_number)
@@ -627,6 +739,7 @@ async def campaign_detail(
         {
             "id": n.id,
             "phone_number": n.phone_number,
+            "lead_name": n.lead_name,
             "status": n.status.value,
             "duration_seconds": n.duration_seconds,
             "cost": n.cost,

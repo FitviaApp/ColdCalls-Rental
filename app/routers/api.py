@@ -416,6 +416,8 @@ async def get_campaign_numbers(
             {
                 "id": n.id,
                 "phone_number": n.phone_number,
+                "lead_name": n.lead_name,
+                "lead_variables_json": n.lead_variables_json,
                 "status": n.status.value,
                 "duration_seconds": n.duration_seconds,
                 "cost": n.cost,

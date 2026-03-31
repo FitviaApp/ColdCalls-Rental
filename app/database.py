@@ -218,6 +218,10 @@ def _apply_schema_patches():
 
         if _column_exists("campaign_numbers", "ai_turn_count") is False:
             conn.execute(text("ALTER TABLE campaign_numbers ADD COLUMN ai_turn_count INTEGER"))
+        if _column_exists("campaign_numbers", "lead_name") is False:
+            conn.execute(text("ALTER TABLE campaign_numbers ADD COLUMN lead_name VARCHAR(255)"))
+        if _column_exists("campaign_numbers", "lead_variables_json") is False:
+            conn.execute(text("ALTER TABLE campaign_numbers ADD COLUMN lead_variables_json TEXT"))
         if _column_exists("campaign_numbers", "ai_no_input_turns") is False:
             conn.execute(text("ALTER TABLE campaign_numbers ADD COLUMN ai_no_input_turns INTEGER"))
         if _column_exists("campaign_numbers", "ai_last_user_input") is False:
