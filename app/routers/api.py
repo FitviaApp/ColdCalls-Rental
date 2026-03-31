@@ -28,6 +28,7 @@ from app.services.ai_call_runtime_service import (
     build_ai_runtime_followup_twiml,
     build_ai_runtime_twiml,
     get_ai_runtime_audio,
+    get_ai_runtime_audio_media_type,
 )
 from app.services.elevenlabs_sip_runtime_service import build_elevenlabs_sip_twiml
 from app.services.voximplant_service import decode_voximplant_callback_token
@@ -332,7 +333,13 @@ async def ai_runtime_audio(campaign_number_id: int, audio_token: str):
     audio_bytes = get_ai_runtime_audio(campaign_number_id, audio_token)
     if not audio_bytes:
         raise HTTPException(status_code=404, detail="Audio not found")
-    return Response(content=audio_bytes, media_type="audio/mpeg")
+    return Response(
+        content=audio_bytes,
+        media_type=get_ai_runtime_audio_media_type(),
+        headers={
+            "Cache-Control": "public, max-age=3600, immutable",
+        },
+    )
 
 
 @router.get("/stats", response_model=DashboardStats)
