@@ -9,7 +9,6 @@ import secrets
 import time
 from pathlib import Path
 from typing import Any, Callable, Optional
-from urllib.parse import urlencode
 
 import httpx
 from sqlalchemy.orm import Session
@@ -30,7 +29,6 @@ AI_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
 
 MAX_AGENT_TURNS = settings.AI_MAX_AGENT_TURNS
 MAX_HISTORY_MESSAGES = settings.AI_MAX_HISTORY_MESSAGES
-LIVE_MAX_HISTORY_MESSAGES = settings.AI_LIVE_MAX_HISTORY_MESSAGES
 MAX_NO_INPUT_TURNS = settings.AI_MAX_NO_INPUT_TURNS
 MAX_ASSISTANT_TEXT_CHARS = settings.AI_MAX_ASSISTANT_TEXT_CHARS
 
@@ -95,7 +93,6 @@ class AICallRuntimeService:
         self.openai_api_key = openai_api_key
         self.openai_org_id = openai_org_id
         self.elevenlabs_api_key = elevenlabs_api_key
-        self._http_client: httpx.Client | None = None
 
     def make_call(
         self,
@@ -207,17 +204,10 @@ class AICallRuntimeService:
             self._write_session(campaign_number_id, session)
             return self._twiml_for_turn(campaign_number_id, session, closing_turn)
 
-        turn_started_at = time.monotonic()
         next_turn = self._generate_assistant_turn(session)
         session["current_turn"] = next_turn
         self._write_session(campaign_number_id, session)
-        twiml = self._twiml_for_turn(campaign_number_id, session, next_turn)
-        logger.info(
-            "AI runtime follow-up turn ready for campaign_number_id=%s in %.3fs",
-            campaign_number_id,
-            time.monotonic() - turn_started_at,
-        )
-        return twiml
+        return self._twiml_for_turn(campaign_number_id, session, next_turn)
 
     def _create_runtime_session(
         self,
@@ -262,15 +252,9 @@ class AICallRuntimeService:
             ai_runtime_error=None,
         )
 
-        initial_turn_started_at = time.monotonic()
         first_turn = self._generate_assistant_turn(session_payload, agent=agent)
         session_payload["current_turn"] = first_turn
         self._write_session(campaign_number_id, session_payload)
-        logger.info(
-            "AI runtime initial turn ready for campaign_number_id=%s in %.3fs",
-            campaign_number_id,
-            time.monotonic() - initial_turn_started_at,
-        )
         return session_payload
 
     def _generate_assistant_turn(
@@ -286,7 +270,6 @@ class AICallRuntimeService:
         if not agent:
             raise ValueError("AI agent not found")
 
-        turn_started_at = time.monotonic()
         reply = self._request_openai_turn(agent, session_payload.get("history") or [])
         assistant_text = self._sanitize_assistant_text(
             reply.get("assistant_text") or "Hello, this is a quick follow-up call."
@@ -296,18 +279,12 @@ class AICallRuntimeService:
         if should_transfer and "connect" not in assistant_text.lower():
             assistant_text = f"{assistant_text.rstrip()} Please hold while I connect you now."
 
-        turn = self._create_assistant_turn(
+        return self._create_assistant_turn(
             session_payload,
             assistant_text=assistant_text,
             should_transfer=should_transfer,
             handoff_reason=handoff_reason,
         )
-        logger.info(
-            "AI runtime assistant turn synthesized for campaign_number_id=%s in %.3fs",
-            session_payload.get("campaign_number_id"),
-            time.monotonic() - turn_started_at,
-        )
-        return turn
 
     def _create_assistant_turn(
         self,
@@ -321,27 +298,15 @@ class AICallRuntimeService:
         audio_token = secrets.token_hex(8)
         audio_path = self._audio_path(campaign_number_id, audio_token)
         sanitized_text = self._sanitize_assistant_text(assistant_text)
-        tts_started_at = time.monotonic()
         audio_bytes = self._synthesize_text_to_speech(
             sanitized_text,
             voice_id=self._agent_voice_id(session_payload),
         )
-        tts_duration = time.monotonic() - tts_started_at
-        audio_write_started_at = time.monotonic()
         audio_path.write_bytes(audio_bytes)
-        audio_write_duration = time.monotonic() - audio_write_started_at
         session_payload.setdefault("history", []).append(
             {"role": "assistant", "content": sanitized_text}
         )
         turn_count = int(session_payload.get("turn_count") or 0)
-        logger.info(
-            "AI runtime audio ready for campaign_number_id=%s turn=%s tts_duration=%.3fs audio_write_duration=%.3fs bytes=%s",
-            campaign_number_id,
-            turn_count,
-            tts_duration,
-            audio_write_duration,
-            len(audio_bytes),
-        )
         update_campaign_number_ai_observability(
             campaign_number_id,
             ai_turn_count=turn_count,
@@ -360,18 +325,15 @@ class AICallRuntimeService:
             f"You are an outbound phone agent speaking only in English. "
             f"Your job is to pre-qualify the lead, keep replies concise for voice, "
             f"and call the transfer_call tool when the lead is qualified or explicitly asks for a human. "
-            f"Keep each spoken reply to one short sentence by default. "
-            f"Only add transfer wording when you are actually transferring the call. "
             f"Agent instructions: {agent.system_prompt.strip()} "
             f"Handoff guidance: {(agent.handoff_description or 'Transfer when the lead is ready for a human.').strip()}"
         )
         messages = [{"role": "system", "content": system_prompt}]
-        messages.extend((history or [])[-LIVE_MAX_HISTORY_MESSAGES:])
+        messages.extend((history or [])[-MAX_HISTORY_MESSAGES:])
 
         payload = {
             "model": agent.model or settings.OPENAI_DEFAULT_MODEL,
             "temperature": float(agent.temperature or 0.7),
-            "max_completion_tokens": int(settings.AI_OPENAI_MAX_COMPLETION_TOKENS),
             "messages": messages,
             "tools": [
                 {
@@ -399,20 +361,12 @@ class AICallRuntimeService:
         if self.openai_org_id:
             headers["OpenAI-Organization"] = self.openai_org_id
 
-        request_started_at = time.monotonic()
         data = self._post_json_with_retries(
             provider_name="OpenAI",
             url=f"{settings.OPENAI_API_BASE.rstrip('/')}/chat/completions",
             headers=headers,
             json_payload=payload,
-            timeout_seconds=self._request_timeout(float(settings.OPENAI_REQUEST_TIMEOUT_SECONDS)),
-            max_retries=int(settings.AI_HTTP_MAX_RETRIES_LIVE),
-            retry_backoff_seconds=float(settings.AI_HTTP_RETRY_BACKOFF_SECONDS_LIVE),
-        )
-        logger.info(
-            "OpenAI live turn completed in %.3fs with %s history messages",
-            time.monotonic() - request_started_at,
-            max(0, len(messages) - 1),
+            timeout_seconds=float(settings.OPENAI_REQUEST_TIMEOUT_SECONDS),
         )
 
         choice = (data.get("choices") or [{}])[0]
@@ -461,7 +415,7 @@ class AICallRuntimeService:
     def _synthesize_text_to_speech(self, text: str, *, voice_id: str) -> bytes:
         payload = {
             "text": text,
-            "model_id": settings.ELEVENLABS_LIVE_MODEL or settings.ELEVENLABS_TTS_MODEL,
+            "model_id": settings.ELEVENLABS_TTS_MODEL,
             "voice_settings": {
                 "stability": 0.45,
                 "similarity_boost": 0.75,
@@ -470,23 +424,14 @@ class AICallRuntimeService:
         headers = {
             "xi-api-key": self.elevenlabs_api_key,
             "Content-Type": "application/json",
-            "Accept": get_ai_runtime_audio_media_type(),
-        }
-        query_params = {
-            "output_format": settings.ELEVENLABS_OUTPUT_FORMAT,
-            "optimize_streaming_latency": int(settings.ELEVENLABS_OPTIMIZE_STREAMING_LATENCY),
+            "Accept": "audio/mpeg",
         }
         return self._post_binary_with_retries(
             provider_name="ElevenLabs",
-            url=(
-                f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
-                f"?{urlencode(query_params)}"
-            ),
+            url=f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
             headers=headers,
             json_payload=payload,
-            timeout_seconds=self._request_timeout(float(settings.ELEVENLABS_REQUEST_TIMEOUT_SECONDS)),
-            max_retries=int(settings.AI_HTTP_MAX_RETRIES_LIVE),
-            retry_backoff_seconds=float(settings.AI_HTTP_RETRY_BACKOFF_SECONDS_LIVE),
+            timeout_seconds=float(settings.ELEVENLABS_REQUEST_TIMEOUT_SECONDS),
         )
 
     def _post_json_with_retries(
@@ -496,9 +441,7 @@ class AICallRuntimeService:
         url: str,
         headers: dict[str, str],
         json_payload: dict[str, Any],
-        timeout_seconds: float | httpx.Timeout,
-        max_retries: int | None = None,
-        retry_backoff_seconds: float | None = None,
+        timeout_seconds: float,
     ) -> dict[str, Any]:
         response = self._post_with_retries(
             provider_name=provider_name,
@@ -506,8 +449,6 @@ class AICallRuntimeService:
             headers=headers,
             json_payload=json_payload,
             timeout_seconds=timeout_seconds,
-            max_retries=max_retries,
-            retry_backoff_seconds=retry_backoff_seconds,
         )
         return response.json()
 
@@ -518,9 +459,7 @@ class AICallRuntimeService:
         url: str,
         headers: dict[str, str],
         json_payload: dict[str, Any],
-        timeout_seconds: float | httpx.Timeout,
-        max_retries: int | None = None,
-        retry_backoff_seconds: float | None = None,
+        timeout_seconds: float,
     ) -> bytes:
         response = self._post_with_retries(
             provider_name=provider_name,
@@ -528,8 +467,6 @@ class AICallRuntimeService:
             headers=headers,
             json_payload=json_payload,
             timeout_seconds=timeout_seconds,
-            max_retries=max_retries,
-            retry_backoff_seconds=retry_backoff_seconds,
             response_validator=self._validate_audio_response,
         )
         return response.content
@@ -541,28 +478,20 @@ class AICallRuntimeService:
         url: str,
         headers: dict[str, str],
         json_payload: dict[str, Any],
-        timeout_seconds: float | httpx.Timeout,
-        max_retries: int | None = None,
-        retry_backoff_seconds: float | None = None,
+        timeout_seconds: float,
         response_validator: Callable[[httpx.Response], None] | None = None,
     ) -> httpx.Response:
-        max_attempts = max(1, int(max_retries if max_retries is not None else settings.AI_HTTP_MAX_RETRIES) + 1)
-        backoff_base = float(
-            retry_backoff_seconds
-            if retry_backoff_seconds is not None
-            else settings.AI_HTTP_RETRY_BACKOFF_SECONDS
-        )
+        max_attempts = max(1, int(settings.AI_HTTP_MAX_RETRIES) + 1)
         last_error: Exception | None = None
-        client = self._get_http_client()
 
         for attempt in range(1, max_attempts + 1):
             try:
-                response = client.post(
-                    url,
-                    headers=headers,
-                    json=json_payload,
-                    timeout=timeout_seconds,
-                )
+                with httpx.Client(timeout=timeout_seconds) as client:
+                    response = client.post(
+                        url,
+                        headers=headers,
+                        json=json_payload,
+                    )
                 response.raise_for_status()
                 if response_validator is not None:
                     response_validator(response)
@@ -576,7 +505,7 @@ class AICallRuntimeService:
                 last_error = exc
                 if attempt >= max_attempts:
                     break
-                backoff_seconds = backoff_base * attempt
+                backoff_seconds = float(settings.AI_HTTP_RETRY_BACKOFF_SECONDS) * attempt
                 logger.warning(
                     "%s request attempt %s/%s failed: %s. Retrying in %.2fs",
                     provider_name,
@@ -600,26 +529,6 @@ class AICallRuntimeService:
             raise InvalidProviderResponseError(
                 f"provider returned {content_type} instead of audio: {body_preview}"
             )
-
-    def _get_http_client(self) -> httpx.Client:
-        client = getattr(self, "_http_client", None)
-        if client is None:
-            self._http_client = httpx.Client()
-            client = self._http_client
-        return client
-
-    def _request_timeout(self, fallback_timeout_seconds: float) -> httpx.Timeout:
-        connect_timeout = float(settings.AI_HTTP_CONNECT_TIMEOUT_SECONDS or fallback_timeout_seconds)
-        read_timeout = float(settings.AI_HTTP_READ_TIMEOUT_SECONDS or fallback_timeout_seconds)
-        write_timeout = float(settings.AI_HTTP_WRITE_TIMEOUT_SECONDS or fallback_timeout_seconds)
-        pool_timeout = max(connect_timeout, 1.0)
-        return httpx.Timeout(
-            timeout=fallback_timeout_seconds,
-            connect=connect_timeout,
-            read=read_timeout,
-            write=write_timeout,
-            pool=pool_timeout,
-        )
 
     def _agent_voice_id(self, session_payload: dict[str, Any]) -> str:
         agent_id = int(session_payload.get("ai_agent_id") or 0)
@@ -727,17 +636,6 @@ def get_ai_runtime_audio(campaign_number_id: int, audio_token: str) -> Optional[
     if not audio_path.exists():
         return None
     return audio_path.read_bytes()
-
-
-def get_ai_runtime_audio_media_type() -> str:
-    output_format = str(settings.ELEVENLABS_OUTPUT_FORMAT or "").strip().lower()
-    if output_format.startswith("mp3"):
-        return "audio/mpeg"
-    if output_format.startswith("pcm"):
-        return "audio/L16"
-    if output_format.startswith("ulaw"):
-        return "audio/basic"
-    return "application/octet-stream"
 
 
 def cleanup_ai_runtime_artifacts(campaign_number_id: int) -> None:
