@@ -162,6 +162,19 @@ class SignalWireSupportTests(unittest.TestCase):
         self.assertNotIn("Twiml", captured["data"])
         self.assertNotIn("MachineDetection", captured["data"])
 
+    def test_signalwire_answer_url_requires_public_base_url(self):
+        service = SignalWireService("project", "token", "space.signalwire.com")
+        with self.assertRaises(ValueError) as ctx:
+            service.make_call(
+                to_number="+15551234567",
+                from_number="+15557654321",
+                audio_url=None,
+                transfer_number="+15550001111",
+                answer_url="http://localhost:8000/api/ai-runtime/twiml/1",
+                enable_machine_detection=False,
+            )
+        self.assertIn("public http(s) URL", str(ctx.exception))
+
     def test_ai_runtime_cleanup_removes_session_and_audio_files(self):
         campaign_number_id = 4242
         session_path = AI_RUNTIME_DIR / f"{campaign_number_id}.json"
