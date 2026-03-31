@@ -91,79 +91,83 @@ async def twiml_handler(
     - fax
     - unknown
     """
-    # Parse form data from Twilio (POST) or query params (GET)
-    if request.method == "POST":
-        form_data = await request.form()
-        answered_by = form_data.get("AnsweredBy", "")
-    else:
-        answered_by = request.query_params.get("AnsweredBy", "")
+    try:
+        # Parse form data from Twilio/SignalWire (POST) or query params (GET)
+        answered_by = ""
+        if request.method == "POST":
+            try:
+                form_data = await request.form()
+                answered_by = str(form_data.get("AnsweredBy", "")).strip()
+            except Exception as exc:
+                logger.warning(
+                    "Failed to parse form payload for /api/twiml/%s: %s",
+                    campaign_id,
+                    exc,
+                )
+                answered_by = str(request.query_params.get("AnsweredBy", "")).strip()
+        else:
+            answered_by = str(request.query_params.get("AnsweredBy", "")).strip()
 
-    # Get campaign
-    campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
+        campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
+        if not campaign:
+            return _hangup_response()
 
-    if not campaign:
-        return _hangup_response()
+        if not has_active_rental(db, campaign.user_id):
+            return _hangup_response()
+        if campaign.voice_provider not in {VoiceProvider.TWILIO, VoiceProvider.SIGNALWIRE}:
+            return _hangup_response()
 
-    if not has_active_rental(db, campaign.user_id):
-        return _hangup_response()
-    if campaign.voice_provider not in {VoiceProvider.TWILIO, VoiceProvider.SIGNALWIRE}:
-        return _hangup_response()
+        transfer_number = campaign.user.transfer_number
+        if not transfer_number:
+            return _hangup_response()
 
-    # Get transfer number from user settings
-    transfer_number = campaign.user.transfer_number
+        logger.info(f"cXML/TwiML request for campaign {campaign_id}: AnsweredBy={answered_by}")
 
-    if not transfer_number:
-        return _hangup_response()
+        if answered_by.startswith("machine") or answered_by == "fax":
+            logger.info(f"Campaign {campaign_id}: Machine detected ({answered_by}), hanging up")
+            return _hangup_response()
+        audio_url = campaign.audio.r2_url if campaign.audio else None
 
-    # Log the request for debugging
-    logger.info(f"cXML/TwiML request for campaign {campaign_id}: AnsweredBy={answered_by}")
-
-    # Check if answered by machine (any machine_* value)
-    if answered_by.startswith("machine") or answered_by == "fax":
-        # Machine/voicemail/fax detected - hang up
-        logger.info(f"Campaign {campaign_id}: Machine detected ({answered_by}), hanging up")
-        return _hangup_response()
-    audio_url = campaign.audio.r2_url if campaign.audio else None
-
-    if campaign.press_1_to_talk_with_agent:
-        base_url = settings.BASE_URL.rstrip("/")
-        logger.info(
-            f"Campaign {campaign_id}: Human/unknown ({answered_by}), "
-            "waiting for DTMF 1 before transfer"
-        )
-        if audio_url:
-            twiml = f'''<?xml version="1.0" encoding="UTF-8"?>
+        if campaign.press_1_to_talk_with_agent:
+            base_url = settings.BASE_URL.rstrip("/")
+            logger.info(
+                f"Campaign {campaign_id}: Human/unknown ({answered_by}), "
+                "waiting for DTMF 1 before transfer"
+            )
+            if audio_url:
+                twiml = f'''<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Play>{audio_url}</Play>
     {_build_press_1_gather_block(base_url, campaign_id)}
     <Hangup/>
 </Response>'''
-        else:
-            twiml = f'''<?xml version="1.0" encoding="UTF-8"?>
+            else:
+                twiml = f'''<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     {_build_press_1_gather_block(base_url, campaign_id)}
     <Hangup/>
 </Response>'''
-    else:
-        # Human answered (or unknown - treat as human to not miss calls)
-        # Play campaign audio (when present), then transfer to 3CX.
-        logger.info(
-            f"Campaign {campaign_id}: Human/unknown ({answered_by}), "
-            f"transferring to {transfer_number}"
-        )
-        if audio_url:
-            twiml = f'''<?xml version="1.0" encoding="UTF-8"?>
+        else:
+            logger.info(
+                f"Campaign {campaign_id}: Human/unknown ({answered_by}), "
+                f"transferring to {transfer_number}"
+            )
+            if audio_url:
+                twiml = f'''<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Play>{audio_url}</Play>
     {_build_transfer_block(campaign, transfer_number)}
 </Response>'''
-        else:
-            twiml = f'''<?xml version="1.0" encoding="UTF-8"?>
+            else:
+                twiml = f'''<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     {_build_transfer_block(campaign, transfer_number)}
 </Response>'''
 
-    return Response(content=twiml, media_type="application/xml")
+        return Response(content=twiml, media_type="application/xml")
+    except Exception as exc:
+        logger.error("Unhandled /api/twiml/%s error: %s", campaign_id, exc, exc_info=True)
+        return _hangup_response()
 
 
 @router.post("/twiml/{campaign_id}/gather")
@@ -172,31 +176,44 @@ async def twiml_gather_handler(
     request: Request,
     db: Session = Depends(get_db)
 ):
-    form_data = await request.form()
-    digits = str(form_data.get("Digits", "")).strip()
+    try:
+        digits = ""
+        try:
+            form_data = await request.form()
+            digits = str(form_data.get("Digits", "")).strip()
+        except Exception as exc:
+            logger.warning(
+                "Failed to parse form payload for /api/twiml/%s/gather: %s",
+                campaign_id,
+                exc,
+            )
+            digits = str(request.query_params.get("Digits", "")).strip()
 
-    campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
-    if not campaign:
-        return _hangup_response()
-    if not has_active_rental(db, campaign.user_id):
-        return _hangup_response()
-    if campaign.voice_provider not in {VoiceProvider.TWILIO, VoiceProvider.SIGNALWIRE}:
-        return _hangup_response()
+        campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
+        if not campaign:
+            return _hangup_response()
+        if not has_active_rental(db, campaign.user_id):
+            return _hangup_response()
+        if campaign.voice_provider not in {VoiceProvider.TWILIO, VoiceProvider.SIGNALWIRE}:
+            return _hangup_response()
 
-    transfer_number = campaign.user.transfer_number
-    if not transfer_number:
-        return _hangup_response()
+        transfer_number = campaign.user.transfer_number
+        if not transfer_number:
+            return _hangup_response()
 
-    if digits == "1":
-        logger.info(f"Campaign {campaign_id}: DTMF 1 received, transferring")
-        twiml = f'''<?xml version="1.0" encoding="UTF-8"?>
+        if digits == "1":
+            logger.info(f"Campaign {campaign_id}: DTMF 1 received, transferring")
+            twiml = f'''<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     {_build_transfer_block(campaign, transfer_number)}
 </Response>'''
-        return Response(content=twiml, media_type="application/xml")
+            return Response(content=twiml, media_type="application/xml")
 
-    logger.info(f"Campaign {campaign_id}: Invalid/no DTMF ({digits}), hanging up")
-    return _hangup_response()
+        logger.info(f"Campaign {campaign_id}: Invalid/no DTMF ({digits}), hanging up")
+        return _hangup_response()
+    except Exception as exc:
+        logger.error("Unhandled /api/twiml/%s/gather error: %s", campaign_id, exc, exc_info=True)
+        return _hangup_response()
 
 
 @router.post("/telnyx/texml/{campaign_id}")
