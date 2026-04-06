@@ -25,7 +25,6 @@ from app.models import (
 )
 from app.routers import api as api_router_module
 from app.routers import campaigns as campaigns_router_module
-from app.services.user_elevenlabs_service import upsert_user_elevenlabs_credentials
 from app.services.user_openai_service import upsert_user_openai_credentials
 from app.services.user_signalwire_service import upsert_user_signalwire_credentials
 
@@ -101,7 +100,6 @@ class AICampaignRouteTests(unittest.TestCase):
             space_url="example.signalwire.com",
         )
         upsert_user_openai_credentials(self.db, self.user.id, "sk-test-1234567890")
-        upsert_user_elevenlabs_credentials(self.db, self.user.id, "elevenlabs-key-1234567890")
         self.db.commit()
 
         self.app = FastAPI()

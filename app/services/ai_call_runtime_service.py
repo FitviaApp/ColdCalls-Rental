@@ -1,5 +1,5 @@
 """
-Conversational AI campaign runtime using SignalWire, OpenAI, and ElevenLabs.
+Conversational AI campaign runtime using SignalWire and OpenAI.
 """
 from __future__ import annotations
 
@@ -17,7 +17,6 @@ from app.config import get_settings
 from app.database import SessionLocal
 from app.models import AIAgent, CampaignNumber, CampaignMode
 from app.services.signalwire_service import SignalWireService
-from app.services.user_elevenlabs_service import get_user_elevenlabs_credentials
 from app.services.user_openai_service import get_user_openai_credentials
 from app.services.user_signalwire_service import get_user_signalwire_credentials
 
@@ -76,14 +75,11 @@ class AICallRuntimeService:
 
         project_id, api_token, space_url = get_user_signalwire_credentials(db, user_id)
         openai_api_key, openai_org_id = get_user_openai_credentials(db, user_id)
-        elevenlabs_api_key = get_user_elevenlabs_credentials(db, user_id)
 
         if not project_id or not api_token or not space_url:
             raise ValueError("SignalWire credentials not configured")
         if not openai_api_key:
             raise ValueError("OpenAI credentials not configured")
-        if not elevenlabs_api_key:
-            raise ValueError("ElevenLabs credentials not configured")
 
         self.signalwire_service = SignalWireService(
             project_id=project_id,
@@ -92,7 +88,6 @@ class AICallRuntimeService:
         )
         self.openai_api_key = openai_api_key
         self.openai_org_id = openai_org_id
-        self.elevenlabs_api_key = elevenlabs_api_key
 
     def make_call(
         self,
@@ -414,24 +409,24 @@ class AICallRuntimeService:
 
     def _synthesize_text_to_speech(self, text: str, *, voice_id: str) -> bytes:
         payload = {
-            "text": text,
-            "model_id": settings.ELEVENLABS_TTS_MODEL,
-            "voice_settings": {
-                "stability": 0.45,
-                "similarity_boost": 0.75,
-            },
+            "model": settings.OPENAI_TTS_MODEL,
+            "voice": voice_id,
+            "input": text,
+            "response_format": settings.OPENAI_TTS_RESPONSE_FORMAT,
         }
         headers = {
-            "xi-api-key": self.elevenlabs_api_key,
+            "Authorization": f"Bearer {self.openai_api_key}",
             "Content-Type": "application/json",
             "Accept": "audio/mpeg",
         }
+        if self.openai_org_id:
+            headers["OpenAI-Organization"] = self.openai_org_id
         return self._post_binary_with_retries(
-            provider_name="ElevenLabs",
-            url=f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
+            provider_name="OpenAI TTS",
+            url=f"{settings.OPENAI_API_BASE.rstrip('/')}/audio/speech",
             headers=headers,
             json_payload=payload,
-            timeout_seconds=float(settings.ELEVENLABS_REQUEST_TIMEOUT_SECONDS),
+            timeout_seconds=float(settings.OPENAI_REQUEST_TIMEOUT_SECONDS),
         )
 
     def _post_json_with_retries(

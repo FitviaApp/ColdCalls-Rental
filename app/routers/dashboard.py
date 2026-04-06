@@ -22,10 +22,6 @@ from app.services.user_openai_service import (
     has_user_openai_credentials,
     upsert_user_openai_credentials,
 )
-from app.services.user_elevenlabs_service import (
-    has_user_elevenlabs_credentials,
-    upsert_user_elevenlabs_credentials,
-)
 from app.services.user_signalwire_service import (
     has_user_signalwire_credentials,
     upsert_user_signalwire_credentials,
@@ -68,7 +64,6 @@ def _settings_context(
     vonage_saved: bool = False,
     voximplant_saved: bool = False,
     openai_saved: bool = False,
-    elevenlabs_saved: bool = False,
     voximplant_provisioned: bool = False,
     password_saved: bool = False,
     error: str | None = None,
@@ -84,7 +79,6 @@ def _settings_context(
         "vonage_saved": vonage_saved,
         "voximplant_saved": voximplant_saved,
         "openai_saved": openai_saved,
-        "elevenlabs_saved": elevenlabs_saved,
         "voximplant_provisioned": voximplant_provisioned,
         "password_saved": password_saved,
         "twilio_configured": has_user_twilio_credentials(db, user.id),
@@ -93,7 +87,6 @@ def _settings_context(
         "vonage_configured": has_user_vonage_credentials(db, user.id),
         "voximplant_configured": has_user_voximplant_credentials(db, user.id),
         "openai_configured": has_user_openai_credentials(db, user.id),
-        "elevenlabs_configured": has_user_elevenlabs_credentials(db, user.id),
         "voximplant_status": voximplant_credentials.provision_status if voximplant_credentials else None,
         "voximplant_error": voximplant_credentials.provision_error if voximplant_credentials else None,
         "error": error,
@@ -183,7 +176,6 @@ async def dashboard(
         "twilio_configured": twilio_configured,
         "voximplant_configured": has_user_voximplant_credentials(db, user.id),
         "openai_configured": has_user_openai_credentials(db, user.id),
-        "elevenlabs_configured": has_user_elevenlabs_credentials(db, user.id),
         "ai_runtime_configured": has_user_ai_runtime_credentials(db, user.id),
         "twilio_balance": twilio_balance,
         "twilio_balance_currency": twilio_balance_currency,
@@ -224,7 +216,6 @@ async def settings_page(
     vonage_saved: bool = False,
     voximplant_saved: bool = False,
     openai_saved: bool = False,
-    elevenlabs_saved: bool = False,
     voximplant_provisioned: bool = False,
     password_saved: bool = False,
     db: Session = Depends(get_db)
@@ -243,7 +234,6 @@ async def settings_page(
             vonage_saved=vonage_saved,
             voximplant_saved=voximplant_saved,
             openai_saved=openai_saved,
-            elevenlabs_saved=elevenlabs_saved,
             voximplant_provisioned=voximplant_provisioned,
             password_saved=password_saved,
         ),
@@ -595,24 +585,3 @@ async def save_openai_credentials(
     upsert_user_openai_credentials(db, user.id, api_key, organization_id)
     db.commit()
     return RedirectResponse(url="/dashboard/settings?openai_saved=true", status_code=302)
-
-
-@router.post("/settings/elevenlabs")
-async def save_elevenlabs_credentials(
-    request: Request,
-    api_key: str = Form(...),
-    user: User = Depends(require_active_rental),
-    db: Session = Depends(get_db)
-):
-    api_key = api_key.strip()
-
-    if len(api_key) < 20:
-        return templates.TemplateResponse(
-            "dashboard/settings.html",
-            _settings_context(request, user, db, error="ElevenLabs API key looks invalid."),
-            status_code=400,
-        )
-
-    upsert_user_elevenlabs_credentials(db, user.id, api_key)
-    db.commit()
-    return RedirectResponse(url="/dashboard/settings?elevenlabs_saved=true", status_code=302)

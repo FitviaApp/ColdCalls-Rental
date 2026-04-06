@@ -91,24 +91,21 @@ class SignalWireSupportTests(unittest.TestCase):
         self.assertIsNotNone(limiter)
         self.assertEqual(limiter._current_interval_seconds(), TWILIO_MIN_START_INTERVAL_SECONDS)  # type: ignore[union-attr]
 
-    def test_ai_runtime_credentials_require_signalwire_openai_and_elevenlabs(self):
+    def test_ai_runtime_credentials_require_signalwire_and_openai(self):
         import app.services.user_voice_provider_service as provider_service
 
         original_signalwire = provider_service.has_user_signalwire_credentials
         original_openai = provider_service.has_user_openai_credentials
-        original_elevenlabs = provider_service.has_user_elevenlabs_credentials
         try:
             provider_service.has_user_signalwire_credentials = lambda db, user_id: True
             provider_service.has_user_openai_credentials = lambda db, user_id: True
-            provider_service.has_user_elevenlabs_credentials = lambda db, user_id: True
             self.assertTrue(has_user_ai_runtime_credentials(None, 1))
 
-            provider_service.has_user_elevenlabs_credentials = lambda db, user_id: False
+            provider_service.has_user_openai_credentials = lambda db, user_id: False
             self.assertFalse(has_user_ai_runtime_credentials(None, 1))
         finally:
             provider_service.has_user_signalwire_credentials = original_signalwire
             provider_service.has_user_openai_credentials = original_openai
-            provider_service.has_user_elevenlabs_credentials = original_elevenlabs
 
     def test_campaign_mode_enum_values(self):
         self.assertEqual(CampaignMode.AUDIO.value, "audio")
@@ -273,7 +270,7 @@ class SignalWireSupportTests(unittest.TestCase):
         )
         self.assertEqual(
             error,
-            "Please configure SignalWire, OpenAI, and ElevenLabs credentials in Settings first",
+            "Please configure SignalWire and OpenAI credentials in Settings first",
         )
 
     def test_parse_campaign_numbers_accepts_csv_first_column_and_counts_invalid(self):
@@ -539,7 +536,7 @@ class SignalWireSupportTests(unittest.TestCase):
         try:
             service = AICallRuntimeService.__new__(AICallRuntimeService)
             audio_bytes = service._post_binary_with_retries(
-                provider_name="ElevenLabs",
+                provider_name="OpenAI TTS",
                 url="https://example.com",
                 headers={},
                 json_payload={},
@@ -589,7 +586,7 @@ class SignalWireSupportTests(unittest.TestCase):
             service = AICallRuntimeService.__new__(AICallRuntimeService)
             with self.assertRaises(RuntimeError) as ctx:
                 service._post_binary_with_retries(
-                    provider_name="ElevenLabs",
+                    provider_name="OpenAI TTS",
                     url="https://example.com",
                     headers={},
                     json_payload={},

@@ -315,8 +315,8 @@
                                 the call cost exceeded the configured AI budget limit.
                                 {% elif 'OpenAI request failed' in ai_runtime_summary.last_runtime_error %}
                                 OpenAI did not respond successfully after retries.
-                                {% elif 'ElevenLabs request failed' in ai_runtime_summary.last_runtime_error %}
-                                ElevenLabs did not return voice audio after retries.
+                                {% elif 'OpenAI TTS request failed' in ai_runtime_summary.last_runtime_error %}
+                                OpenAI did not return voice audio after retries.
                                 {% elif 'SignalWire' in ai_runtime_summary.last_runtime_error %}
                                 SignalWire could not complete the live call flow.
                                 {% else %}
@@ -413,7 +413,7 @@ function campaignDetail() {
             if (normalized.includes('max duration policy')) return 'Call exceeded the configured AI duration limit';
             if (normalized.includes('max cost policy')) return 'Call exceeded the configured AI cost limit';
             if (normalized.includes('openai request failed')) return 'OpenAI did not respond successfully after retries';
-            if (normalized.includes('elevenlabs request failed')) return 'ElevenLabs did not return voice audio after retries';
+            if (normalized.includes('openai tts request failed')) return 'OpenAI did not return voice audio after retries';
             if (normalized.includes('signalwire')) return 'SignalWire could not complete the call flow';
             return value;
         },

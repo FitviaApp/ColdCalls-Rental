@@ -89,7 +89,7 @@ def _campaign_form_validation_error(
     if campaign_mode == CampaignMode.AI_AGENT.value and voice_provider != VoiceProvider.SIGNALWIRE.value:
         return "AI agent campaigns currently require SignalWire as the voice provider."
     if campaign_mode == CampaignMode.AI_AGENT.value and not ai_runtime_configured:
-        return "Configure SignalWire, OpenAI, and ElevenLabs in Settings before creating an AI agent campaign."
+        return "Configure SignalWire and OpenAI in Settings before creating an AI agent campaign."
     if press_1_to_talk_with_agent and not provider_supports_press_1(voice_provider):
         return "Press 1 flow is not available for the selected provider."
     if campaign_mode == CampaignMode.AI_AGENT.value and press_1_to_talk_with_agent:
@@ -147,7 +147,7 @@ def _campaign_start_validation_error(
         if not campaign.ai_agent.is_active:
             return "Selected AI agent is inactive"
         if not ai_runtime_configured:
-            return "Please configure SignalWire, OpenAI, and ElevenLabs credentials in Settings first"
+            return "Please configure SignalWire and OpenAI credentials in Settings first"
     if not provider_configured:
         return f"Please configure {provider.title()} credentials in Settings first"
     if campaign.press_1_to_talk_with_agent and not provider_supports_press_1(provider):
