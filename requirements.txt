@@ -22,6 +22,8 @@ boto3>=1.34.0
 
 # HTTP Client (for Etherscan)
 httpx>=0.26.0
+websockets>=12.0
+redis>=5.0.0
 
 # Settings
 pydantic>=2.5.0

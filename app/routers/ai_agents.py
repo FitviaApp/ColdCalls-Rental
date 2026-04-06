@@ -154,18 +154,25 @@ async def create_agent(
             status_code=400,
         )
 
-    create_user_ai_agent(
-        db,
-        user.id,
-        name=name,
-        system_prompt=system_prompt,
-        voice_id=voice_id,
-        model=model,
-        temperature=temperature,
-        language=language,
-        handoff_description=handoff_description,
-        is_active=is_active,
-    )
+    try:
+        create_user_ai_agent(
+            db,
+            user.id,
+            name=name,
+            system_prompt=system_prompt,
+            voice_id=voice_id,
+            model=model,
+            temperature=temperature,
+            language=language,
+            handoff_description=handoff_description,
+            is_active=is_active,
+        )
+    except ValueError as exc:
+        return templates.TemplateResponse(
+            "ai_agents/create.html",
+            _render_form(request, user, error=str(exc), form_data=form_data),
+            status_code=400,
+        )
     db.commit()
     return RedirectResponse(url="/ai-agents?created=true", status_code=302)
 
@@ -241,10 +248,10 @@ async def edit_agent(
             handoff_description=handoff_description,
             is_active=is_active,
         )
-    except ValueError:
+    except ValueError as exc:
         return templates.TemplateResponse(
             "ai_agents/edit.html",
-            _render_form(request, user, agent=agent, error="Invalid AI agent data.", form_data=form_data),
+            _render_form(request, user, agent=agent, error=str(exc), form_data=form_data),
             status_code=400,
         )
 

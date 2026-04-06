@@ -2,9 +2,12 @@
 API Router - JSON endpoints for AJAX calls and cXML/TwiML
 """
 import logging
-from fastapi import APIRouter, Depends, HTTPException, Request
+import json
+import asyncio
+from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
+from redis.asyncio import Redis as AsyncRedis
 
 from app.database import get_db
 from app.config import get_settings
@@ -13,10 +16,14 @@ from app.models import User, Campaign, CampaignNumber, CallerID, Country, Audio,
 from app.schemas import DashboardStats, CampaignProgress, DropdownCallerID, DropdownCountry, DropdownAudio
 from app.services.rental_service import has_active_rental
 from app.services.ai_call_runtime_service import (
+    build_ai_realtime_stream_twiml,
     build_ai_runtime_followup_twiml,
     build_ai_runtime_twiml,
     get_ai_runtime_audio,
+    update_campaign_number_ai_observability,
 )
+from app.services.ai_realtime_event_bus import AsyncAIRealtimeEventBus, realtime_channel, AIRealtimeEvent
+from app.services.ai_realtime_session_service import AIRealtimeSessionService
 from app.services.voximplant_service import decode_voximplant_callback_token
 
 logger = logging.getLogger(__name__)
@@ -320,6 +327,176 @@ async def ai_runtime_audio(campaign_number_id: int, audio_token: str):
     if not audio_bytes:
         raise HTTPException(status_code=404, detail="Audio not found")
     return Response(content=audio_bytes, media_type="audio/mpeg")
+
+
+@router.get("/ai-realtime/twiml/{campaign_number_id}")
+@router.post("/ai-realtime/twiml/{campaign_number_id}")
+async def ai_realtime_twiml(campaign_number_id: int, token: str = ""):
+    session_service = AIRealtimeSessionService()
+    if not session_service.validate_auth_token(campaign_number_id, token):
+        return _ai_runtime_hangup_response()
+    twiml = build_ai_realtime_stream_twiml(campaign_number_id, token)
+    return Response(content=twiml, media_type="application/xml")
+
+
+@router.get("/ai-realtime/session/{campaign_number_id}/health")
+async def ai_realtime_session_health(campaign_number_id: int):
+    session_service = AIRealtimeSessionService()
+    session = session_service.get_session(campaign_number_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Realtime session not found")
+    return {
+        "campaign_number_id": campaign_number_id,
+        "status": session.get("status") or "unknown",
+        "turn_count": int(session.get("turn_count") or 0),
+        "error_category": session.get("error_category") or "",
+        "error_detail": session.get("error_detail") or "",
+    }
+
+
+@router.post("/ai-realtime/session/{campaign_number_id}/start")
+async def ai_realtime_session_start(campaign_number_id: int):
+    session_service = AIRealtimeSessionService()
+    session = session_service.get_session(campaign_number_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Realtime session not found")
+    session_service.update_session(campaign_number_id, status="starting")
+    bus = AsyncAIRealtimeEventBus()
+    try:
+        await bus.publish(campaign_number_id, "session.started", {"source": "api_start"})
+    finally:
+        await bus.close()
+    return {"ok": True}
+
+
+@router.post("/ai-realtime/session/{campaign_number_id}/stop")
+async def ai_realtime_session_stop(campaign_number_id: int):
+    session_service = AIRealtimeSessionService()
+    if not session_service.get_session(campaign_number_id):
+        raise HTTPException(status_code=404, detail="Realtime session not found")
+    session_service.end_session(campaign_number_id, status="stopped")
+    bus = AsyncAIRealtimeEventBus()
+    try:
+        await bus.publish(campaign_number_id, "session.ended", {"source": "api_stop"})
+    finally:
+        await bus.close()
+    return {"ok": True}
+
+
+@router.websocket("/ai-realtime/ws/{campaign_number_id}")
+async def ai_realtime_ws(websocket: WebSocket, campaign_number_id: int):
+    token = str(websocket.query_params.get("token") or "")
+    session_service = AIRealtimeSessionService()
+    if not session_service.validate_auth_token(campaign_number_id, token):
+        await websocket.close(code=4401)
+        return
+
+    await websocket.accept()
+    bus = AsyncAIRealtimeEventBus()
+    redis = AsyncRedis.from_url(settings.REDIS_URL, decode_responses=True)
+    channel = realtime_channel(campaign_number_id)
+    pubsub = redis.pubsub(ignore_subscribe_messages=True)
+    await pubsub.subscribe(channel)
+    stop_event = asyncio.Event()
+    stream_sid = ""
+
+    async def forward_outbound_media():
+        nonlocal stream_sid
+        while not stop_event.is_set():
+            message = await pubsub.get_message(timeout=1.0)
+            if not message:
+                await asyncio.sleep(0.05)
+                continue
+            raw = str(message.get("data") or "")
+            if not raw:
+                continue
+            event = AIRealtimeEvent.from_json(raw)
+            if event.event == "media.outbound":
+                audio = str((event.payload or {}).get("audio") or "")
+                if not audio or not stream_sid:
+                    continue
+                await websocket.send_text(
+                    json.dumps(
+                        {
+                            "event": "media",
+                            "streamSid": stream_sid,
+                            "media": {"payload": audio},
+                        }
+                    )
+                )
+            elif event.event == "assistant.response":
+                text = str((event.payload or {}).get("text") or "")
+                if text:
+                    update_campaign_number_ai_observability(
+                        campaign_number_id,
+                        ai_last_assistant_text=text[:500],
+                    )
+            elif event.event == "tool.transfer_call":
+                reason = str((event.payload or {}).get("reason") or "")
+                update_campaign_number_ai_observability(
+                    campaign_number_id,
+                    ai_handoff_reason=reason[:500] if reason else None,
+                )
+            elif event.event == "session.error":
+                category = str((event.payload or {}).get("category") or "").strip()
+                detail = str((event.payload or {}).get("detail") or "").strip()
+                error_message = f"[{category}] {detail}" if category else detail
+                update_campaign_number_ai_observability(
+                    campaign_number_id,
+                    ai_runtime_error=error_message[:500],
+                )
+
+    outbound_task = asyncio.create_task(forward_outbound_media())
+
+    try:
+        while True:
+            raw_message = await websocket.receive_text()
+            data = json.loads(raw_message or "{}")
+            event_type = str(data.get("event") or "").lower()
+            if event_type == "start":
+                start = data.get("start") or {}
+                stream_sid = str(start.get("streamSid") or data.get("streamSid") or "")
+                if stream_sid:
+                    session_service.set_stream_sid(campaign_number_id, stream_sid)
+                session_service.update_session(campaign_number_id, status="streaming")
+                await bus.publish(
+                    campaign_number_id,
+                    "session.started",
+                    {"source": "provider_ws", "stream_sid": stream_sid},
+                )
+            elif event_type == "media":
+                media = data.get("media") or {}
+                payload = str(media.get("payload") or "")
+                if payload:
+                    await bus.publish(
+                        campaign_number_id,
+                        "media.inbound",
+                        {"audio": payload},
+                    )
+            elif event_type == "stop":
+                await bus.publish(
+                    campaign_number_id,
+                    "session.ended",
+                    {"source": "provider_ws_stop"},
+                )
+                session_service.end_session(campaign_number_id, status="ended")
+                break
+    except WebSocketDisconnect:
+        session_service.end_session(campaign_number_id, status="disconnected")
+        await bus.publish(campaign_number_id, "session.ended", {"source": "ws_disconnect"})
+    finally:
+        stop_event.set()
+        outbound_task.cancel()
+        try:
+            await pubsub.unsubscribe(channel)
+            await pubsub.aclose()
+        except Exception:
+            pass
+        try:
+            await redis.aclose()
+        except Exception:
+            pass
+        await bus.close()
 
 
 @router.get("/stats", response_model=DashboardStats)

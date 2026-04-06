@@ -46,9 +46,13 @@ class Settings(BaseSettings):
     # AI runtime defaults
     OPENAI_API_BASE: str = "https://api.openai.com/v1"
     OPENAI_DEFAULT_MODEL: str = "gpt-4o-mini"
+    OPENAI_REALTIME_MODEL: str = "gpt-realtime"
+    OPENAI_REALTIME_URL: str = "wss://api.openai.com/v1/realtime"
     OPENAI_TTS_MODEL: str = "gpt-4o-mini-tts"
     OPENAI_TTS_RESPONSE_FORMAT: str = "mp3"
     OPENAI_REQUEST_TIMEOUT_SECONDS: float = 45.0
+    REDIS_URL: str = "redis://localhost:6379/0"
+    AI_REALTIME_SESSION_TTL_SECONDS: int = 900
     AI_MAX_AGENT_TURNS: int = 6
     AI_MAX_HISTORY_MESSAGES: int = 12
     AI_MAX_NO_INPUT_TURNS: int = 2

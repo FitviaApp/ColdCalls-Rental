@@ -24,6 +24,7 @@ from app.services.ai_call_runtime_service import (
     prune_stale_ai_runtime_artifacts,
     update_campaign_number_ai_observability,
 )
+from app.services.ai_realtime_event_bus import AIRealtimeEvent, AIRealtimeEventBus
 from app.config import get_settings
 from app.services.telnyx_service import TelnyxService
 from app.services.twilio_service import TwilioService
@@ -371,6 +372,51 @@ class CampaignWorker:
                 synchronize_session=False
             )
             db.commit()
+            handoff_stop_event = threading.Event()
+            handoff_listener_started = False
+
+            def _listen_handoff_events() -> None:
+                bus = AIRealtimeEventBus()
+
+                def stop_when() -> bool:
+                    return handoff_stop_event.is_set()
+
+                def on_event(event: AIRealtimeEvent) -> None:
+                    if event.event != "tool.transfer_call":
+                        return
+                    reason = str((event.payload or {}).get("reason") or "Tool transfer requested").strip()
+                    call_sid = str(call_result.get("call_sid") or "")
+                    twiml = f"""<Response>
+    <Dial callerId="{caller_id.phone_number}" timeout="30">
+        <Number>{user.transfer_number}</Number>
+    </Dial>
+</Response>"""
+                    try:
+                        voice_service.update_call_twiml(call_sid, twiml)
+                        update_campaign_number_ai_observability(
+                            number.id,
+                            ai_handoff_reason=reason[:500],
+                        )
+                    except Exception as exc:
+                        update_campaign_number_ai_observability(
+                            number.id,
+                            ai_runtime_error=f"[tooling] transfer_call failed: {str(exc)[:420]}",
+                        )
+
+                bus.consume(
+                    number.id,
+                    stop_when=stop_when,
+                    on_event=on_event,
+                )
+
+            if campaign.campaign_mode == CampaignMode.AI_AGENT:
+                handoff_listener_started = True
+                handoff_thread = threading.Thread(
+                    target=_listen_handoff_events,
+                    daemon=True,
+                    name=f"ai-handoff-{number.id}",
+                )
+                handoff_thread.start()
 
             live_state = {
                 "status": initial_status,
@@ -417,6 +463,8 @@ class CampaignWorker:
                 status_callback=persist_status_update,
                 metadata={"campaign_number_id": number.id},
             )
+            if handoff_listener_started:
+                handoff_stop_event.set()
 
             final_status = self._map_status(final_result['status'])
             final_duration = int(final_result.get('duration') or 0)

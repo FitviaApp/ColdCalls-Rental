@@ -5,7 +5,7 @@ Plataforma web para gerenciamento de campanhas de cold calls multiusuario com:
 - FastAPI + Jinja2
 - SQLAlchemy + SQLite
 - Twilio, SignalWire, Telnyx, Vonage e Voximplant
-- Agentes de IA reutilizaveis com OpenAI (chat + voz) + SignalWire
+- Agentes de IA reutilizaveis com OpenAI Realtime Audio + SignalWire
 - Cloudflare R2 (audios)
 - Cobranca de aluguel via USDT (verificacao on-chain)
 
@@ -52,7 +52,7 @@ README.md
 
 - Python 3.11+
 - Pelo menos um provider de voz configurado por usuario
-- Para campanhas com agente IA: SignalWire + credenciais OpenAI por usuario
+- Para campanhas com agente IA: SignalWire + credenciais OpenAI Realtime por usuario
 - Bucket Cloudflare R2 (para audios)
 - Chave Etherscan (verificacao de pagamento)
 - `BASE_URL` publica para callbacks de providers
@@ -83,8 +83,9 @@ DEBUG=false
 BASE_URL=http://localhost:8000
 OPENAI_API_BASE=https://api.openai.com/v1
 OPENAI_DEFAULT_MODEL=gpt-4o-mini
-OPENAI_TTS_MODEL=gpt-4o-mini-tts
-OPENAI_TTS_RESPONSE_FORMAT=mp3
+OPENAI_REALTIME_MODEL=gpt-realtime
+OPENAI_REALTIME_URL=wss://api.openai.com/v1/realtime
+REDIS_URL=redis://localhost:6379/0
 AI_MAX_AGENT_TURNS=6
 AI_GATHER_TIMEOUT_SECONDS=3
 AI_GATHER_SPEECH_TIMEOUT_SECONDS=1
@@ -152,7 +153,7 @@ O worker verifica campanhas `running` a cada 10 segundos.
 5. Cada usuario configura:
    - Numero de transferencia em `/dashboard/settings`
    - Credenciais de voz em `/dashboard/settings`
-   - Credenciais OpenAI em `/dashboard/settings`
+   - Credenciais OpenAI Realtime em `/dashboard/settings`
    - Caller IDs em `/assets/caller-ids`
    - Audios em `/assets/audios`
    - Agentes IA reutilizaveis em `/ai-agents`
@@ -160,7 +161,7 @@ O worker verifica campanhas `running` a cada 10 segundos.
 6. O usuario paga aluguel em `/billing`.
 7. Crie e inicie campanhas em `/campaigns`.
    - `audio`: usa audio gravado e/ou transferencia direta
-   - `ai_agent`: usa SignalWire + OpenAI para conversar em tempo real e transferir via ferramenta explicita
+   - `ai_agent`: usa SignalWire + OpenAI Realtime Audio para conversa bidirecional e transferencia via ferramenta explicita
 
 ## Rotas principais
 
@@ -188,17 +189,17 @@ O worker verifica campanhas `running` a cada 10 segundos.
 
 Fluxo da v1:
 
-1. O usuario cadastra SignalWire e OpenAI em `/dashboard/settings`.
+1. O usuario cadastra SignalWire e OpenAI Realtime em `/dashboard/settings`.
 2. O usuario cria um agente reutilizavel em `/ai-agents` com:
    - nome
    - prompt do sistema
    - `voice_id` da OpenAI (ex.: `alloy`)
-   - modelo OpenAI
+   - modelo OpenAI Realtime (ex.: `gpt-realtime`)
    - regra de handoff
 3. Em `/campaigns/create`, escolhe `Campaign Mode = AI agent`.
 4. A campanha usa SignalWire para originar a chamada.
-5. OpenAI decide as falas e quando chamar a ferramenta `transfer_call`.
-6. OpenAI TTS sintetiza cada resposta em audio.
+5. OpenAI Realtime processa audio bidirecional e decide quando chamar a ferramenta `transfer_call`.
+6. Quando o modelo dispara `transfer_call`, a chamada e redirecionada para o numero de transferencia.
 7. Quando o modelo decide transferir, a chamada vai para o `transfer_number` do usuario.
 
 Observacoes:

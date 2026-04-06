@@ -313,6 +313,14 @@
                                 the call ran longer than the configured AI duration limit.
                                 {% elif 'max cost policy' in ai_runtime_summary.last_runtime_error %}
                                 the call cost exceeded the configured AI budget limit.
+                                {% elif '[provider_auth]' in ai_runtime_summary.last_runtime_error %}
+                                OpenAI authentication failed. Check API key and organization settings.
+                                {% elif '[provider_rate_limit]' in ai_runtime_summary.last_runtime_error %}
+                                OpenAI rate limit was reached; retry later or reduce concurrency.
+                                {% elif '[media_bridge]' in ai_runtime_summary.last_runtime_error %}
+                                The realtime audio bridge failed while handling media stream events.
+                                {% elif '[tooling]' in ai_runtime_summary.last_runtime_error %}
+                                The transfer tool execution failed during the call.
                                 {% elif 'OpenAI request failed' in ai_runtime_summary.last_runtime_error %}
                                 OpenAI did not respond successfully after retries.
                                 {% elif 'OpenAI TTS request failed' in ai_runtime_summary.last_runtime_error %}
@@ -412,6 +420,10 @@ function campaignDetail() {
             const normalized = value.toLowerCase();
             if (normalized.includes('max duration policy')) return 'Call exceeded the configured AI duration limit';
             if (normalized.includes('max cost policy')) return 'Call exceeded the configured AI cost limit';
+            if (normalized.includes('[provider_auth]')) return 'OpenAI authentication failed (check key/org settings)';
+            if (normalized.includes('[provider_rate_limit]')) return 'OpenAI rate limit reached';
+            if (normalized.includes('[media_bridge]')) return 'Realtime media bridge failed during the call';
+            if (normalized.includes('[tooling]')) return 'Transfer tool execution failed';
             if (normalized.includes('openai request failed')) return 'OpenAI did not respond successfully after retries';
             if (normalized.includes('openai tts request failed')) return 'OpenAI did not return voice audio after retries';
             if (normalized.includes('signalwire')) return 'SignalWire could not complete the call flow';
