@@ -127,6 +127,21 @@ class AIRealtimeBridgeWorker:
             },
         }
         await openai_ws.send(json.dumps(event))
+        # Force an opening assistant turn so the callee hears a greeting immediately.
+        await openai_ws.send(
+            json.dumps(
+                {
+                    "type": "response.create",
+                    "response": {
+                        "modalities": ["audio", "text"],
+                        "instructions": (
+                            "Start the call now with a short greeting, identify yourself clearly, "
+                            "and ask one concise qualifying question."
+                        ),
+                    },
+                }
+            )
+        )
 
     def _consume_bus_events(self) -> None:
         def stop_when() -> bool:
@@ -194,6 +209,18 @@ class AIRealtimeBridgeWorker:
                 self.bus.publish(self.campaign_number_id, "transcript.final", {"text": final_text})
                 self.bus.publish(self.campaign_number_id, "assistant.response", {"text": final_text})
                 self.sessions.increment_turn_count(self.campaign_number_id)
+            return
+
+        if event_type == "input_audio_buffer.speech_stopped":
+            # Ensure the model generates a response after user speech.
+            await openai_ws.send(
+                json.dumps(
+                    {
+                        "type": "response.create",
+                        "response": {"modalities": ["audio", "text"]},
+                    }
+                )
+            )
             return
 
         if event_type == "response.function_call_arguments.done":
