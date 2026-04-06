@@ -86,10 +86,13 @@ def _campaign_form_validation_error(
         return "Invalid voice provider selected."
     if not provider_configured:
         return f"Selected provider ({voice_provider}) is not configured in Settings."
-    if campaign_mode == CampaignMode.AI_AGENT.value and voice_provider != VoiceProvider.SIGNALWIRE.value:
-        return "AI agent campaigns currently require SignalWire as the voice provider."
+    if (
+        campaign_mode == CampaignMode.AI_AGENT.value
+        and voice_provider not in {VoiceProvider.SIGNALWIRE.value, VoiceProvider.TWILIO.value}
+    ):
+        return "AI agent campaigns currently require Twilio or SignalWire as the voice provider."
     if campaign_mode == CampaignMode.AI_AGENT.value and not ai_runtime_configured:
-        return "Configure SignalWire and OpenAI Realtime in Settings before creating an AI agent campaign."
+        return "Configure Twilio or SignalWire and OpenAI Realtime in Settings before creating an AI agent campaign."
     if press_1_to_talk_with_agent and not provider_supports_press_1(voice_provider):
         return "Press 1 flow is not available for the selected provider."
     if campaign_mode == CampaignMode.AI_AGENT.value and press_1_to_talk_with_agent:
@@ -140,14 +143,14 @@ def _campaign_start_validation_error(
     if not user.transfer_number:
         return "Please configure your Transfer Number (3CX) in Settings first"
     if campaign.campaign_mode == CampaignMode.AI_AGENT:
-        if campaign.voice_provider != VoiceProvider.SIGNALWIRE:
-            return "AI agent campaigns require SignalWire"
+        if campaign.voice_provider not in {VoiceProvider.SIGNALWIRE, VoiceProvider.TWILIO}:
+            return "AI agent campaigns require Twilio or SignalWire"
         if not campaign.ai_agent_id or not campaign.ai_agent or campaign.ai_agent.user_id != user.id:
             return "Campaign AI agent is missing or invalid"
         if not campaign.ai_agent.is_active:
             return "Selected AI agent is inactive"
         if not ai_runtime_configured:
-            return "Please configure SignalWire and OpenAI Realtime credentials in Settings first"
+            return "Please configure Twilio or SignalWire and OpenAI Realtime credentials in Settings first"
     if not provider_configured:
         return f"Please configure {provider.title()} credentials in Settings first"
     if campaign.press_1_to_talk_with_agent and not provider_supports_press_1(provider):

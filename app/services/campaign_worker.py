@@ -636,11 +636,11 @@ class CampaignWorker:
         provider = campaign.voice_provider.value if hasattr(campaign.voice_provider, "value") else str(campaign.voice_provider)
 
         if campaign.campaign_mode == CampaignMode.AI_AGENT:
-            if provider != VoiceProvider.SIGNALWIRE.value:
-                raise ValueError("AI agent campaigns require SignalWire")
+            if provider not in {VoiceProvider.SIGNALWIRE.value, VoiceProvider.TWILIO.value}:
+                raise ValueError("AI agent campaigns require Twilio or SignalWire")
             if not campaign.ai_agent or not campaign.ai_agent.is_active:
                 raise ValueError("AI agent is not configured or inactive")
-            return AICallRuntimeService(session, user.id)
+            return AICallRuntimeService(session, user.id, provider=provider)
 
         if provider == VoiceProvider.TWILIO.value:
             account_sid, auth_token = get_user_twilio_credentials(session, user.id)

@@ -32,7 +32,7 @@
 
     {% if not ai_runtime_configured %}
     <div class="mb-6 bg-blue-50 border border-blue-200 text-blue-800 px-4 py-3 rounded">
-        To run AI agent campaigns, configure SignalWire and OpenAI in
+        To run AI agent campaigns, configure Twilio or SignalWire and OpenAI in
         <a href="/dashboard/settings#openai" class="underline font-medium">Settings</a>.
     </div>
     {% endif %}
@@ -50,7 +50,7 @@
                         <option value="audio" {% if form.get('campaign_mode', 'audio') == 'audio' %}selected{% endif %}>Audio / transfer campaign</option>
                         <option value="ai_agent" {% if form.get('campaign_mode') == 'ai_agent' %}selected{% endif %}>AI agent campaign</option>
                     </select>
-                    <p class="mt-1 text-xs text-gray-500">Audio campaigns use recorded assets. AI agent campaigns use SignalWire + OpenAI Realtime Audio and talk in English.</p>
+                    <p class="mt-1 text-xs text-gray-500">Audio campaigns use recorded assets. AI agent campaigns use Twilio/SignalWire + OpenAI Realtime Audio and talk in English.</p>
                 </div>
 
                 <div>
@@ -225,7 +225,7 @@
 
         for (const option of providerSelect.options) {
             if (aiMode) {
-                option.disabled = option.value !== 'signalwire' || option.textContent.includes('(not configured)');
+                option.disabled = !['signalwire', 'twilio'].includes(option.value) || option.textContent.includes('(not configured)');
             } else if (option.textContent.includes('(not configured)')) {
                 option.disabled = true;
             } else {
@@ -234,7 +234,14 @@
         }
 
         if (aiMode) {
-            providerSelect.value = 'signalwire';
+            if (!['signalwire', 'twilio'].includes(providerSelect.value)) {
+                const fallback = Array.from(providerSelect.options).find(
+                    (option) => ['signalwire', 'twilio'].includes(option.value) && !option.disabled
+                );
+                if (fallback) {
+                    providerSelect.value = fallback.value;
+                }
+            }
             audioSelect.value = '';
         } else {
             aiAgentSelect.value = '';

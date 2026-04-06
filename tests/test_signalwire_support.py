@@ -24,6 +24,7 @@ from app.services.campaign_worker import (
 )
 from app.services.user_signalwire_service import _normalize_space_url
 from app.services.signalwire_service import SignalWireService
+from app.services.twilio_service import TwilioService
 from app.services.user_voice_provider_service import (
     has_user_ai_runtime_credentials,
     provider_supports_press_1,
@@ -172,6 +173,54 @@ class SignalWireSupportTests(unittest.TestCase):
             )
         self.assertIn("public http(s) URL", str(ctx.exception))
 
+    def test_twilio_make_call_uses_answer_url_for_ai_runtime(self):
+        service = TwilioService.__new__(TwilioService)
+        captured = {}
+
+        class DummyCalls:
+            def create(self, **kwargs):
+                captured.update(kwargs)
+                return SimpleNamespace(sid="CA123", status="queued")
+
+        service.client = SimpleNamespace(calls=DummyCalls())
+        service.account_sid = "AC123"
+        service.auth_token = "token"
+
+        result = service.make_call(
+            to_number="+15550000001",
+            from_number="+15550000002",
+            audio_url=None,
+            transfer_number="+15550000003",
+            answer_url="https://example.com/api/ai-realtime/twiml/1?token=x",
+            enable_machine_detection=False,
+        )
+
+        self.assertEqual(result["call_sid"], "CA123")
+        self.assertEqual(captured["url"], "https://example.com/api/ai-realtime/twiml/1?token=x")
+        self.assertNotIn("twiml", captured)
+
+    def test_twilio_update_call_twiml_updates_active_call(self):
+        service = TwilioService.__new__(TwilioService)
+        captured = {}
+
+        class DummyCallResource:
+            def update(self, **kwargs):
+                captured.update(kwargs)
+                return SimpleNamespace(sid="CA123")
+
+        class DummyCalls:
+            def __call__(self, call_sid):
+                captured["call_sid"] = call_sid
+                return DummyCallResource()
+
+        service.client = SimpleNamespace(calls=DummyCalls())
+        service.account_sid = "AC123"
+        service.auth_token = "token"
+
+        service.update_call_twiml("CA123", "<Response><Dial><Number>+1555</Number></Dial></Response>")
+        self.assertEqual(captured["call_sid"], "CA123")
+        self.assertIn("<Response>", captured["twiml"])
+
     def test_ai_runtime_cleanup_removes_session_and_audio_files(self):
         campaign_number_id = 4242
         session_path = AI_RUNTIME_DIR / f"{campaign_number_id}.json"
@@ -210,16 +259,16 @@ class SignalWireSupportTests(unittest.TestCase):
 
         fresh_session.unlink(missing_ok=True)
 
-    def test_campaign_form_validation_requires_signalwire_for_ai_mode(self):
+    def test_campaign_form_validation_requires_twilio_or_signalwire_for_ai_mode(self):
         error = _campaign_form_validation_error(
-            voice_provider=VoiceProvider.TWILIO.value,
+            voice_provider=VoiceProvider.TELNYX.value,
             campaign_mode=CampaignMode.AI_AGENT.value,
             press_1_to_talk_with_agent=False,
             max_concurrent_calls=1,
             provider_configured=True,
             ai_runtime_configured=True,
         )
-        self.assertEqual(error, "AI agent campaigns currently require SignalWire as the voice provider.")
+        self.assertEqual(error, "AI agent campaigns currently require Twilio or SignalWire as the voice provider.")
 
     def test_campaign_form_validation_rejects_press_1_for_ai_mode(self):
         error = _campaign_form_validation_error(
@@ -253,7 +302,7 @@ class SignalWireSupportTests(unittest.TestCase):
         )
         ai_agent = SimpleNamespace(user_id=1, is_active=True)
         campaign = SimpleNamespace(
-            voice_provider=VoiceProvider.SIGNALWIRE,
+            voice_provider=VoiceProvider.TWILIO,
             campaign_mode=CampaignMode.AI_AGENT,
             ai_agent_id=5,
             ai_agent=ai_agent,
@@ -270,7 +319,7 @@ class SignalWireSupportTests(unittest.TestCase):
         )
         self.assertEqual(
             error,
-            "Please configure SignalWire and OpenAI credentials in Settings first",
+            "Please configure Twilio or SignalWire and OpenAI Realtime credentials in Settings first",
         )
 
     def test_parse_campaign_numbers_accepts_csv_first_column_and_counts_invalid(self):

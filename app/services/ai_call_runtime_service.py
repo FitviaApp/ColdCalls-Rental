@@ -21,8 +21,10 @@ from app.services.ai_realtime_bridge_worker import AIRealtimeBridgeWorker
 from app.services.ai_realtime_event_bus import AIRealtimeEventBus
 from app.services.ai_realtime_session_service import AIRealtimeSessionService
 from app.services.signalwire_service import SignalWireService
+from app.services.twilio_service import TwilioService
 from app.services.user_openai_service import get_user_openai_credentials
 from app.services.user_signalwire_service import get_user_signalwire_credentials
+from app.services.user_twilio_service import get_user_twilio_credentials
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -79,21 +81,31 @@ def update_campaign_number_ai_observability(campaign_number_id: int, **updates) 
 class AICallRuntimeService:
     """AI-agent runtime facade used by campaign worker."""
 
-    def __init__(self, db: Session, user_id: int):
+    def __init__(self, db: Session, user_id: int, provider: str = "signalwire"):
         self.db = db
         self.user_id = user_id
-        project_id, api_token, space_url = get_user_signalwire_credentials(db, user_id)
+        self.provider = (provider or "signalwire").strip().lower()
         openai_api_key, openai_org_id = get_user_openai_credentials(db, user_id)
-        if not project_id or not api_token or not space_url:
-            raise ValueError("SignalWire credentials not configured")
         if not openai_api_key:
             raise ValueError("OpenAI credentials not configured")
 
-        self.signalwire_service = SignalWireService(
-            project_id=project_id,
-            api_token=api_token,
-            space_url=space_url,
-        )
+        if self.provider == "signalwire":
+            project_id, api_token, space_url = get_user_signalwire_credentials(db, user_id)
+            if not project_id or not api_token or not space_url:
+                raise ValueError("SignalWire credentials not configured")
+            self.call_service = SignalWireService(
+                project_id=project_id,
+                api_token=api_token,
+                space_url=space_url,
+            )
+        elif self.provider == "twilio":
+            account_sid, auth_token = get_user_twilio_credentials(db, user_id)
+            if not account_sid or not auth_token:
+                raise ValueError("Twilio credentials not configured")
+            self.call_service = TwilioService(account_sid=account_sid, auth_token=auth_token)
+        else:
+            raise ValueError(f"Unsupported AI runtime provider: {self.provider}")
+
         self.openai_api_key = openai_api_key
         self.openai_org_id = openai_org_id
         self.session_service = AIRealtimeSessionService()
@@ -126,17 +138,18 @@ class AICallRuntimeService:
 
         query = urlencode({"token": session_payload["auth_token"]})
         answer_url = f"{settings.BASE_URL.rstrip('/')}/api/ai-realtime/twiml/{campaign_number_id}?{query}"
-        call_result = self.signalwire_service.make_call(
-            to_number=to_number,
-            from_number=from_number,
-            audio_url=None,
-            transfer_number=transfer_number,
-            campaign_id=campaign_id,
-            timeout=timeout,
-            metadata=metadata,
-            answer_url=answer_url,
-            enable_machine_detection=False,
-        )
+        make_call_kwargs: dict[str, Any] = {
+            "to_number": to_number,
+            "from_number": from_number,
+            "audio_url": None,
+            "transfer_number": transfer_number,
+            "campaign_id": campaign_id,
+            "timeout": timeout,
+            "metadata": metadata,
+        }
+        make_call_kwargs["answer_url"] = answer_url
+        make_call_kwargs["enable_machine_detection"] = False
+        call_result = self.call_service.make_call(**make_call_kwargs)
         call_sid = str(call_result.get("call_sid") or "")
         self.session_service.set_call_sid(campaign_number_id, call_sid)
         self.bus.publish(campaign_number_id, "session.started", {"call_sid": call_sid})
@@ -144,10 +157,10 @@ class AICallRuntimeService:
         return call_result
 
     def poll_call_status(self, *args, **kwargs):
-        return self.signalwire_service.poll_call_status(*args, **kwargs)
+        return self.call_service.poll_call_status(*args, **kwargs)
 
     def update_call_twiml(self, call_sid: str, twiml: str) -> None:
-        self.signalwire_service.update_call_twiml(call_sid, twiml)
+        self.call_service.update_call_twiml(call_sid, twiml)
 
     def _create_runtime_session(
         self,
@@ -165,6 +178,15 @@ class AICallRuntimeService:
         campaign = number.campaign
         if campaign.campaign_mode != CampaignMode.AI_AGENT:
             raise ValueError("Campaign is not in AI agent mode")
+        campaign_provider = (
+            campaign.voice_provider.value
+            if hasattr(campaign.voice_provider, "value")
+            else str(campaign.voice_provider)
+        ).strip().lower()
+        if campaign_provider != self.provider:
+            raise ValueError(
+                f"AI runtime provider mismatch: campaign={campaign_provider} runtime={self.provider}"
+            )
         if campaign_id and int(campaign.id) != int(campaign_id):
             raise ValueError("Campaign mismatch for AI runtime session")
         agent = campaign.ai_agent

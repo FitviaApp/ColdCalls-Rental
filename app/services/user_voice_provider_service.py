@@ -83,8 +83,11 @@ def get_user_voice_provider_status(db: Session, user_id: int) -> list[dict]:
 
 
 def has_user_ai_runtime_credentials(db: Session, user_id: int) -> bool:
-    """True when the user can run AI-agent campaigns via SignalWire + OpenAI."""
+    """True when the user can run AI-agent campaigns via Twilio/SignalWire + OpenAI."""
     return (
-        has_user_signalwire_credentials(db, user_id)
+        (
+            has_user_signalwire_credentials(db, user_id)
+            or has_user_twilio_credentials(db, user_id)
+        )
         and has_user_openai_credentials(db, user_id)
     )

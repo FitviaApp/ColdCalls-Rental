@@ -38,6 +38,8 @@ class TwilioService:
         press_1_to_talk_with_agent: bool = False,
         timeout: int = 60,
         metadata: Optional[dict] = None,
+        answer_url: Optional[str] = None,
+        enable_machine_detection: bool = True,
     ) -> dict:
         """
         Initiate a call.
@@ -60,7 +62,9 @@ class TwilioService:
         # Use dynamic callback URL only when "Press 1" is enabled.
         # For normal calls, inline TwiML avoids dependency on public BASE_URL.
         call_kwargs = {}
-        if press_1_to_talk_with_agent:
+        if answer_url:
+            call_kwargs["url"] = answer_url
+        elif press_1_to_talk_with_agent:
             if campaign_id is None:
                 raise ValueError("campaign_id is required when press_1_to_talk_with_agent is enabled")
             base_url = settings.BASE_URL.rstrip("/")
@@ -84,7 +88,7 @@ class TwilioService:
         # Keep AMD for direct transfer campaigns, but skip it on Press 1 flow.
         # In Press 1 flow, DTMF confirmation already acts as a human gate.
         machine_detection_kwargs = {}
-        if not press_1_to_talk_with_agent:
+        if enable_machine_detection and not press_1_to_talk_with_agent and not answer_url:
             machine_detection_kwargs = {
                 "machine_detection": "Enable",
                 "machine_detection_timeout": 5,
@@ -194,6 +198,21 @@ class TwilioService:
             'duration': 0,
             'answered_by': None
         }
+
+    def update_call_twiml(self, call_sid: str, twiml: str) -> None:
+        if not call_sid:
+            raise ValueError("call_sid is required")
+        twiml_payload = str(twiml or "").strip()
+        if not twiml_payload:
+            raise ValueError("Twiml payload is required")
+        try:
+            self.client.calls(call_sid).update(twiml=twiml_payload)
+        except TwilioRestException as e:
+            raise RuntimeError(
+                f"Twilio update call failed: status={e.status} code={e.code} message={e.msg}"
+            ) from e
+        except Exception as e:
+            raise RuntimeError(f"Twilio update call failed: {e}") from e
 
     def get_call_cost(self, call_sid: str) -> float:
         """
