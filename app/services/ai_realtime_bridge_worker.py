@@ -8,6 +8,7 @@ import logging
 import threading
 import asyncio
 import time
+import array
 from typing import Any
 from urllib.parse import urlencode
 from queue import Queue, Empty
@@ -34,6 +35,8 @@ def classify_openai_error(raw_error: str) -> tuple[str, str]:
         return "provider_auth", value[:500]
     if "429" in lowered or "rate limit" in lowered:
         return "provider_rate_limit", value[:500]
+    if any(term in lowered for term in ("content_filter", "safety", "disallowed", "refusal")):
+        return "policy", value[:500]
     if "tool" in lowered:
         return "tooling", value[:500]
     if "policy" in lowered:
@@ -68,6 +71,7 @@ class AIRealtimeBridgeWorker:
         self._output_pcm_rate_hz = 24000
         self._pcm_ratecv_state = None
         self._pcm16_leftover = b""
+        self._ulaw_reasserted = False
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -138,6 +142,20 @@ class AIRealtimeBridgeWorker:
                 "input_audio_format": "g711_ulaw",
                 "output_audio_format": "g711_ulaw",
                 "turn_detection": {"type": "server_vad"},
+                "audio": {
+                    "input": {
+                        "format": {"type": "audio/pcmu"},
+                        "turn_detection": {
+                            "type": "server_vad",
+                            "create_response": False,
+                            "interrupt_response": True,
+                        },
+                    },
+                    "output": {
+                        "format": {"type": "audio/pcmu"},
+                        "voice": (self.agent.voice_id or "alloy").strip().lower(),
+                    },
+                },
                 "temperature": float(self.agent.temperature or 0.7),
             },
         }
@@ -196,6 +214,79 @@ class AIRealtimeBridgeWorker:
         import base64
         return base64.b64encode(payload).decode("ascii")
 
+    def _resample_pcm16(self, pcm_bytes: bytes, src_rate_hz: int, dst_rate_hz: int) -> bytes:
+        if not pcm_bytes:
+            return b""
+        src = max(8000, int(src_rate_hz or 8000))
+        dst = max(8000, int(dst_rate_hz or 8000))
+        if src == dst:
+            return pcm_bytes
+        samples = array.array("h")
+        samples.frombytes(pcm_bytes)
+        in_count = len(samples)
+        if in_count <= 1:
+            return pcm_bytes
+        out_count = max(1, int(in_count * dst / src))
+        step = float(src) / float(dst)
+        pos = 0.0
+        out = array.array("h")
+        for _ in range(out_count):
+            idx = int(pos)
+            if idx >= in_count:
+                idx = in_count - 1
+            out.append(int(samples[idx]))
+            pos += step
+        return out.tobytes()
+
+    def _pcm16_to_ulaw(self, pcm_bytes: bytes) -> bytes:
+        if not pcm_bytes:
+            return b""
+
+        def encode_sample(sample: int) -> int:
+            bias = 0x84
+            clip = 32635
+            sign = 0x80 if sample < 0 else 0x00
+            magnitude = -sample if sample < 0 else sample
+            if magnitude > clip:
+                magnitude = clip
+            magnitude += bias
+            exponent = 7
+            exp_mask = 0x4000
+            while exponent > 0 and not (magnitude & exp_mask):
+                exponent -= 1
+                exp_mask >>= 1
+            mantissa = (magnitude >> (exponent + 3)) & 0x0F
+            return (~(sign | (exponent << 4) | mantissa)) & 0xFF
+
+        samples = array.array("h")
+        samples.frombytes(pcm_bytes)
+        out = bytearray(len(samples))
+        for i, sample in enumerate(samples):
+            out[i] = encode_sample(int(sample))
+        return bytes(out)
+
+    def _alaw_to_pcm16(self, alaw_bytes: bytes) -> bytes:
+        if not alaw_bytes:
+            return b""
+
+        def decode_sample(a_val: int) -> int:
+            a_val ^= 0x55
+            t = (a_val & 0x0F) << 4
+            seg = (a_val & 0x70) >> 4
+            if seg == 0:
+                t += 8
+            elif seg == 1:
+                t += 0x108
+            else:
+                t += 0x108
+                t <<= (seg - 1)
+            return t if (a_val & 0x80) else -t
+
+        pcm = array.array("h")
+        for b in alaw_bytes:
+            pcm.append(int(decode_sample(int(b))))
+        return pcm.tobytes()
+
     def _normalize_outbound_audio_for_twilio(self, delta_b64: str) -> str:
         audio_bytes = self._decode_base64_audio(delta_b64)
         if not audio_bytes:
@@ -206,8 +297,28 @@ class AIRealtimeBridgeWorker:
             return self._encode_base64_audio(audio_bytes)
 
         if audioop is None:
-            self._publish_error("media_bridge", f"Audio codec conversion unavailable for codec={codec}")
-            return ""
+            try:
+                if codec == "g711_alaw":
+                    pcm = self._alaw_to_pcm16(audio_bytes)
+                    ulaw = self._pcm16_to_ulaw(pcm)
+                    return self._encode_base64_audio(ulaw)
+                if codec == "pcm16":
+                    pcm_chunk = self._pcm16_leftover + audio_bytes
+                    if len(pcm_chunk) % 2 != 0:
+                        self._pcm16_leftover = pcm_chunk[-1:]
+                        pcm_chunk = pcm_chunk[:-1]
+                    else:
+                        self._pcm16_leftover = b""
+                    if not pcm_chunk:
+                        return ""
+                    pcm_8k = self._resample_pcm16(pcm_chunk, self._output_pcm_rate_hz, 8000)
+                    ulaw = self._pcm16_to_ulaw(pcm_8k)
+                    return self._encode_base64_audio(ulaw)
+                return self._encode_base64_audio(audio_bytes)
+            except Exception as exc:
+                category, detail = classify_openai_error(str(exc))
+                self._publish_error(category, detail)
+                return ""
 
         try:
             if codec == "g711_alaw":
@@ -273,9 +384,9 @@ class AIRealtimeBridgeWorker:
         if not self._awaiting_audio:
             return
         elapsed = time.monotonic() - self._last_response_request_at
-        if elapsed < 2.5:
+        if elapsed < 4.0:
             return
-        if self._response_retry_count >= 2:
+        if self._response_retry_count >= 3:
             if not self._voice_fallback_attempted:
                 self._voice_fallback_attempted = True
                 self._response_retry_count = 0
@@ -306,7 +417,10 @@ class AIRealtimeBridgeWorker:
                 openai_ws,
                 instructions="Speak now with a short greeting.",
             )
-            self._publish_error("media_bridge", "No audio with configured voice; retried with fallback voice=alloy")
+            logger.warning(
+                "AI realtime session %s retried with fallback voice=alloy due to initial silence",
+                self.campaign_number_id,
+            )
         except Exception as exc:
             category, detail = classify_openai_error(str(exc))
             self._publish_error(category, detail)
@@ -357,6 +471,21 @@ class AIRealtimeBridgeWorker:
 
         if event_type in {"session.updated", "session.created"}:
             self._set_output_audio_format(dict(data.get("session") or {}))
+            if self._output_audio_codec != "g711_ulaw" and not self._ulaw_reasserted:
+                self._ulaw_reasserted = True
+                await openai_ws.send(
+                    json.dumps(
+                        {
+                            "type": "session.update",
+                            "session": {
+                                "output_audio_format": "g711_ulaw",
+                                "audio": {
+                                    "output": {"format": {"type": "audio/pcmu"}},
+                                },
+                            },
+                        }
+                    )
+                )
             # Safety net: make sure we still trigger the first turn if session acknowledged later.
             await self._send_opening_response(openai_ws)
             return
