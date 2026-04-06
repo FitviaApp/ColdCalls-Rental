@@ -6,6 +6,8 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import asyncio
+import time
 from typing import Any
 from urllib.parse import urlencode
 from queue import Queue, Empty
@@ -53,6 +55,10 @@ class AIRealtimeBridgeWorker:
         self._stop_event = threading.Event()
         self._inbound_audio_queue: Queue[str] = Queue()
         self._opening_response_sent = False
+        self._awaiting_audio = False
+        self._last_response_request_at = 0.0
+        self._last_audio_out_at = 0.0
+        self._response_retry_count = 0
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -87,10 +93,9 @@ class AIRealtimeBridgeWorker:
             consumer_thread = threading.Thread(target=self._consume_bus_events, daemon=True)
             consumer_thread.start()
 
-            import asyncio
-
             while not self._stop_event.is_set():
-                self._flush_inbound_audio(openai_ws)
+                await self._flush_inbound_audio(openai_ws)
+                self._maybe_retry_silent_response(openai_ws)
                 try:
                     message = await asyncio.wait_for(openai_ws.recv(), timeout=0.2)
                 except asyncio.TimeoutError:
@@ -134,18 +139,44 @@ class AIRealtimeBridgeWorker:
         if self._opening_response_sent:
             return
         self._opening_response_sent = True
+        await self._request_audio_response(
+            openai_ws,
+            instructions=(
+                "Start the call now with a short greeting, identify yourself clearly, "
+                "and ask one concise qualifying question."
+            ),
+        )
+
+    async def _request_audio_response(self, openai_ws, instructions: str | None = None) -> None:
+        response_payload: dict[str, Any] = {"modalities": ["audio"]}
+        if instructions:
+            response_payload["instructions"] = instructions
         await openai_ws.send(
             json.dumps(
                 {
                     "type": "response.create",
-                    "response": {
-                        "modalities": ["audio", "text"],
-                        "instructions": (
-                            "Start the call now with a short greeting, identify yourself clearly, "
-                            "and ask one concise qualifying question."
-                        ),
-                    },
+                    "response": response_payload,
                 }
+            )
+        )
+        self._awaiting_audio = True
+        self._last_response_request_at = time.monotonic()
+
+    def _maybe_retry_silent_response(self, openai_ws) -> None:
+        if not self._awaiting_audio:
+            return
+        elapsed = time.monotonic() - self._last_response_request_at
+        if elapsed < 2.5:
+            return
+        if self._response_retry_count >= 2:
+            self._awaiting_audio = False
+            self._publish_error("media_bridge", "OpenAI realtime produced no audio after response retries")
+            return
+        self._response_retry_count += 1
+        asyncio.create_task(
+            self._request_audio_response(
+                openai_ws,
+                instructions="Respond now with one short spoken sentence.",
             )
         )
 
@@ -173,18 +204,14 @@ class AIRealtimeBridgeWorker:
             self._publish_error(category, detail)
             self._stop_event.set()
 
-    def _flush_inbound_audio(self, openai_ws) -> None:
+    async def _flush_inbound_audio(self, openai_ws) -> None:
         while True:
             try:
                 payload = self._inbound_audio_queue.get_nowait()
             except Empty:
                 return
             try:
-                import asyncio
-
-                asyncio.create_task(
-                    openai_ws.send(json.dumps({"type": "input_audio_buffer.append", "audio": payload}))
-                )
+                await openai_ws.send(json.dumps({"type": "input_audio_buffer.append", "audio": payload}))
             except Exception as exc:
                 category, detail = classify_openai_error(str(exc))
                 self._publish_error(category, detail)
@@ -206,6 +233,9 @@ class AIRealtimeBridgeWorker:
             delta = str(data.get("delta") or "")
             if delta:
                 self.bus.publish(self.campaign_number_id, "media.outbound", {"audio": delta})
+                self._awaiting_audio = False
+                self._response_retry_count = 0
+                self._last_audio_out_at = time.monotonic()
             return
 
         if event_type in {
@@ -237,14 +267,8 @@ class AIRealtimeBridgeWorker:
 
         if event_type == "input_audio_buffer.speech_stopped":
             # Ensure the model generates a response after user speech.
-            await openai_ws.send(
-                json.dumps(
-                    {
-                        "type": "response.create",
-                        "response": {"modalities": ["audio", "text"]},
-                    }
-                )
-            )
+            await openai_ws.send(json.dumps({"type": "input_audio_buffer.commit"}))
+            await self._request_audio_response(openai_ws)
             return
 
         if event_type == "response.function_call_arguments.done":

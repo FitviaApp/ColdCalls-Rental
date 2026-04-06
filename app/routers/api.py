@@ -4,6 +4,8 @@ API Router - JSON endpoints for AJAX calls and cXML/TwiML
 import logging
 import json
 import asyncio
+import base64
+import binascii
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
@@ -30,6 +32,24 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 router = APIRouter(prefix="/api", tags=["api"])
+
+
+def _iter_twilio_media_chunks(audio_b64: str, chunk_bytes: int = 160):
+    """Normalize outbound media payload into Twilio-friendly base64 chunks."""
+    raw = str(audio_b64 or "").strip()
+    if not raw:
+        return
+    try:
+        audio_bytes = base64.b64decode(raw, validate=True)
+    except (binascii.Error, ValueError):
+        return
+    if not audio_bytes:
+        return
+    size = max(160, int(chunk_bytes))
+    for i in range(0, len(audio_bytes), size):
+        chunk = audio_bytes[i : i + size]
+        if chunk:
+            yield base64.b64encode(chunk).decode("ascii")
 
 
 # ============== cXML/TwiML Endpoint ==============
@@ -447,15 +467,23 @@ async def ai_realtime_ws(websocket: WebSocket, campaign_number_id: int, token: s
                     if len(pending_outbound_audio) > 200:
                         pending_outbound_audio = pending_outbound_audio[-200:]
                     continue
-                await websocket.send_text(
-                    json.dumps(
-                        {
-                            "event": "media",
-                            "streamSid": stream_sid,
-                            "media": {"payload": audio},
-                        }
+                chunks = list(_iter_twilio_media_chunks(audio))
+                if not chunks:
+                    update_campaign_number_ai_observability(
+                        campaign_number_id,
+                        ai_runtime_error="[media_bridge] OpenAI audio delta was not valid base64 audio",
                     )
-                )
+                    continue
+                for payload in chunks:
+                    await websocket.send_text(
+                        json.dumps(
+                            {
+                                "event": "media",
+                                "streamSid": stream_sid,
+                                "media": {"payload": payload},
+                            }
+                        )
+                    )
             elif event.event == "assistant.response":
                 text = str((event.payload or {}).get("text") or "")
                 if text:
@@ -492,15 +520,21 @@ async def ai_realtime_ws(websocket: WebSocket, campaign_number_id: int, token: s
                     session_service.set_stream_sid(campaign_number_id, stream_sid)
                     if pending_outbound_audio:
                         for audio in pending_outbound_audio:
-                            await websocket.send_text(
-                                json.dumps(
-                                    {
-                                        "event": "media",
-                                        "streamSid": stream_sid,
-                                        "media": {"payload": audio},
-                                    }
+                            chunks = list(_iter_twilio_media_chunks(audio))
+                            if not chunks:
+                                continue
+                            for payload in chunks:
+                                await websocket.send_text(
+                                    json.dumps(
+                                        {
+                                            "event": "media",
+                                            "streamSid": stream_sid,
+                                            "media": {"payload": payload},
+                                        }
+                                    )
                                 )
-                            )
+                                # Twilio media streams are more stable with paced 20ms chunks.
+                                await asyncio.sleep(0.02)
                         pending_outbound_audio.clear()
                 session_service.update_session(campaign_number_id, status="streaming")
                 await bus.publish(
