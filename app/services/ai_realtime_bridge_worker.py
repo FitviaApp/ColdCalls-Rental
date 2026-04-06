@@ -13,6 +13,10 @@ from urllib.parse import urlencode
 from queue import Queue, Empty
 
 import websockets
+try:
+    import audioop
+except Exception:  # pragma: no cover - stdlib availability differs by Python build
+    audioop = None
 
 from app.config import get_settings
 from app.models import AIAgent
@@ -59,6 +63,11 @@ class AIRealtimeBridgeWorker:
         self._last_response_request_at = 0.0
         self._last_audio_out_at = 0.0
         self._response_retry_count = 0
+        self._voice_fallback_attempted = False
+        self._output_audio_codec = "g711_ulaw"
+        self._output_pcm_rate_hz = 24000
+        self._pcm_ratecv_state = None
+        self._pcm16_leftover = b""
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -135,6 +144,104 @@ class AIRealtimeBridgeWorker:
         await openai_ws.send(json.dumps(event))
         await self._send_opening_response(openai_ws)
 
+    def _set_output_audio_format(self, session_payload: dict[str, Any]) -> None:
+        if not isinstance(session_payload, dict):
+            return
+
+        codec = str(session_payload.get("output_audio_format") or "").strip().lower()
+        pcm_rate = 24000
+
+        audio_cfg = session_payload.get("audio") or {}
+        if isinstance(audio_cfg, dict):
+            output_cfg = audio_cfg.get("output") or {}
+            if isinstance(output_cfg, dict):
+                fmt = output_cfg.get("format") or {}
+                if isinstance(fmt, dict):
+                    fmt_type = str(fmt.get("type") or "").strip().lower()
+                    if fmt_type == "audio/pcmu":
+                        codec = "g711_ulaw"
+                    elif fmt_type == "audio/pcma":
+                        codec = "g711_alaw"
+                    elif fmt_type == "audio/pcm":
+                        codec = "pcm16"
+                        try:
+                            pcm_rate = int(fmt.get("rate") or 24000)
+                        except Exception:
+                            pcm_rate = 24000
+
+        if codec not in {"g711_ulaw", "g711_alaw", "pcm16"}:
+            codec = "g711_ulaw"
+
+        self._output_audio_codec = codec
+        self._output_pcm_rate_hz = max(8000, int(pcm_rate or 24000))
+        self._pcm_ratecv_state = None
+        self._pcm16_leftover = b""
+
+    def _decode_base64_audio(self, payload: str) -> bytes:
+        raw = str(payload or "").strip()
+        if not raw:
+            return b""
+        missing_padding = len(raw) % 4
+        if missing_padding:
+            raw += "=" * (4 - missing_padding)
+        try:
+            import base64
+            return base64.b64decode(raw)
+        except Exception:
+            return b""
+
+    def _encode_base64_audio(self, payload: bytes) -> str:
+        if not payload:
+            return ""
+        import base64
+        return base64.b64encode(payload).decode("ascii")
+
+    def _normalize_outbound_audio_for_twilio(self, delta_b64: str) -> str:
+        audio_bytes = self._decode_base64_audio(delta_b64)
+        if not audio_bytes:
+            return ""
+
+        codec = self._output_audio_codec
+        if codec == "g711_ulaw":
+            return self._encode_base64_audio(audio_bytes)
+
+        if audioop is None:
+            self._publish_error("media_bridge", f"Audio codec conversion unavailable for codec={codec}")
+            return ""
+
+        try:
+            if codec == "g711_alaw":
+                pcm = audioop.alaw2lin(audio_bytes, 2)
+                ulaw = audioop.lin2ulaw(pcm, 2)
+                return self._encode_base64_audio(ulaw)
+
+            if codec == "pcm16":
+                pcm_chunk = self._pcm16_leftover + audio_bytes
+                if len(pcm_chunk) % 2 != 0:
+                    self._pcm16_leftover = pcm_chunk[-1:]
+                    pcm_chunk = pcm_chunk[:-1]
+                else:
+                    self._pcm16_leftover = b""
+                if not pcm_chunk:
+                    return ""
+                if self._output_pcm_rate_hz != 8000:
+                    pcm_chunk, self._pcm_ratecv_state = audioop.ratecv(
+                        pcm_chunk,
+                        2,
+                        1,
+                        self._output_pcm_rate_hz,
+                        8000,
+                        self._pcm_ratecv_state,
+                    )
+                ulaw = audioop.lin2ulaw(pcm_chunk, 2)
+                return self._encode_base64_audio(ulaw)
+        except Exception as exc:
+            category, detail = classify_openai_error(str(exc))
+            self._publish_error(category, detail)
+            return ""
+
+        return self._encode_base64_audio(audio_bytes)
+
     async def _send_opening_response(self, openai_ws) -> None:
         if self._opening_response_sent:
             return
@@ -169,8 +276,13 @@ class AIRealtimeBridgeWorker:
         if elapsed < 2.5:
             return
         if self._response_retry_count >= 2:
+            if not self._voice_fallback_attempted:
+                self._voice_fallback_attempted = True
+                self._response_retry_count = 0
+                asyncio.create_task(self._apply_voice_fallback_and_retry(openai_ws))
+                return
             self._awaiting_audio = False
-            self._publish_error("media_bridge", "OpenAI realtime produced no audio after response retries")
+            self._publish_error("media_bridge", "OpenAI realtime produced no audio after retries (including voice fallback)")
             return
         self._response_retry_count += 1
         asyncio.create_task(
@@ -179,6 +291,25 @@ class AIRealtimeBridgeWorker:
                 instructions="Respond now with one short spoken sentence.",
             )
         )
+
+    async def _apply_voice_fallback_and_retry(self, openai_ws) -> None:
+        try:
+            await openai_ws.send(
+                json.dumps(
+                    {
+                        "type": "session.update",
+                        "session": {"voice": "alloy"},
+                    }
+                )
+            )
+            await self._request_audio_response(
+                openai_ws,
+                instructions="Speak now with a short greeting.",
+            )
+            self._publish_error("media_bridge", "No audio with configured voice; retried with fallback voice=alloy")
+        except Exception as exc:
+            category, detail = classify_openai_error(str(exc))
+            self._publish_error(category, detail)
 
     def _consume_bus_events(self) -> None:
         def stop_when() -> bool:
@@ -225,6 +356,7 @@ class AIRealtimeBridgeWorker:
             return
 
         if event_type in {"session.updated", "session.created"}:
+            self._set_output_audio_format(dict(data.get("session") or {}))
             # Safety net: make sure we still trigger the first turn if session acknowledged later.
             await self._send_opening_response(openai_ws)
             return
@@ -232,7 +364,10 @@ class AIRealtimeBridgeWorker:
         if event_type in {"response.audio.delta", "response.output_audio.delta"}:
             delta = str(data.get("delta") or "")
             if delta:
-                self.bus.publish(self.campaign_number_id, "media.outbound", {"audio": delta})
+                outbound_audio = self._normalize_outbound_audio_for_twilio(delta)
+                if not outbound_audio:
+                    return
+                self.bus.publish(self.campaign_number_id, "media.outbound", {"audio": outbound_audio})
                 self._awaiting_audio = False
                 self._response_retry_count = 0
                 self._last_audio_out_at = time.monotonic()
@@ -297,6 +432,16 @@ class AIRealtimeBridgeWorker:
             message = str(err.get("message") or data)
             category, detail = classify_openai_error(message)
             self._publish_error(category, detail)
+            return
+
+        if event_type == "response.done":
+            response = data.get("response") or {}
+            status = str(response.get("status") or "").strip().lower()
+            if status in {"failed", "cancelled", "incomplete"}:
+                details = response.get("status_details") or {}
+                reason = str(details.get("reason") or details.get("error") or response or "response failed")
+                category, detail = classify_openai_error(reason)
+                self._publish_error(category, detail)
 
     def _publish_error(self, category: str, detail: str) -> None:
         self.sessions.mark_error(self.campaign_number_id, category=category, detail=detail)
