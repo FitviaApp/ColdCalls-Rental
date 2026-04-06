@@ -50,7 +50,7 @@ def _ws_base_from_public_url(base_url: str) -> str:
     if normalized.startswith("https://"):
         return "wss://" + normalized[len("https://"):]
     if normalized.startswith("http://"):
-        return "ws://" + normalized[len("http://"):]
+        return "wss://" + normalized[len("http://"):]
     return "wss://" + normalized.lstrip("/")
 
 
@@ -138,6 +138,10 @@ class AICallRuntimeService:
 
         query = urlencode({"token": session_payload["auth_token"]})
         answer_url = f"{settings.BASE_URL.rstrip('/')}/api/ai-realtime/twiml/{campaign_number_id}?{query}"
+        if self.provider == "twilio" and not str(settings.BASE_URL or "").strip().startswith("https://"):
+            raise ValueError(
+                "Twilio AI Realtime requires BASE_URL with https:// and valid TLS (wss media stream)."
+            )
         make_call_kwargs: dict[str, Any] = {
             "to_number": to_number,
             "from_number": from_number,

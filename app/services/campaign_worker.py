@@ -469,6 +469,8 @@ class CampaignWorker:
             final_status = self._map_status(final_result['status'])
             final_duration = int(final_result.get('duration') or 0)
             final_answered_by = final_result.get('answered_by')
+            final_provider_error_code = final_result.get('error_code')
+            final_provider_error_message = str(final_result.get('error_message') or "").strip()
 
             # Calculate cost based on duration and country price
             if final_duration > 0:
@@ -486,6 +488,19 @@ class CampaignWorker:
                     number.id,
                     ai_runtime_error=ai_policy_error,
                 )
+            elif final_status != CallStatus.COMPLETED and (
+                final_provider_error_message or final_provider_error_code
+            ):
+                provider = campaign.voice_provider.value if hasattr(campaign.voice_provider, "value") else str(campaign.voice_provider)
+                error_message = (
+                    f"{provider.upper()} final status={final_result.get('status')} "
+                    f"code={final_provider_error_code} message={final_provider_error_message}"
+                )[:500]
+                if campaign.campaign_mode == CampaignMode.AI_AGENT:
+                    update_campaign_number_ai_observability(
+                        number.id,
+                        ai_runtime_error=error_message,
+                    )
 
             db.query(CampaignNumber).filter(
                 CampaignNumber.id == number.id

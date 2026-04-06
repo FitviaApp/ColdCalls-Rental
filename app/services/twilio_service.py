@@ -178,10 +178,15 @@ class TwilioService:
                     last_status = current_status
 
                 if current_status in final_statuses:
+                    raw_error_code = getattr(call, 'error_code', None)
+                    error_code = int(raw_error_code) if raw_error_code not in {None, ""} else None
+                    error_message = str(getattr(call, 'error_message', '') or '').strip()
                     return {
                         'status': current_status,
                         'duration': int(call.duration) if call.duration else 0,
-                        'answered_by': getattr(call, 'answered_by', None)
+                        'answered_by': getattr(call, 'answered_by', None),
+                        'error_code': error_code,
+                        'error_message': error_message,
                     }
 
                 time.sleep(poll_interval)
@@ -196,7 +201,9 @@ class TwilioService:
         return {
             'status': 'timeout',
             'duration': 0,
-            'answered_by': None
+            'answered_by': None,
+            'error_code': None,
+            'error_message': "",
         }
 
     def update_call_twiml(self, call_sid: str, twiml: str) -> None:
