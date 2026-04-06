@@ -52,6 +52,7 @@ class AIRealtimeBridgeWorker:
         self.sessions = AIRealtimeSessionService()
         self._stop_event = threading.Event()
         self._inbound_audio_queue: Queue[str] = Queue()
+        self._opening_response_sent = False
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -127,7 +128,12 @@ class AIRealtimeBridgeWorker:
             },
         }
         await openai_ws.send(json.dumps(event))
-        # Force an opening assistant turn so the callee hears a greeting immediately.
+        await self._send_opening_response(openai_ws)
+
+    async def _send_opening_response(self, openai_ws) -> None:
+        if self._opening_response_sent:
+            return
+        self._opening_response_sent = True
         await openai_ws.send(
             json.dumps(
                 {
@@ -191,20 +197,38 @@ class AIRealtimeBridgeWorker:
         if not event_type:
             return
 
-        if event_type == "response.audio.delta":
+        if event_type in {"session.updated", "session.created"}:
+            # Safety net: make sure we still trigger the first turn if session acknowledged later.
+            await self._send_opening_response(openai_ws)
+            return
+
+        if event_type in {"response.audio.delta", "response.output_audio.delta"}:
             delta = str(data.get("delta") or "")
             if delta:
                 self.bus.publish(self.campaign_number_id, "media.outbound", {"audio": delta})
             return
 
-        if event_type in {"response.audio_transcript.delta", "response.text.delta"}:
+        if event_type in {
+            "response.audio_transcript.delta",
+            "response.text.delta",
+            "response.output_text.delta",
+        }:
             delta_text = str(data.get("delta") or "")
             if delta_text:
                 self.bus.publish(self.campaign_number_id, "transcript.partial", {"text": delta_text})
             return
 
-        if event_type in {"response.audio_transcript.done", "response.text.done"}:
-            final_text = str(data.get("text") or data.get("transcript") or "")
+        if event_type in {
+            "response.audio_transcript.done",
+            "response.text.done",
+            "response.output_text.done",
+        }:
+            final_text = str(
+                data.get("text")
+                or data.get("transcript")
+                or ((data.get("output_text") or [None])[0] if isinstance(data.get("output_text"), list) else "")
+                or ""
+            )
             if final_text:
                 self.bus.publish(self.campaign_number_id, "transcript.final", {"text": final_text})
                 self.bus.publish(self.campaign_number_id, "assistant.response", {"text": final_text})

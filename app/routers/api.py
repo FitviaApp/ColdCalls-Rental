@@ -424,6 +424,7 @@ async def ai_realtime_ws(websocket: WebSocket, campaign_number_id: int, token: s
     await pubsub.subscribe(channel)
     stop_event = asyncio.Event()
     stream_sid = ""
+    pending_outbound_audio: list[str] = []
 
     async def forward_outbound_media():
         nonlocal stream_sid
@@ -438,7 +439,13 @@ async def ai_realtime_ws(websocket: WebSocket, campaign_number_id: int, token: s
             event = AIRealtimeEvent.from_json(raw)
             if event.event == "media.outbound":
                 audio = str((event.payload or {}).get("audio") or "")
-                if not audio or not stream_sid:
+                if not audio:
+                    continue
+                if not stream_sid:
+                    pending_outbound_audio.append(audio)
+                    # Keep memory bounded if stream start is delayed.
+                    if len(pending_outbound_audio) > 200:
+                        pending_outbound_audio = pending_outbound_audio[-200:]
                     continue
                 await websocket.send_text(
                     json.dumps(
@@ -483,6 +490,18 @@ async def ai_realtime_ws(websocket: WebSocket, campaign_number_id: int, token: s
                 stream_sid = str(start.get("streamSid") or data.get("streamSid") or "")
                 if stream_sid:
                     session_service.set_stream_sid(campaign_number_id, stream_sid)
+                    if pending_outbound_audio:
+                        for audio in pending_outbound_audio:
+                            await websocket.send_text(
+                                json.dumps(
+                                    {
+                                        "event": "media",
+                                        "streamSid": stream_sid,
+                                        "media": {"payload": audio},
+                                    }
+                                )
+                            )
+                        pending_outbound_audio.clear()
                 session_service.update_session(campaign_number_id, status="streaming")
                 await bus.publish(
                     campaign_number_id,
