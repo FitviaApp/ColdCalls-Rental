@@ -366,7 +366,9 @@ class AIRealtimeBridgeWorker:
         )
 
     async def _request_audio_response(self, openai_ws, instructions: str | None = None) -> None:
-        response_payload: dict[str, Any] = {"modalities": ["audio"]}
+        # Realtime currently accepts only ["text"] or ["audio", "text"].
+        # We request both so the model can emit spoken audio and transcript text.
+        response_payload: dict[str, Any] = {"modalities": ["audio", "text"]}
         if instructions:
             response_payload["instructions"] = instructions
         await openai_ws.send(
