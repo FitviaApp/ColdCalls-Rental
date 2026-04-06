@@ -333,9 +333,29 @@ async def ai_runtime_audio(campaign_number_id: int, audio_token: str):
 @router.post("/ai-realtime/twiml/{campaign_number_id}")
 async def ai_realtime_twiml(campaign_number_id: int, token: str = ""):
     session_service = AIRealtimeSessionService()
-    if not session_service.validate_auth_token(campaign_number_id, token):
+    session = session_service.get_session(campaign_number_id)
+    if not session:
+        update_campaign_number_ai_observability(
+            campaign_number_id,
+            ai_runtime_error="[media_bridge] Realtime session missing in Redis",
+        )
         return _ai_runtime_hangup_response()
-    twiml = build_ai_realtime_stream_twiml(campaign_number_id, token)
+
+    token = str(token or "").strip()
+    session_token = str(session.get("auth_token") or "").strip()
+    if token and token != session_token:
+        update_campaign_number_ai_observability(
+            campaign_number_id,
+            ai_runtime_error="[media_bridge] Callback token mismatch; using session token fallback",
+        )
+    if not session_token:
+        update_campaign_number_ai_observability(
+            campaign_number_id,
+            ai_runtime_error="[media_bridge] Realtime session token missing",
+        )
+        return _ai_runtime_hangup_response()
+
+    twiml = build_ai_realtime_stream_twiml(campaign_number_id, session_token)
     return Response(content=twiml, media_type="application/xml")
 
 
@@ -384,10 +404,15 @@ async def ai_realtime_session_stop(campaign_number_id: int):
 
 
 @router.websocket("/ai-realtime/ws/{campaign_number_id}")
-async def ai_realtime_ws(websocket: WebSocket, campaign_number_id: int):
-    token = str(websocket.query_params.get("token") or "")
+@router.websocket("/ai-realtime/ws/{campaign_number_id}/{token}")
+async def ai_realtime_ws(websocket: WebSocket, campaign_number_id: int, token: str = ""):
+    token = token or str(websocket.query_params.get("token") or "")
     session_service = AIRealtimeSessionService()
     if not session_service.validate_auth_token(campaign_number_id, token):
+        update_campaign_number_ai_observability(
+            campaign_number_id,
+            ai_runtime_error="[media_bridge] Realtime WS auth token rejected",
+        )
         await websocket.close(code=4401)
         return
 

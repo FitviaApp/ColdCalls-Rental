@@ -473,7 +473,8 @@ def build_ai_runtime_followup_twiml(campaign_number_id: int, user_input: str) ->
 
 def build_ai_realtime_stream_twiml(campaign_number_id: int, token: str) -> str:
     ws_base = _ws_base_from_public_url(settings.BASE_URL.rstrip("/"))
-    ws_url = f"{ws_base}/api/ai-realtime/ws/{campaign_number_id}?token={token}"
+    safe_token = str(token or "").strip()
+    ws_url = f"{ws_base}/api/ai-realtime/ws/{campaign_number_id}/{safe_token}"
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Connect>
