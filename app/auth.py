@@ -1,6 +1,8 @@
 """
 Authentication utilities - JWT, password hashing, encryption
 """
+import base64
+import hashlib
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -50,17 +52,26 @@ def decode_access_token(token: str) -> Optional[dict]:
 
 def get_fernet() -> Fernet:
     """Get Fernet instance for encryption/decryption"""
-    # Ensure the key is valid base64
-    key = settings.ENCRYPTION_KEY
-    if len(key) < 32:
-        # Pad or generate a valid key for development
-        key = key.ljust(32, '=')[:32]
-        key = key.encode()
-        import base64
-        key = base64.urlsafe_b64encode(key)
-    else:
-        key = key.encode() if isinstance(key, str) else key
-    return Fernet(key)
+    key_value = settings.ENCRYPTION_KEY
+    key_bytes = key_value.encode() if isinstance(key_value, str) else bytes(key_value)
+
+    # Backward-compatible path for historical short keys used in this project.
+    if len(key_bytes) < 32:
+        legacy_seed = key_bytes.ljust(32, b"=")[:32]
+        legacy_key = base64.urlsafe_b64encode(legacy_seed)
+        return Fernet(legacy_key)
+
+    # Accept a ready-to-use Fernet key when provided.
+    try:
+        decoded = base64.urlsafe_b64decode(key_bytes)
+        if len(decoded) == 32:
+            return Fernet(key_bytes)
+    except Exception:
+        pass
+
+    # Derive a stable Fernet key from arbitrary text secrets.
+    derived_key = base64.urlsafe_b64encode(hashlib.sha256(key_bytes).digest())
+    return Fernet(derived_key)
 
 
 def encrypt_twilio_credentials(plain_text: str) -> str:

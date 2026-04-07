@@ -24,7 +24,6 @@ from app.services.ai_call_runtime_service import (
     prune_stale_ai_runtime_artifacts,
     update_campaign_number_ai_observability,
 )
-from app.services.ai_realtime_event_bus import AIRealtimeEvent, AIRealtimeEventBus
 from app.config import get_settings
 from app.services.telnyx_service import TelnyxService
 from app.services.twilio_service import TwilioService
@@ -376,6 +375,8 @@ class CampaignWorker:
             handoff_listener_started = False
 
             def _listen_handoff_events() -> None:
+                from app.services.ai_realtime_event_bus import AIRealtimeEvent, AIRealtimeEventBus
+
                 bus = AIRealtimeEventBus()
 
                 def stop_when() -> bool:
@@ -409,7 +410,10 @@ class CampaignWorker:
                     on_event=on_event,
                 )
 
-            if campaign.campaign_mode == CampaignMode.AI_AGENT:
+            if (
+                campaign.campaign_mode == CampaignMode.AI_AGENT
+                and bool(getattr(voice_service, "handoff_via_event_bus", False))
+            ):
                 handoff_listener_started = True
                 handoff_thread = threading.Thread(
                     target=_listen_handoff_events,

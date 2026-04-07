@@ -5,19 +5,19 @@ from app.services.ai_realtime_event_bus import AIRealtimeEvent
 
 
 class AIRealtimeV2Tests(unittest.TestCase):
-    def test_realtime_agent_config_normalizes_voice_and_model(self):
+    def test_agent_config_normalizes_voice_and_model_for_chat_runtime(self):
         model, voice = normalize_ai_agent_realtime_config(
-            model="gpt-realtime",
+            model="gpt-4o-mini",
             voice_id="Verse",
         )
-        self.assertEqual(model, "gpt-realtime")
-        self.assertEqual(voice, "verse")
+        self.assertEqual(model, "gpt-4o-mini")
+        self.assertEqual(voice, "Verse")
 
-    def test_realtime_agent_config_rejects_non_realtime_model(self):
+    def test_agent_config_requires_voice_id(self):
         with self.assertRaises(ValueError):
             normalize_ai_agent_realtime_config(
                 model="gpt-4o-mini",
-                voice_id="alloy",
+                voice_id="",
             )
 
     def test_realtime_event_serialization_roundtrip(self):
@@ -34,4 +34,3 @@ class AIRealtimeV2Tests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

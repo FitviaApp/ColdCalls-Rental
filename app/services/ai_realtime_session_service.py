@@ -8,7 +8,10 @@ import secrets
 import time
 from typing import Any
 
-from redis import Redis
+try:
+    from redis import Redis
+except Exception:  # pragma: no cover - optional when realtime runtime is inactive
+    Redis = None  # type: ignore[assignment]
 
 from app.config import get_settings
 
@@ -28,6 +31,8 @@ def _safe_int(value: Any, default: int = 0) -> int:
 
 class AIRealtimeSessionService:
     def __init__(self, redis_url: str | None = None):
+        if Redis is None:
+            raise RuntimeError("redis package is required for AI realtime session service")
         self.redis_url = redis_url or settings.REDIS_URL
         self.redis = Redis.from_url(self.redis_url, decode_responses=True)
 
@@ -124,4 +129,3 @@ class AIRealtimeSessionService:
 
     def end_session(self, campaign_number_id: int, status: str = "ended") -> dict[str, Any] | None:
         return self.update_session(campaign_number_id, status=status)
-

@@ -9,8 +9,12 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from redis import Redis
-from redis.asyncio import Redis as AsyncRedis
+try:
+    from redis import Redis
+    from redis.asyncio import Redis as AsyncRedis
+except Exception:  # pragma: no cover - optional dependency in legacy runtime mode
+    Redis = None  # type: ignore[assignment]
+    AsyncRedis = None  # type: ignore[assignment]
 
 from app.config import get_settings
 
@@ -58,6 +62,8 @@ class AIRealtimeEventBus:
     """Synchronous publisher/subscriber for worker threads."""
 
     def __init__(self, redis_url: str | None = None):
+        if Redis is None:
+            raise RuntimeError("redis package is not installed")
         self.redis_url = redis_url or settings.REDIS_URL
         self.redis = Redis.from_url(self.redis_url, decode_responses=True)
 
@@ -104,6 +110,8 @@ class AsyncAIRealtimeEventBus:
     """Async publisher/subscriber for API websocket handlers."""
 
     def __init__(self, redis_url: str | None = None):
+        if AsyncRedis is None:
+            raise RuntimeError("redis package is not installed")
         self.redis_url = redis_url or settings.REDIS_URL
         self.redis = AsyncRedis.from_url(self.redis_url, decode_responses=True)
 
@@ -120,4 +128,3 @@ class AsyncAIRealtimeEventBus:
             await self.redis.aclose()
         except Exception:
             pass
-

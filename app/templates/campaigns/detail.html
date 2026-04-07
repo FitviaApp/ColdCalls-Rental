@@ -442,6 +442,7 @@ function campaignDetail() {
             }
             if (normalized.includes('openai request failed')) return 'OpenAI did not respond successfully after retries';
             if (normalized.includes('openai tts request failed')) return 'OpenAI did not return voice audio after retries';
+            if (normalized.includes('elevenlabs')) return `ElevenLabs voice issue: ${value}`;
             if (normalized.includes('signalwire')) return 'SignalWire could not complete the call flow';
             return value;
         },

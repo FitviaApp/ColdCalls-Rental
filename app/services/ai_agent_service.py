@@ -10,24 +10,18 @@ from app.models import AIAgent
 
 settings = get_settings()
 
-DEFAULT_AI_AGENT_MODEL = settings.OPENAI_REALTIME_MODEL
+DEFAULT_AI_AGENT_MODEL = settings.OPENAI_DEFAULT_MODEL
 DEFAULT_AI_AGENT_LANGUAGE = "en"
 DEFAULT_AI_AGENT_TEMPERATURE = 0.7
-SUPPORTED_REALTIME_MODEL_PREFIXES = (
-    "gpt-realtime",
-    "gpt-4o-realtime",
-)
 
 
 def normalize_ai_agent_realtime_config(*, model: str, voice_id: str) -> tuple[str, str]:
     normalized_model = (model or DEFAULT_AI_AGENT_MODEL).strip()
-    normalized_voice = (voice_id or "").strip().lower()
+    normalized_voice = (voice_id or "").strip()
     if not normalized_model:
         normalized_model = DEFAULT_AI_AGENT_MODEL
     if not normalized_voice:
         raise ValueError("Voice cannot be empty")
-    if not normalized_model.startswith(SUPPORTED_REALTIME_MODEL_PREFIXES):
-        raise ValueError("Model must be a realtime-compatible OpenAI model")
     return normalized_model, normalized_voice
 
 

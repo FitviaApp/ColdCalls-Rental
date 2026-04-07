@@ -3,7 +3,7 @@
     <div class="px-4 py-5 sm:px-6">
         <h3 class="text-lg font-medium text-gray-900">Agent Configuration</h3>
         <p class="mt-1 text-sm text-gray-500">
-            AI agents run on OpenAI Realtime Audio, speak in English, and transfer only when the model triggers the handoff tool.
+            AI agents use OpenAI Chat for reasoning, ElevenLabs for voice, and transfer only when the model triggers the handoff tool.
         </p>
     </div>
     <div class="border-t border-gray-200 px-4 py-5 sm:px-6 space-y-4">
@@ -15,19 +15,19 @@
                 placeholder="e.g., Real Estate Qualifier">
         </div>
         <div>
-            <label for="voice_id" class="block text-sm font-medium text-gray-700">OpenAI Voice</label>
+            <label for="voice_id" class="block text-sm font-medium text-gray-700">ElevenLabs Voice ID</label>
             <input type="text" name="voice_id" id="voice_id" required
                 value="{{ form.get('voice_id', agent.voice_id if agent else '') }}"
                 class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border px-3 py-2"
-                placeholder="Enter an OpenAI voice (e.g., alloy)">
+                placeholder="Enter an ElevenLabs voice ID">
         </div>
         <div class="grid grid-cols-1 gap-4 sm:grid-cols-3">
             <div>
-                <label for="model" class="block text-sm font-medium text-gray-700">OpenAI Model</label>
+                <label for="model" class="block text-sm font-medium text-gray-700">OpenAI Chat Model</label>
                 <input type="text" name="model" id="model"
                     value="{{ form.get('model', agent.model if agent else default_model) }}"
                     class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border px-3 py-2">
-                <p class="mt-1 text-xs text-gray-500">Use a realtime model, e.g. <span class="font-mono">gpt-realtime</span>.</p>
+                <p class="mt-1 text-xs text-gray-500">Use a chat model, e.g. <span class="font-mono">gpt-4o-mini</span>.</p>
             </div>
             <div>
                 <label for="language" class="block text-sm font-medium text-gray-700">Language</label>

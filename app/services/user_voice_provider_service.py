@@ -12,6 +12,7 @@ from app.services.user_twilio_service import has_user_twilio_credentials
 from app.services.user_vonage_service import has_user_vonage_credentials
 from app.services.user_voximplant_service import has_user_voximplant_credentials
 from app.services.user_openai_service import has_user_openai_credentials
+from app.services.user_elevenlabs_service import has_user_elevenlabs_credentials
 
 
 PROVIDER_LABELS = {
@@ -83,11 +84,12 @@ def get_user_voice_provider_status(db: Session, user_id: int) -> list[dict]:
 
 
 def has_user_ai_runtime_credentials(db: Session, user_id: int) -> bool:
-    """True when the user can run AI-agent campaigns via Twilio/SignalWire + OpenAI."""
+    """True when the user can run AI-agent campaigns via Twilio/SignalWire + OpenAI + ElevenLabs."""
     return (
         (
             has_user_signalwire_credentials(db, user_id)
             or has_user_twilio_credentials(db, user_id)
         )
         and has_user_openai_credentials(db, user_id)
+        and has_user_elevenlabs_credentials(db, user_id)
     )

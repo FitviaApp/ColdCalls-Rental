@@ -9,7 +9,10 @@ import binascii
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
-from redis.asyncio import Redis as AsyncRedis
+try:
+    from redis.asyncio import Redis as AsyncRedis
+except Exception:  # pragma: no cover - optional when realtime runtime is inactive
+    AsyncRedis = None  # type: ignore[assignment]
 
 from app.database import get_db
 from app.config import get_settings
@@ -56,6 +59,14 @@ def _iter_twilio_media_chunks(audio_b64: str, chunk_bytes: int = 160):
 def _hangup_response() -> Response:
     twiml = '<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>'
     return Response(content=twiml, media_type="application/xml")
+
+
+def _create_realtime_session_service() -> AIRealtimeSessionService | None:
+    try:
+        return AIRealtimeSessionService()
+    except Exception as exc:
+        logger.warning("AI realtime session service unavailable: %s", exc)
+        return None
 
 
 def _build_transfer_block(campaign: Campaign, transfer_number: str) -> str:
@@ -352,7 +363,13 @@ async def ai_runtime_audio(campaign_number_id: int, audio_token: str):
 @router.get("/ai-realtime/twiml/{campaign_number_id}")
 @router.post("/ai-realtime/twiml/{campaign_number_id}")
 async def ai_realtime_twiml(campaign_number_id: int, token: str = ""):
-    session_service = AIRealtimeSessionService()
+    session_service = _create_realtime_session_service()
+    if session_service is None:
+        update_campaign_number_ai_observability(
+            campaign_number_id,
+            ai_runtime_error="[media_bridge] Realtime session backend unavailable",
+        )
+        return _ai_runtime_hangup_response()
     session = session_service.get_session(campaign_number_id)
     if not session:
         update_campaign_number_ai_observability(
@@ -381,7 +398,9 @@ async def ai_realtime_twiml(campaign_number_id: int, token: str = ""):
 
 @router.get("/ai-realtime/session/{campaign_number_id}/health")
 async def ai_realtime_session_health(campaign_number_id: int):
-    session_service = AIRealtimeSessionService()
+    session_service = _create_realtime_session_service()
+    if session_service is None:
+        raise HTTPException(status_code=503, detail="Realtime session backend unavailable")
     session = session_service.get_session(campaign_number_id)
     if not session:
         raise HTTPException(status_code=404, detail="Realtime session not found")
@@ -396,7 +415,9 @@ async def ai_realtime_session_health(campaign_number_id: int):
 
 @router.post("/ai-realtime/session/{campaign_number_id}/start")
 async def ai_realtime_session_start(campaign_number_id: int):
-    session_service = AIRealtimeSessionService()
+    session_service = _create_realtime_session_service()
+    if session_service is None:
+        raise HTTPException(status_code=503, detail="Realtime session backend unavailable")
     session = session_service.get_session(campaign_number_id)
     if not session:
         raise HTTPException(status_code=404, detail="Realtime session not found")
@@ -411,7 +432,9 @@ async def ai_realtime_session_start(campaign_number_id: int):
 
 @router.post("/ai-realtime/session/{campaign_number_id}/stop")
 async def ai_realtime_session_stop(campaign_number_id: int):
-    session_service = AIRealtimeSessionService()
+    session_service = _create_realtime_session_service()
+    if session_service is None:
+        raise HTTPException(status_code=503, detail="Realtime session backend unavailable")
     if not session_service.get_session(campaign_number_id):
         raise HTTPException(status_code=404, detail="Realtime session not found")
     session_service.end_session(campaign_number_id, status="stopped")
@@ -426,8 +449,15 @@ async def ai_realtime_session_stop(campaign_number_id: int):
 @router.websocket("/ai-realtime/ws/{campaign_number_id}")
 @router.websocket("/ai-realtime/ws/{campaign_number_id}/{token}")
 async def ai_realtime_ws(websocket: WebSocket, campaign_number_id: int, token: str = ""):
+    if AsyncRedis is None:
+        await websocket.close(code=1011)
+        return
+
     token = token or str(websocket.query_params.get("token") or "")
-    session_service = AIRealtimeSessionService()
+    session_service = _create_realtime_session_service()
+    if session_service is None:
+        await websocket.close(code=1011)
+        return
     if not session_service.validate_auth_token(campaign_number_id, token):
         update_campaign_number_ai_observability(
             campaign_number_id,
@@ -447,64 +477,77 @@ async def ai_realtime_ws(websocket: WebSocket, campaign_number_id: int, token: s
     pending_outbound_audio: list[str] = []
 
     async def forward_outbound_media():
-        nonlocal stream_sid
-        while not stop_event.is_set():
-            message = await pubsub.get_message(timeout=1.0)
-            if not message:
-                await asyncio.sleep(0.05)
-                continue
-            raw = str(message.get("data") or "")
-            if not raw:
-                continue
-            event = AIRealtimeEvent.from_json(raw)
-            if event.event == "media.outbound":
-                audio = str((event.payload or {}).get("audio") or "")
-                if not audio:
+        nonlocal stream_sid, pending_outbound_audio
+        try:
+            while not stop_event.is_set():
+                message = await pubsub.get_message(timeout=1.0)
+                if not message:
+                    await asyncio.sleep(0.05)
                     continue
-                if not stream_sid:
-                    pending_outbound_audio.append(audio)
-                    # Keep memory bounded if stream start is delayed.
-                    if len(pending_outbound_audio) > 200:
-                        pending_outbound_audio = pending_outbound_audio[-200:]
+                raw = str(message.get("data") or "")
+                if not raw:
                     continue
-                chunks = list(_iter_twilio_media_chunks(audio))
-                if not chunks:
-                    update_campaign_number_ai_observability(
-                        campaign_number_id,
-                        ai_runtime_error="[media_bridge] OpenAI audio delta was not valid base64 audio",
-                    )
-                    continue
-                for payload in chunks:
-                    await websocket.send_text(
-                        json.dumps(
-                            {
-                                "event": "media",
-                                "streamSid": stream_sid,
-                                "media": {"payload": payload},
-                            }
+                event = AIRealtimeEvent.from_json(raw)
+                if event.event == "media.outbound":
+                    audio = str((event.payload or {}).get("audio") or "")
+                    if not audio:
+                        continue
+                    if not stream_sid:
+                        pending_outbound_audio.append(audio)
+                        # Keep memory bounded if stream start is delayed.
+                        if len(pending_outbound_audio) > 200:
+                            del pending_outbound_audio[:-200]
+                        continue
+                    chunks = list(_iter_twilio_media_chunks(audio))
+                    if not chunks:
+                        update_campaign_number_ai_observability(
+                            campaign_number_id,
+                            ai_runtime_error="[media_bridge] OpenAI audio delta was not valid base64 audio",
                         )
-                    )
-            elif event.event == "assistant.response":
-                text = str((event.payload or {}).get("text") or "")
-                if text:
+                        continue
+                    for payload in chunks:
+                        await websocket.send_text(
+                            json.dumps(
+                                {
+                                    "event": "media",
+                                    "streamSid": stream_sid,
+                                    "media": {"payload": payload},
+                                }
+                            )
+                        )
+                elif event.event == "assistant.response":
+                    text = str((event.payload or {}).get("text") or "")
+                    if text:
+                        update_campaign_number_ai_observability(
+                            campaign_number_id,
+                            ai_last_assistant_text=text[:500],
+                        )
+                elif event.event == "tool.transfer_call":
+                    reason = str((event.payload or {}).get("reason") or "")
                     update_campaign_number_ai_observability(
                         campaign_number_id,
-                        ai_last_assistant_text=text[:500],
+                        ai_handoff_reason=reason[:500] if reason else None,
                     )
-            elif event.event == "tool.transfer_call":
-                reason = str((event.payload or {}).get("reason") or "")
-                update_campaign_number_ai_observability(
-                    campaign_number_id,
-                    ai_handoff_reason=reason[:500] if reason else None,
-                )
-            elif event.event == "session.error":
-                category = str((event.payload or {}).get("category") or "").strip()
-                detail = str((event.payload or {}).get("detail") or "").strip()
-                error_message = f"[{category}] {detail}" if category else detail
-                update_campaign_number_ai_observability(
-                    campaign_number_id,
-                    ai_runtime_error=error_message[:500],
-                )
+                elif event.event == "session.error":
+                    category = str((event.payload or {}).get("category") or "").strip()
+                    detail = str((event.payload or {}).get("detail") or "").strip()
+                    error_message = f"[{category}] {detail}" if category else detail
+                    update_campaign_number_ai_observability(
+                        campaign_number_id,
+                        ai_runtime_error=error_message[:500],
+                    )
+        except Exception as exc:
+            logger.error(
+                "AI realtime outbound media forwarder failed for campaign_number_id=%s: %s",
+                campaign_number_id,
+                exc,
+                exc_info=True,
+            )
+            update_campaign_number_ai_observability(
+                campaign_number_id,
+                ai_runtime_error=f"[media_bridge] Outbound media forwarder crashed: {str(exc)[:420]}",
+            )
+            stop_event.set()
 
     outbound_task = asyncio.create_task(forward_outbound_media())
 
@@ -519,7 +562,9 @@ async def ai_realtime_ws(websocket: WebSocket, campaign_number_id: int, token: s
                 if stream_sid:
                     session_service.set_stream_sid(campaign_number_id, stream_sid)
                     if pending_outbound_audio:
-                        for audio in pending_outbound_audio:
+                        buffered_audio = list(pending_outbound_audio)
+                        pending_outbound_audio.clear()
+                        for audio in buffered_audio:
                             chunks = list(_iter_twilio_media_chunks(audio))
                             if not chunks:
                                 continue
@@ -535,7 +580,6 @@ async def ai_realtime_ws(websocket: WebSocket, campaign_number_id: int, token: s
                                 )
                                 # Twilio media streams are more stable with paced 20ms chunks.
                                 await asyncio.sleep(0.02)
-                        pending_outbound_audio.clear()
                 session_service.update_session(campaign_number_id, status="streaming")
                 await bus.publish(
                     campaign_number_id,

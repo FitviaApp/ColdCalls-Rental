@@ -92,21 +92,31 @@ class SignalWireSupportTests(unittest.TestCase):
         self.assertIsNotNone(limiter)
         self.assertEqual(limiter._current_interval_seconds(), TWILIO_MIN_START_INTERVAL_SECONDS)  # type: ignore[union-attr]
 
-    def test_ai_runtime_credentials_require_signalwire_and_openai(self):
+    def test_ai_runtime_credentials_require_provider_openai_and_elevenlabs(self):
         import app.services.user_voice_provider_service as provider_service
 
         original_signalwire = provider_service.has_user_signalwire_credentials
+        original_twilio = provider_service.has_user_twilio_credentials
         original_openai = provider_service.has_user_openai_credentials
+        original_elevenlabs = provider_service.has_user_elevenlabs_credentials
         try:
             provider_service.has_user_signalwire_credentials = lambda db, user_id: True
+            provider_service.has_user_twilio_credentials = lambda db, user_id: False
             provider_service.has_user_openai_credentials = lambda db, user_id: True
+            provider_service.has_user_elevenlabs_credentials = lambda db, user_id: True
             self.assertTrue(has_user_ai_runtime_credentials(None, 1))
 
             provider_service.has_user_openai_credentials = lambda db, user_id: False
             self.assertFalse(has_user_ai_runtime_credentials(None, 1))
+
+            provider_service.has_user_openai_credentials = lambda db, user_id: True
+            provider_service.has_user_elevenlabs_credentials = lambda db, user_id: False
+            self.assertFalse(has_user_ai_runtime_credentials(None, 1))
         finally:
             provider_service.has_user_signalwire_credentials = original_signalwire
+            provider_service.has_user_twilio_credentials = original_twilio
             provider_service.has_user_openai_credentials = original_openai
+            provider_service.has_user_elevenlabs_credentials = original_elevenlabs
 
     def test_campaign_mode_enum_values(self):
         self.assertEqual(CampaignMode.AUDIO.value, "audio")
@@ -319,8 +329,36 @@ class SignalWireSupportTests(unittest.TestCase):
         )
         self.assertEqual(
             error,
-            "Please configure Twilio or SignalWire and OpenAI Realtime credentials in Settings first",
+            "Please configure Twilio or SignalWire, OpenAI, and ElevenLabs credentials in Settings first",
         )
+
+    def test_elevenlabs_voice_fallback_uses_default_voice(self):
+        import app.services.ai_call_runtime_service as runtime_module
+
+        original_default_voice = runtime_module.settings.ELEVENLABS_DEFAULT_VOICE_ID
+        runtime_module.settings.ELEVENLABS_DEFAULT_VOICE_ID = "fallback_voice"
+        try:
+            service = AICallRuntimeService.__new__(AICallRuntimeService)
+            calls = []
+
+            def fake_tts(*, voice_id: str, text: str) -> bytes:
+                calls.append((voice_id, text))
+                if voice_id == "invalid_voice":
+                    raise RuntimeError("ElevenLabs TTS failed: status=404 body=voice not found")
+                return b"audio-bytes"
+
+            service._request_elevenlabs_audio = fake_tts
+            audio, used_voice = service._request_elevenlabs_audio_with_fallback(
+                "invalid_voice",
+                "hello",
+            )
+        finally:
+            runtime_module.settings.ELEVENLABS_DEFAULT_VOICE_ID = original_default_voice
+
+        self.assertEqual(audio, b"audio-bytes")
+        self.assertEqual(used_voice, "fallback_voice")
+        self.assertEqual(calls[0][0], "invalid_voice")
+        self.assertEqual(calls[1][0], "fallback_voice")
 
     def test_parse_campaign_numbers_accepts_csv_first_column_and_counts_invalid(self):
         valid_numbers, invalid_count = _parse_campaign_numbers(
@@ -437,7 +475,7 @@ class SignalWireSupportTests(unittest.TestCase):
         session = {"no_input_turns": 0, "history": [], "campaign_number_id": 9}
 
         service._read_session = lambda campaign_number_id: session
-        service._create_assistant_turn = lambda payload, assistant_text, should_transfer: {
+        service._create_assistant_turn = lambda campaign_number_id, payload, assistant_text, should_transfer, **kwargs: {
             "assistant_text": assistant_text,
             "should_transfer": should_transfer,
             "audio_token": "token",
