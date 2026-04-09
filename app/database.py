@@ -89,6 +89,7 @@ def _ensure_campaign_audio_nullable(conn):
         return
 
     conn.execute(text("PRAGMA foreign_keys=OFF"))
+    conn.execute(text("DROP TABLE IF EXISTS campaigns_new"))
     conn.execute(
         text(
             """

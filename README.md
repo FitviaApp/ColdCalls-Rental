@@ -176,6 +176,30 @@ proxy_pass http://127.0.0.1:8000;
 
 Se quiser pular essa etapa em algum ambiente, use `CONFIGURE_NGINX=0`.
 
+## Rodando com systemd
+
+O repositorio inclui templates em `deploy/systemd/`:
+
+- `coldcalls.service` para a aplicacao web
+- `coldcalls-worker.service` para o worker
+
+No servidor Ubuntu:
+
+```bash
+sudo cp deploy/systemd/coldcalls.service /etc/systemd/system/coldcalls.service
+sudo cp deploy/systemd/coldcalls-worker.service /etc/systemd/system/coldcalls-worker.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now coldcalls
+sudo systemctl enable --now coldcalls-worker
+```
+
+Para acompanhar logs:
+
+```bash
+sudo journalctl -u coldcalls -f
+sudo journalctl -u coldcalls-worker -f
+```
+
 ## Fluxo de uso
 
 1. Acesse `http://localhost:8000`.
