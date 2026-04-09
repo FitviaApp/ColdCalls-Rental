@@ -15,6 +15,16 @@ DEFAULT_AI_AGENT_LANGUAGE = "en"
 DEFAULT_AI_AGENT_TEMPERATURE = 0.7
 
 
+def normalize_ai_agent_realtime_config(*, model: str, voice_id: str) -> tuple[str, str]:
+    normalized_model = (model or DEFAULT_AI_AGENT_MODEL).strip()
+    normalized_voice = (voice_id or "").strip()
+    if not normalized_model:
+        normalized_model = DEFAULT_AI_AGENT_MODEL
+    if not normalized_voice:
+        raise ValueError("Voice cannot be empty")
+    return normalized_model, normalized_voice
+
+
 def list_user_ai_agents(db: Session, user_id: int) -> list[AIAgent]:
     return db.query(AIAgent).filter(AIAgent.user_id == user_id).order_by(
         AIAgent.is_active.desc(),
@@ -41,12 +51,16 @@ def create_user_ai_agent(
     handoff_description: str = "",
     is_active: bool = True,
 ) -> AIAgent:
+    normalized_model, normalized_voice = normalize_ai_agent_realtime_config(
+        model=model,
+        voice_id=voice_id,
+    )
     agent = AIAgent(
         user_id=user_id,
         name=name.strip(),
         system_prompt=system_prompt.strip(),
-        voice_id=voice_id.strip(),
-        model=(model or DEFAULT_AI_AGENT_MODEL).strip(),
+        voice_id=normalized_voice,
+        model=normalized_model,
         temperature=float(temperature),
         language=(language or DEFAULT_AI_AGENT_LANGUAGE).strip().lower(),
         handoff_description=handoff_description.strip() or None,
@@ -69,10 +83,14 @@ def update_user_ai_agent(
     handoff_description: str,
     is_active: bool,
 ) -> AIAgent:
+    normalized_model, normalized_voice = normalize_ai_agent_realtime_config(
+        model=model,
+        voice_id=voice_id,
+    )
     agent.name = name.strip()
     agent.system_prompt = system_prompt.strip()
-    agent.voice_id = voice_id.strip()
-    agent.model = (model or DEFAULT_AI_AGENT_MODEL).strip()
+    agent.voice_id = normalized_voice
+    agent.model = normalized_model
     agent.temperature = float(temperature)
     agent.language = (language or DEFAULT_AI_AGENT_LANGUAGE).strip().lower()
     agent.handoff_description = handoff_description.strip() or None

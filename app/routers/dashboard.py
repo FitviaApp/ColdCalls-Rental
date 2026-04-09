@@ -606,10 +606,10 @@ async def save_elevenlabs_credentials(
 ):
     api_key = api_key.strip()
 
-    if len(api_key) < 20:
+    if not api_key:
         return templates.TemplateResponse(
             "dashboard/settings.html",
-            _settings_context(request, user, db, error="ElevenLabs API key looks invalid."),
+            _settings_context(request, user, db, error="ElevenLabs API key cannot be empty."),
             status_code=400,
         )
 

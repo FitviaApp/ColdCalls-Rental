@@ -24,6 +24,7 @@ from app.services.campaign_worker import (
 )
 from app.services.user_signalwire_service import _normalize_space_url
 from app.services.signalwire_service import SignalWireService
+from app.services.twilio_service import TwilioService
 from app.services.user_voice_provider_service import (
     has_user_ai_runtime_credentials,
     provider_supports_press_1,
@@ -91,22 +92,29 @@ class SignalWireSupportTests(unittest.TestCase):
         self.assertIsNotNone(limiter)
         self.assertEqual(limiter._current_interval_seconds(), TWILIO_MIN_START_INTERVAL_SECONDS)  # type: ignore[union-attr]
 
-    def test_ai_runtime_credentials_require_signalwire_openai_and_elevenlabs(self):
+    def test_ai_runtime_credentials_require_provider_openai_and_elevenlabs(self):
         import app.services.user_voice_provider_service as provider_service
 
         original_signalwire = provider_service.has_user_signalwire_credentials
+        original_twilio = provider_service.has_user_twilio_credentials
         original_openai = provider_service.has_user_openai_credentials
         original_elevenlabs = provider_service.has_user_elevenlabs_credentials
         try:
             provider_service.has_user_signalwire_credentials = lambda db, user_id: True
+            provider_service.has_user_twilio_credentials = lambda db, user_id: False
             provider_service.has_user_openai_credentials = lambda db, user_id: True
             provider_service.has_user_elevenlabs_credentials = lambda db, user_id: True
             self.assertTrue(has_user_ai_runtime_credentials(None, 1))
 
+            provider_service.has_user_openai_credentials = lambda db, user_id: False
+            self.assertFalse(has_user_ai_runtime_credentials(None, 1))
+
+            provider_service.has_user_openai_credentials = lambda db, user_id: True
             provider_service.has_user_elevenlabs_credentials = lambda db, user_id: False
             self.assertFalse(has_user_ai_runtime_credentials(None, 1))
         finally:
             provider_service.has_user_signalwire_credentials = original_signalwire
+            provider_service.has_user_twilio_credentials = original_twilio
             provider_service.has_user_openai_credentials = original_openai
             provider_service.has_user_elevenlabs_credentials = original_elevenlabs
 
@@ -175,6 +183,54 @@ class SignalWireSupportTests(unittest.TestCase):
             )
         self.assertIn("public http(s) URL", str(ctx.exception))
 
+    def test_twilio_make_call_uses_answer_url_for_ai_runtime(self):
+        service = TwilioService.__new__(TwilioService)
+        captured = {}
+
+        class DummyCalls:
+            def create(self, **kwargs):
+                captured.update(kwargs)
+                return SimpleNamespace(sid="CA123", status="queued")
+
+        service.client = SimpleNamespace(calls=DummyCalls())
+        service.account_sid = "AC123"
+        service.auth_token = "token"
+
+        result = service.make_call(
+            to_number="+15550000001",
+            from_number="+15550000002",
+            audio_url=None,
+            transfer_number="+15550000003",
+            answer_url="https://example.com/api/ai-realtime/twiml/1?token=x",
+            enable_machine_detection=False,
+        )
+
+        self.assertEqual(result["call_sid"], "CA123")
+        self.assertEqual(captured["url"], "https://example.com/api/ai-realtime/twiml/1?token=x")
+        self.assertNotIn("twiml", captured)
+
+    def test_twilio_update_call_twiml_updates_active_call(self):
+        service = TwilioService.__new__(TwilioService)
+        captured = {}
+
+        class DummyCallResource:
+            def update(self, **kwargs):
+                captured.update(kwargs)
+                return SimpleNamespace(sid="CA123")
+
+        class DummyCalls:
+            def __call__(self, call_sid):
+                captured["call_sid"] = call_sid
+                return DummyCallResource()
+
+        service.client = SimpleNamespace(calls=DummyCalls())
+        service.account_sid = "AC123"
+        service.auth_token = "token"
+
+        service.update_call_twiml("CA123", "<Response><Dial><Number>+1555</Number></Dial></Response>")
+        self.assertEqual(captured["call_sid"], "CA123")
+        self.assertIn("<Response>", captured["twiml"])
+
     def test_ai_runtime_cleanup_removes_session_and_audio_files(self):
         campaign_number_id = 4242
         session_path = AI_RUNTIME_DIR / f"{campaign_number_id}.json"
@@ -213,16 +269,16 @@ class SignalWireSupportTests(unittest.TestCase):
 
         fresh_session.unlink(missing_ok=True)
 
-    def test_campaign_form_validation_requires_signalwire_for_ai_mode(self):
+    def test_campaign_form_validation_requires_twilio_or_signalwire_for_ai_mode(self):
         error = _campaign_form_validation_error(
-            voice_provider=VoiceProvider.TWILIO.value,
+            voice_provider=VoiceProvider.TELNYX.value,
             campaign_mode=CampaignMode.AI_AGENT.value,
             press_1_to_talk_with_agent=False,
             max_concurrent_calls=1,
             provider_configured=True,
             ai_runtime_configured=True,
         )
-        self.assertEqual(error, "AI agent campaigns currently require SignalWire as the voice provider.")
+        self.assertEqual(error, "AI agent campaigns currently require Twilio or SignalWire as the voice provider.")
 
     def test_campaign_form_validation_rejects_press_1_for_ai_mode(self):
         error = _campaign_form_validation_error(
@@ -256,7 +312,7 @@ class SignalWireSupportTests(unittest.TestCase):
         )
         ai_agent = SimpleNamespace(user_id=1, is_active=True)
         campaign = SimpleNamespace(
-            voice_provider=VoiceProvider.SIGNALWIRE,
+            voice_provider=VoiceProvider.TWILIO,
             campaign_mode=CampaignMode.AI_AGENT,
             ai_agent_id=5,
             ai_agent=ai_agent,
@@ -273,8 +329,36 @@ class SignalWireSupportTests(unittest.TestCase):
         )
         self.assertEqual(
             error,
-            "Please configure SignalWire, OpenAI, and ElevenLabs credentials in Settings first",
+            "Please configure Twilio or SignalWire, OpenAI, and ElevenLabs credentials in Settings first",
         )
+
+    def test_elevenlabs_voice_fallback_uses_default_voice(self):
+        import app.services.ai_call_runtime_service as runtime_module
+
+        original_default_voice = runtime_module.settings.ELEVENLABS_DEFAULT_VOICE_ID
+        runtime_module.settings.ELEVENLABS_DEFAULT_VOICE_ID = "fallback_voice"
+        try:
+            service = AICallRuntimeService.__new__(AICallRuntimeService)
+            calls = []
+
+            def fake_tts(*, voice_id: str, text: str) -> bytes:
+                calls.append((voice_id, text))
+                if voice_id == "invalid_voice":
+                    raise RuntimeError("ElevenLabs TTS failed: status=404 body=voice not found")
+                return b"audio-bytes"
+
+            service._request_elevenlabs_audio = fake_tts
+            audio, used_voice = service._request_elevenlabs_audio_with_fallback(
+                "invalid_voice",
+                "hello",
+            )
+        finally:
+            runtime_module.settings.ELEVENLABS_DEFAULT_VOICE_ID = original_default_voice
+
+        self.assertEqual(audio, b"audio-bytes")
+        self.assertEqual(used_voice, "fallback_voice")
+        self.assertEqual(calls[0][0], "invalid_voice")
+        self.assertEqual(calls[1][0], "fallback_voice")
 
     def test_parse_campaign_numbers_accepts_csv_first_column_and_counts_invalid(self):
         valid_numbers, invalid_count = _parse_campaign_numbers(
@@ -391,7 +475,7 @@ class SignalWireSupportTests(unittest.TestCase):
         session = {"no_input_turns": 0, "history": [], "campaign_number_id": 9}
 
         service._read_session = lambda campaign_number_id: session
-        service._create_assistant_turn = lambda payload, assistant_text, should_transfer: {
+        service._create_assistant_turn = lambda campaign_number_id, payload, assistant_text, should_transfer, **kwargs: {
             "assistant_text": assistant_text,
             "should_transfer": should_transfer,
             "audio_token": "token",
@@ -539,7 +623,7 @@ class SignalWireSupportTests(unittest.TestCase):
         try:
             service = AICallRuntimeService.__new__(AICallRuntimeService)
             audio_bytes = service._post_binary_with_retries(
-                provider_name="ElevenLabs",
+                provider_name="OpenAI TTS",
                 url="https://example.com",
                 headers={},
                 json_payload={},
@@ -589,7 +673,7 @@ class SignalWireSupportTests(unittest.TestCase):
             service = AICallRuntimeService.__new__(AICallRuntimeService)
             with self.assertRaises(RuntimeError) as ctx:
                 service._post_binary_with_retries(
-                    provider_name="ElevenLabs",
+                    provider_name="OpenAI TTS",
                     url="https://example.com",
                     headers={},
                     json_payload={},

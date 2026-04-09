@@ -313,10 +313,18 @@
                                 the call ran longer than the configured AI duration limit.
                                 {% elif 'max cost policy' in ai_runtime_summary.last_runtime_error %}
                                 the call cost exceeded the configured AI budget limit.
+                                {% elif '[provider_auth]' in ai_runtime_summary.last_runtime_error %}
+                                OpenAI authentication failed. Check API key and organization settings.
+                                {% elif '[provider_rate_limit]' in ai_runtime_summary.last_runtime_error %}
+                                OpenAI rate limit was reached; retry later or reduce concurrency.
+                                {% elif '[media_bridge]' in ai_runtime_summary.last_runtime_error %}
+                                The realtime audio bridge failed while handling media stream events.
+                                {% elif '[tooling]' in ai_runtime_summary.last_runtime_error %}
+                                The transfer tool execution failed during the call.
                                 {% elif 'OpenAI request failed' in ai_runtime_summary.last_runtime_error %}
                                 OpenAI did not respond successfully after retries.
-                                {% elif 'ElevenLabs request failed' in ai_runtime_summary.last_runtime_error %}
-                                ElevenLabs did not return voice audio after retries.
+                                {% elif 'OpenAI TTS request failed' in ai_runtime_summary.last_runtime_error %}
+                                OpenAI did not return voice audio after retries.
                                 {% elif 'SignalWire' in ai_runtime_summary.last_runtime_error %}
                                 SignalWire could not complete the live call flow.
                                 {% else %}
@@ -410,10 +418,31 @@ function campaignDetail() {
             const value = String(error || '').trim();
             if (!value) return '';
             const normalized = value.toLowerCase();
+            const stripPrefix = (raw, prefix) => {
+                const regex = new RegExp(`^\\[${prefix}\\]\\s*`, 'i');
+                return String(raw || '').replace(regex, '').trim();
+            };
             if (normalized.includes('max duration policy')) return 'Call exceeded the configured AI duration limit';
             if (normalized.includes('max cost policy')) return 'Call exceeded the configured AI cost limit';
+            if (normalized.includes('[provider_auth]')) {
+                const detail = stripPrefix(value, 'provider_auth');
+                return detail ? `OpenAI authentication failed: ${detail}` : 'OpenAI authentication failed (check key/org settings)';
+            }
+            if (normalized.includes('[provider_rate_limit]')) {
+                const detail = stripPrefix(value, 'provider_rate_limit');
+                return detail ? `OpenAI rate limit reached: ${detail}` : 'OpenAI rate limit reached';
+            }
+            if (normalized.includes('[media_bridge]')) {
+                const detail = stripPrefix(value, 'media_bridge');
+                return detail ? `Realtime media bridge issue: ${detail}` : 'Realtime media bridge failed during the call';
+            }
+            if (normalized.includes('[tooling]')) {
+                const detail = stripPrefix(value, 'tooling');
+                return detail ? `Transfer tool execution failed: ${detail}` : 'Transfer tool execution failed';
+            }
             if (normalized.includes('openai request failed')) return 'OpenAI did not respond successfully after retries';
-            if (normalized.includes('elevenlabs request failed')) return 'ElevenLabs did not return voice audio after retries';
+            if (normalized.includes('openai tts request failed')) return 'OpenAI did not return voice audio after retries';
+            if (normalized.includes('elevenlabs')) return `ElevenLabs voice issue: ${value}`;
             if (normalized.includes('signalwire')) return 'SignalWire could not complete the call flow';
             return value;
         },

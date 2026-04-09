@@ -210,3 +210,32 @@ class SignalWireService:
 
         logger.warning(f"SignalWire polling timeout for call {call_sid}")
         return {"status": "timeout", "duration": 0, "answered_by": None}
+
+    def update_call_twiml(self, call_sid: str, twiml: str) -> None:
+        """Redirect an in-progress call by updating its TwiML."""
+        if not call_sid:
+            raise ValueError("call_sid is required")
+        payload = {"Twiml": str(twiml or "").strip()}
+        if not payload["Twiml"]:
+            raise ValueError("Twiml payload is required")
+        try:
+            with httpx.Client(timeout=30.0, auth=(self.project_id, self.api_token)) as client:
+                response = client.post(
+                    f"{self.base_url}/Calls/{call_sid}.json",
+                    data=payload,
+                    headers={"Accept": "application/json"},
+                )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            body_preview = ""
+            try:
+                body_preview = (exc.response.text or "").strip()[:300]
+            except Exception:
+                body_preview = ""
+            if not body_preview:
+                body_preview = "no response body"
+            raise RuntimeError(
+                f"SignalWire update call failed: status={exc.response.status_code} body={body_preview}"
+            ) from exc
+        except Exception as exc:
+            raise RuntimeError(f"SignalWire update call failed: {exc}") from exc

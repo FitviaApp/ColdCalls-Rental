@@ -2,9 +2,17 @@
 API Router - JSON endpoints for AJAX calls and cXML/TwiML
 """
 import logging
-from fastapi import APIRouter, Depends, HTTPException, Request
+import json
+import asyncio
+import base64
+import binascii
+from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
+try:
+    from redis.asyncio import Redis as AsyncRedis
+except Exception:  # pragma: no cover - optional when realtime runtime is inactive
+    AsyncRedis = None  # type: ignore[assignment]
 
 from app.database import get_db
 from app.config import get_settings
@@ -13,10 +21,14 @@ from app.models import User, Campaign, CampaignNumber, CallerID, Country, Audio,
 from app.schemas import DashboardStats, CampaignProgress, DropdownCallerID, DropdownCountry, DropdownAudio
 from app.services.rental_service import has_active_rental
 from app.services.ai_call_runtime_service import (
+    build_ai_realtime_stream_twiml,
     build_ai_runtime_followup_twiml,
     build_ai_runtime_twiml,
     get_ai_runtime_audio,
+    update_campaign_number_ai_observability,
 )
+from app.services.ai_realtime_event_bus import AsyncAIRealtimeEventBus, realtime_channel, AIRealtimeEvent
+from app.services.ai_realtime_session_service import AIRealtimeSessionService
 from app.services.voximplant_service import decode_voximplant_callback_token
 
 logger = logging.getLogger(__name__)
@@ -25,10 +37,36 @@ settings = get_settings()
 router = APIRouter(prefix="/api", tags=["api"])
 
 
+def _iter_twilio_media_chunks(audio_b64: str, chunk_bytes: int = 160):
+    """Normalize outbound media payload into Twilio-friendly base64 chunks."""
+    raw = str(audio_b64 or "").strip()
+    if not raw:
+        return
+    try:
+        audio_bytes = base64.b64decode(raw, validate=True)
+    except (binascii.Error, ValueError):
+        return
+    if not audio_bytes:
+        return
+    size = max(160, int(chunk_bytes))
+    for i in range(0, len(audio_bytes), size):
+        chunk = audio_bytes[i : i + size]
+        if chunk:
+            yield base64.b64encode(chunk).decode("ascii")
+
+
 # ============== cXML/TwiML Endpoint ==============
 def _hangup_response() -> Response:
     twiml = '<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>'
     return Response(content=twiml, media_type="application/xml")
+
+
+def _create_realtime_session_service() -> AIRealtimeSessionService | None:
+    try:
+        return AIRealtimeSessionService()
+    except Exception as exc:
+        logger.warning("AI realtime session service unavailable: %s", exc)
+        return None
 
 
 def _build_transfer_block(campaign: Campaign, transfer_number: str) -> str:
@@ -320,6 +358,267 @@ async def ai_runtime_audio(campaign_number_id: int, audio_token: str):
     if not audio_bytes:
         raise HTTPException(status_code=404, detail="Audio not found")
     return Response(content=audio_bytes, media_type="audio/mpeg")
+
+
+@router.get("/ai-realtime/twiml/{campaign_number_id}")
+@router.post("/ai-realtime/twiml/{campaign_number_id}")
+async def ai_realtime_twiml(campaign_number_id: int, token: str = ""):
+    session_service = _create_realtime_session_service()
+    if session_service is None:
+        update_campaign_number_ai_observability(
+            campaign_number_id,
+            ai_runtime_error="[media_bridge] Realtime session backend unavailable",
+        )
+        return _ai_runtime_hangup_response()
+    session = session_service.get_session(campaign_number_id)
+    if not session:
+        update_campaign_number_ai_observability(
+            campaign_number_id,
+            ai_runtime_error="[media_bridge] Realtime session missing in Redis",
+        )
+        return _ai_runtime_hangup_response()
+
+    token = str(token or "").strip()
+    session_token = str(session.get("auth_token") or "").strip()
+    if token and token != session_token:
+        update_campaign_number_ai_observability(
+            campaign_number_id,
+            ai_runtime_error="[media_bridge] Callback token mismatch; using session token fallback",
+        )
+    if not session_token:
+        update_campaign_number_ai_observability(
+            campaign_number_id,
+            ai_runtime_error="[media_bridge] Realtime session token missing",
+        )
+        return _ai_runtime_hangup_response()
+
+    twiml = build_ai_realtime_stream_twiml(campaign_number_id, session_token)
+    return Response(content=twiml, media_type="application/xml")
+
+
+@router.get("/ai-realtime/session/{campaign_number_id}/health")
+async def ai_realtime_session_health(campaign_number_id: int):
+    session_service = _create_realtime_session_service()
+    if session_service is None:
+        raise HTTPException(status_code=503, detail="Realtime session backend unavailable")
+    session = session_service.get_session(campaign_number_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Realtime session not found")
+    return {
+        "campaign_number_id": campaign_number_id,
+        "status": session.get("status") or "unknown",
+        "turn_count": int(session.get("turn_count") or 0),
+        "error_category": session.get("error_category") or "",
+        "error_detail": session.get("error_detail") or "",
+    }
+
+
+@router.post("/ai-realtime/session/{campaign_number_id}/start")
+async def ai_realtime_session_start(campaign_number_id: int):
+    session_service = _create_realtime_session_service()
+    if session_service is None:
+        raise HTTPException(status_code=503, detail="Realtime session backend unavailable")
+    session = session_service.get_session(campaign_number_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Realtime session not found")
+    session_service.update_session(campaign_number_id, status="starting")
+    bus = AsyncAIRealtimeEventBus()
+    try:
+        await bus.publish(campaign_number_id, "session.started", {"source": "api_start"})
+    finally:
+        await bus.close()
+    return {"ok": True}
+
+
+@router.post("/ai-realtime/session/{campaign_number_id}/stop")
+async def ai_realtime_session_stop(campaign_number_id: int):
+    session_service = _create_realtime_session_service()
+    if session_service is None:
+        raise HTTPException(status_code=503, detail="Realtime session backend unavailable")
+    if not session_service.get_session(campaign_number_id):
+        raise HTTPException(status_code=404, detail="Realtime session not found")
+    session_service.end_session(campaign_number_id, status="stopped")
+    bus = AsyncAIRealtimeEventBus()
+    try:
+        await bus.publish(campaign_number_id, "session.ended", {"source": "api_stop"})
+    finally:
+        await bus.close()
+    return {"ok": True}
+
+
+@router.websocket("/ai-realtime/ws/{campaign_number_id}")
+@router.websocket("/ai-realtime/ws/{campaign_number_id}/{token}")
+async def ai_realtime_ws(websocket: WebSocket, campaign_number_id: int, token: str = ""):
+    if AsyncRedis is None:
+        await websocket.close(code=1011)
+        return
+
+    token = token or str(websocket.query_params.get("token") or "")
+    session_service = _create_realtime_session_service()
+    if session_service is None:
+        await websocket.close(code=1011)
+        return
+    if not session_service.validate_auth_token(campaign_number_id, token):
+        update_campaign_number_ai_observability(
+            campaign_number_id,
+            ai_runtime_error="[media_bridge] Realtime WS auth token rejected",
+        )
+        await websocket.close(code=4401)
+        return
+
+    await websocket.accept()
+    bus = AsyncAIRealtimeEventBus()
+    redis = AsyncRedis.from_url(settings.REDIS_URL, decode_responses=True)
+    channel = realtime_channel(campaign_number_id)
+    pubsub = redis.pubsub(ignore_subscribe_messages=True)
+    await pubsub.subscribe(channel)
+    stop_event = asyncio.Event()
+    stream_sid = ""
+    pending_outbound_audio: list[str] = []
+
+    async def forward_outbound_media():
+        nonlocal stream_sid, pending_outbound_audio
+        try:
+            while not stop_event.is_set():
+                message = await pubsub.get_message(timeout=1.0)
+                if not message:
+                    await asyncio.sleep(0.05)
+                    continue
+                raw = str(message.get("data") or "")
+                if not raw:
+                    continue
+                event = AIRealtimeEvent.from_json(raw)
+                if event.event == "media.outbound":
+                    audio = str((event.payload or {}).get("audio") or "")
+                    if not audio:
+                        continue
+                    if not stream_sid:
+                        pending_outbound_audio.append(audio)
+                        # Keep memory bounded if stream start is delayed.
+                        if len(pending_outbound_audio) > 200:
+                            del pending_outbound_audio[:-200]
+                        continue
+                    chunks = list(_iter_twilio_media_chunks(audio))
+                    if not chunks:
+                        update_campaign_number_ai_observability(
+                            campaign_number_id,
+                            ai_runtime_error="[media_bridge] OpenAI audio delta was not valid base64 audio",
+                        )
+                        continue
+                    for payload in chunks:
+                        await websocket.send_text(
+                            json.dumps(
+                                {
+                                    "event": "media",
+                                    "streamSid": stream_sid,
+                                    "media": {"payload": payload},
+                                }
+                            )
+                        )
+                elif event.event == "assistant.response":
+                    text = str((event.payload or {}).get("text") or "")
+                    if text:
+                        update_campaign_number_ai_observability(
+                            campaign_number_id,
+                            ai_last_assistant_text=text[:500],
+                        )
+                elif event.event == "tool.transfer_call":
+                    reason = str((event.payload or {}).get("reason") or "")
+                    update_campaign_number_ai_observability(
+                        campaign_number_id,
+                        ai_handoff_reason=reason[:500] if reason else None,
+                    )
+                elif event.event == "session.error":
+                    category = str((event.payload or {}).get("category") or "").strip()
+                    detail = str((event.payload or {}).get("detail") or "").strip()
+                    error_message = f"[{category}] {detail}" if category else detail
+                    update_campaign_number_ai_observability(
+                        campaign_number_id,
+                        ai_runtime_error=error_message[:500],
+                    )
+        except Exception as exc:
+            logger.error(
+                "AI realtime outbound media forwarder failed for campaign_number_id=%s: %s",
+                campaign_number_id,
+                exc,
+                exc_info=True,
+            )
+            update_campaign_number_ai_observability(
+                campaign_number_id,
+                ai_runtime_error=f"[media_bridge] Outbound media forwarder crashed: {str(exc)[:420]}",
+            )
+            stop_event.set()
+
+    outbound_task = asyncio.create_task(forward_outbound_media())
+
+    try:
+        while True:
+            raw_message = await websocket.receive_text()
+            data = json.loads(raw_message or "{}")
+            event_type = str(data.get("event") or "").lower()
+            if event_type == "start":
+                start = data.get("start") or {}
+                stream_sid = str(start.get("streamSid") or data.get("streamSid") or "")
+                if stream_sid:
+                    session_service.set_stream_sid(campaign_number_id, stream_sid)
+                    if pending_outbound_audio:
+                        buffered_audio = list(pending_outbound_audio)
+                        pending_outbound_audio.clear()
+                        for audio in buffered_audio:
+                            chunks = list(_iter_twilio_media_chunks(audio))
+                            if not chunks:
+                                continue
+                            for payload in chunks:
+                                await websocket.send_text(
+                                    json.dumps(
+                                        {
+                                            "event": "media",
+                                            "streamSid": stream_sid,
+                                            "media": {"payload": payload},
+                                        }
+                                    )
+                                )
+                                # Twilio media streams are more stable with paced 20ms chunks.
+                                await asyncio.sleep(0.02)
+                session_service.update_session(campaign_number_id, status="streaming")
+                await bus.publish(
+                    campaign_number_id,
+                    "session.started",
+                    {"source": "provider_ws", "stream_sid": stream_sid},
+                )
+            elif event_type == "media":
+                media = data.get("media") or {}
+                payload = str(media.get("payload") or "")
+                if payload:
+                    await bus.publish(
+                        campaign_number_id,
+                        "media.inbound",
+                        {"audio": payload},
+                    )
+            elif event_type == "stop":
+                await bus.publish(
+                    campaign_number_id,
+                    "session.ended",
+                    {"source": "provider_ws_stop"},
+                )
+                session_service.end_session(campaign_number_id, status="ended")
+                break
+    except WebSocketDisconnect:
+        session_service.end_session(campaign_number_id, status="disconnected")
+        await bus.publish(campaign_number_id, "session.ended", {"source": "ws_disconnect"})
+    finally:
+        stop_event.set()
+        outbound_task.cancel()
+        try:
+            await pubsub.unsubscribe(channel)
+            await pubsub.aclose()
+        except Exception:
+            pass
+        try:
+            await redis.aclose()
+        except Exception:
+            pass
+        await bus.close()
 
 
 @router.get("/stats", response_model=DashboardStats)

@@ -28,6 +28,7 @@ from app.routers import campaigns as campaigns_router_module
 from app.services.user_elevenlabs_service import upsert_user_elevenlabs_credentials
 from app.services.user_openai_service import upsert_user_openai_credentials
 from app.services.user_signalwire_service import upsert_user_signalwire_credentials
+from app.services.user_twilio_service import upsert_user_twilio_credentials
 
 
 class AICampaignRouteTests(unittest.TestCase):
@@ -101,7 +102,8 @@ class AICampaignRouteTests(unittest.TestCase):
             space_url="example.signalwire.com",
         )
         upsert_user_openai_credentials(self.db, self.user.id, "sk-test-1234567890")
-        upsert_user_elevenlabs_credentials(self.db, self.user.id, "elevenlabs-key-1234567890")
+        upsert_user_elevenlabs_credentials(self.db, self.user.id, "elevenlabs-test-key")
+        upsert_user_twilio_credentials(self.db, self.user.id, "AC12345678901234567890123456789012", "twilio-token")
         self.db.commit()
 
         self.app = FastAPI()
@@ -205,6 +207,63 @@ class AICampaignRouteTests(unittest.TestCase):
             self.assertIsNotNone(refreshed.started_at)
         finally:
             db.close()
+
+    def test_create_ai_agent_campaign_with_twilio_provider(self):
+        response = self.client.post(
+            "/campaigns/create",
+            data={
+                "name": "AI Campaign Twilio",
+                "caller_id_id": str(self.caller_id.id),
+                "campaign_mode": CampaignMode.AI_AGENT.value,
+                "ai_agent_id": str(self.ai_agent.id),
+                "voice_provider": VoiceProvider.TWILIO.value,
+                "max_concurrent_calls": "2",
+                "numbers_text": "+15551230001",
+            },
+            files={},
+            follow_redirects=False,
+        )
+        self.assertEqual(response.status_code, 302)
+
+        db = self.SessionLocal()
+        try:
+            campaign = db.query(Campaign).filter(Campaign.name == "AI Campaign Twilio").first()
+            self.assertIsNotNone(campaign)
+            self.assertEqual(campaign.voice_provider, VoiceProvider.TWILIO)
+        finally:
+            db.close()
+
+    def test_start_ai_agent_campaign_with_twilio_provider(self):
+        campaign = Campaign(
+            user_id=self.user.id,
+            name="Startable AI Campaign Twilio",
+            caller_id_id=self.caller_id.id,
+            country_id=self.country.id,
+            ai_agent_id=self.ai_agent.id,
+            audio_id=None,
+            campaign_mode=CampaignMode.AI_AGENT,
+            voice_provider=VoiceProvider.TWILIO,
+            press_1_to_talk_with_agent=False,
+            max_concurrent_calls=1,
+            status=CampaignStatus.DRAFT,
+            total_numbers=1,
+        )
+        self.db.add(campaign)
+        self.db.flush()
+        self.db.add(
+            CampaignNumber(
+                campaign_id=campaign.id,
+                phone_number="+15551239999",
+                status=CallStatus.PENDING,
+            )
+        )
+        self.db.commit()
+
+        response = self.client.post(
+            f"/campaigns/{campaign.id}/start",
+            follow_redirects=False,
+        )
+        self.assertEqual(response.status_code, 302)
 
     def test_campaign_numbers_endpoint_returns_ai_observability_fields(self):
         campaign = Campaign(
