@@ -99,6 +99,8 @@ def _ensure_campaign_audio_nullable(conn):
                 caller_id_id INTEGER NOT NULL,
                 country_id INTEGER NOT NULL,
                 audio_id INTEGER NULL,
+                ai_agent_id INTEGER NULL,
+                campaign_mode VARCHAR(20) NOT NULL DEFAULT 'audio',
                 status VARCHAR(20),
                 press_1_to_talk_with_agent BOOLEAN NOT NULL DEFAULT 0,
                 voice_provider VARCHAR(20) NOT NULL DEFAULT 'twilio',
@@ -114,7 +116,8 @@ def _ensure_campaign_audio_nullable(conn):
                 FOREIGN KEY(user_id) REFERENCES users(id),
                 FOREIGN KEY(caller_id_id) REFERENCES caller_ids(id),
                 FOREIGN KEY(country_id) REFERENCES countries(id),
-                FOREIGN KEY(audio_id) REFERENCES audios(id)
+                FOREIGN KEY(audio_id) REFERENCES audios(id),
+                FOREIGN KEY(ai_agent_id) REFERENCES ai_agents(id)
             )
             """
         )
@@ -124,13 +127,15 @@ def _ensure_campaign_audio_nullable(conn):
             """
             INSERT INTO campaigns_new (
                 id, user_id, name, caller_id_id, country_id, audio_id, status,
-                press_1_to_talk_with_agent, voice_provider, max_concurrent_calls,
+                ai_agent_id, campaign_mode, press_1_to_talk_with_agent,
+                voice_provider, max_concurrent_calls,
                 total_numbers, processed_numbers, successful_calls, failed_calls,
                 total_cost, created_at, started_at, completed_at
             )
             SELECT
                 id, user_id, name, caller_id_id, country_id, audio_id, status,
-                press_1_to_talk_with_agent, voice_provider, max_concurrent_calls,
+                ai_agent_id, campaign_mode, press_1_to_talk_with_agent,
+                voice_provider, max_concurrent_calls,
                 total_numbers, processed_numbers, successful_calls, failed_calls,
                 total_cost, created_at, started_at, completed_at
             FROM campaigns
@@ -143,6 +148,8 @@ def _ensure_campaign_audio_nullable(conn):
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_campaigns_id ON campaigns(id)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_campaigns_user_id ON campaigns(user_id)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_campaigns_status ON campaigns(status)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_campaigns_ai_agent_id ON campaigns(ai_agent_id)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_campaigns_campaign_mode ON campaigns(campaign_mode)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_campaigns_voice_provider ON campaigns(voice_provider)"))
     conn.execute(text("PRAGMA foreign_keys=ON"))
 

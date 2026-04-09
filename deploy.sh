@@ -27,6 +27,15 @@ DB_TMP=""
 APP_SERVICE="${APP_SERVICE:-coldcalls}"
 WORKER_SERVICE="${WORKER_SERVICE:-}"
 HAS_WORKER_SERVICE=1
+APP_HOST="${APP_HOST:-127.0.0.1}"
+APP_PORT="${APP_PORT:-8000}"
+NGINX_SERVER_NAME="${NGINX_SERVER_NAME:-18.231.196.243}"
+NGINX_SITE_NAME="${NGINX_SITE_NAME:-coldcalls}"
+CONFIGURE_NGINX="${CONFIGURE_NGINX:-1}"
+NGINX_AVAILABLE_PATH="/etc/nginx/sites-available/${NGINX_SITE_NAME}"
+NGINX_ENABLED_PATH="/etc/nginx/sites-enabled/${NGINX_SITE_NAME}"
+NGINX_TEMPLATE_PATH="${PROJECT_DIR}/deploy/nginx/coldcalls.conf.template"
+HAS_NGINX_CONFIG=0
 
 # Backup antes de atualizar código para evitar perda em reset.
 if [ -f "$DB_FILE" ]; then
@@ -66,6 +75,14 @@ fi
 echo "📦 Atualizando dependências..."
 python -m pip install -r requirements.txt --quiet
 
+if [ "$CONFIGURE_NGINX" = "1" ] && [ -f "$NGINX_TEMPLATE_PATH" ] && command -v nginx >/dev/null 2>&1; then
+    HAS_NGINX_CONFIG=1
+elif [ "$CONFIGURE_NGINX" = "1" ] && [ ! -f "$NGINX_TEMPLATE_PATH" ]; then
+    echo -e "${YELLOW}⚠️  Template do nginx não encontrado em ${NGINX_TEMPLATE_PATH}.${NC}"
+elif [ "$CONFIGURE_NGINX" = "1" ] && ! command -v nginx >/dev/null 2>&1; then
+    echo -e "${YELLOW}⚠️  nginx não detectado; pulando configuração web.${NC}"
+fi
+
 if [ -z "$WORKER_SERVICE" ]; then
     for candidate in coldcalls-worker coldcalls_worker worker coldcallsworker; do
         if systemctl list-unit-files "${candidate}.service" --no-legend 2>/dev/null | grep -q "${candidate}.service"; then
@@ -78,6 +95,23 @@ fi
 if [ -z "$WORKER_SERVICE" ]; then
     HAS_WORKER_SERVICE=0
     echo -e "${YELLOW}⚠️  Serviço do worker não detectado. Deploy seguirá apenas com app.${NC}"
+fi
+
+if [ "$HAS_NGINX_CONFIG" -eq 1 ]; then
+    echo "🌐 Atualizando configuração do nginx..."
+    TMP_NGINX_CONF="$(mktemp)"
+    sed \
+        -e "s|__SERVER_NAME__|${NGINX_SERVER_NAME}|g" \
+        -e "s|__APP_HOST__|${APP_HOST}|g" \
+        -e "s|__APP_PORT__|${APP_PORT}|g" \
+        -e "s|__PROJECT_DIR__|${PROJECT_DIR}|g" \
+        "$NGINX_TEMPLATE_PATH" > "$TMP_NGINX_CONF"
+
+    sudo -n install -m 644 "$TMP_NGINX_CONF" "$NGINX_AVAILABLE_PATH"
+    sudo -n ln -sfn "$NGINX_AVAILABLE_PATH" "$NGINX_ENABLED_PATH"
+    sudo -n nginx -t
+    sudo -n systemctl reload nginx
+    rm -f "$TMP_NGINX_CONF"
 fi
 
 echo "🔄 Reiniciando serviços..."
@@ -110,4 +144,7 @@ echo ""
 echo -e "${GREEN}Deploy concluído.${NC}"
 if [ -f "$BACKUP_FILE" ]; then
     echo "🗂️  Backup do banco: $BACKUP_FILE"
+fi
+if [ "$HAS_NGINX_CONFIG" -eq 1 ]; then
+    echo "🌍 App publicada em: http://${NGINX_SERVER_NAME}"
 fi

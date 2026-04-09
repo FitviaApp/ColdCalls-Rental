@@ -142,6 +142,38 @@ python worker.py
 
 O worker verifica campanhas `running` a cada 10 segundos.
 
+## Publicando com Nginx
+
+Se quiser expor a aplicacao pelo IP `http://18.231.196.243`, o repositorio agora inclui um template em `deploy/nginx/coldcalls.conf.template` e o `deploy.sh` publica essa configuracao automaticamente no servidor.
+
+Variaveis relevantes:
+
+```bash
+APP_HOST=127.0.0.1
+APP_PORT=8000
+NGINX_SERVER_NAME=18.231.196.243
+NGINX_SITE_NAME=coldcalls
+CONFIGURE_NGINX=1
+```
+
+Ao executar `./deploy.sh`, ele vai:
+
+1. atualizar o codigo
+2. instalar dependencias
+3. gerar `/etc/nginx/sites-available/coldcalls`
+4. criar o link em `/etc/nginx/sites-enabled/coldcalls`
+5. validar com `nginx -t`
+6. recarregar o `nginx`
+
+Exemplo de upstream esperado:
+
+```nginx
+server_name 18.231.196.243;
+proxy_pass http://127.0.0.1:8000;
+```
+
+Se quiser pular essa etapa em algum ambiente, use `CONFIGURE_NGINX=0`.
+
 ## Fluxo de uso
 
 1. Acesse `http://localhost:8000`.
