@@ -3,7 +3,7 @@ Authentication Router - Login, Register, Logout
 """
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
+from app.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from app.auth import create_access_token, verify_password
