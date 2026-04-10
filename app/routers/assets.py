@@ -8,12 +8,12 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, Form, Request, UploadFile, File, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.dependencies import require_active_rental
 from app.models import User, CallerID, Audio, Campaign, CampaignStatus, VoxCallerIDVerificationStatus
+from app.templating import Jinja2Templates
 from app.services.r2_service import r2_service
 from app.services.user_voximplant_service import get_user_voximplant_credentials
 from app.services.voximplant_management_service import (

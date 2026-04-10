@@ -5,7 +5,6 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -18,6 +17,7 @@ from app.models import (
     CampaignStatus,
     User,
 )
+from app.templating import Jinja2Templates
 from app.services.ai_agent_service import (
     DEFAULT_AI_AGENT_LANGUAGE,
     DEFAULT_AI_AGENT_MODEL,

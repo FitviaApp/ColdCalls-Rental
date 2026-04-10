@@ -5,7 +5,6 @@ import re
 
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -13,6 +12,7 @@ from app.auth import hash_password, verify_password
 from app.database import get_db
 from app.dependencies import get_current_user, require_active_rental
 from app.models import User, Campaign, CampaignNumber, CampaignStatus, CampaignMode, AIAgent
+from app.templating import Jinja2Templates
 from app.services.rental_service import get_active_rental
 from app.services.user_telnyx_service import (
     has_user_telnyx_credentials,

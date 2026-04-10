@@ -5,13 +5,13 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, Form, Request, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.database import get_db
 from app.dependencies import get_current_user
 from app.models import User, PaymentStatus, RentalPlan, RentalPayment
+from app.templating import Jinja2Templates
 from app.services.payment_service import payment_service
 from app.services.rental_service import get_active_rental, get_active_plan, activate_or_extend_rental
 

@@ -6,7 +6,6 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, Form, Request, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from app.auth import hash_password
@@ -17,6 +16,7 @@ from app.models import (
     User, CallerID, Country, Audio, Campaign,
     PaymentStatus, RentalPlan, RentalPayment
 )
+from app.templating import Jinja2Templates
 from app.services.rental_service import get_active_rental, add_paid_days
 
 router = APIRouter(prefix="/admin", tags=["admin"])
