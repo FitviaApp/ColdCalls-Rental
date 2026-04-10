@@ -2,6 +2,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -27,7 +28,6 @@ from app.routers import api as api_router_module
 from app.routers import campaigns as campaigns_router_module
 from app.services.user_elevenlabs_service import upsert_user_elevenlabs_credentials
 from app.services.user_openai_service import upsert_user_openai_credentials
-from app.services.user_signalwire_service import upsert_user_signalwire_credentials
 from app.services.user_twilio_service import upsert_user_twilio_credentials
 
 
@@ -94,13 +94,6 @@ class AICampaignRouteTests(unittest.TestCase):
         self.db.add(self.ai_agent)
         self.db.flush()
 
-        upsert_user_signalwire_credentials(
-            self.db,
-            self.user.id,
-            project_id="project",
-            api_token="token",
-            space_url="example.signalwire.com",
-        )
         upsert_user_openai_credentials(self.db, self.user.id, "sk-test-1234567890")
         upsert_user_elevenlabs_credentials(self.db, self.user.id, "elevenlabs-test-key")
         upsert_user_twilio_credentials(self.db, self.user.id, "AC12345678901234567890123456789012", "twilio-token")
@@ -130,15 +123,23 @@ class AICampaignRouteTests(unittest.TestCase):
 
         self.original_worker_check = campaigns_router_module._is_worker_online
         campaigns_router_module._is_worker_online = lambda max_age_seconds=60: True
+        self.original_ai_readiness = campaigns_router_module.get_ai_campaign_readiness
+        campaigns_router_module.get_ai_campaign_readiness = lambda *args, **kwargs: SimpleNamespace(
+            ok=True,
+            error=None,
+            schema_ready=True,
+            missing_schema_items=(),
+        )
 
     def tearDown(self):
         campaigns_router_module._is_worker_online = self.original_worker_check
+        campaigns_router_module.get_ai_campaign_readiness = self.original_ai_readiness
         self.client.close()
         self.db.close()
         self.engine.dispose()
         self.tmpdir.cleanup()
 
-    def test_create_ai_agent_campaign(self):
+    def test_create_ai_agent_campaign_rejects_signalwire_provider(self):
         response = self.client.post(
             "/campaigns/create",
             data={
@@ -154,20 +155,17 @@ class AICampaignRouteTests(unittest.TestCase):
             follow_redirects=False,
         )
 
-        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("currently require Twilio", response.text)
 
         db = self.SessionLocal()
         try:
             campaign = db.query(Campaign).filter(Campaign.name == "AI Campaign").first()
-            self.assertIsNotNone(campaign)
-            self.assertEqual(campaign.campaign_mode, CampaignMode.AI_AGENT)
-            self.assertEqual(campaign.ai_agent_id, self.ai_agent.id)
-            self.assertIsNone(campaign.audio_id)
-            self.assertEqual(campaign.total_numbers, 2)
+            self.assertIsNone(campaign)
         finally:
             db.close()
 
-    def test_start_ai_agent_campaign(self):
+    def test_start_ai_agent_campaign_rejects_signalwire_provider(self):
         campaign = Campaign(
             user_id=self.user.id,
             name="Startable AI Campaign",
@@ -198,13 +196,17 @@ class AICampaignRouteTests(unittest.TestCase):
             follow_redirects=False,
         )
 
-        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.json()["detail"],
+            "AI agent campaigns currently require Twilio as the voice provider.",
+        )
 
         db = self.SessionLocal()
         try:
             refreshed = db.query(Campaign).filter(Campaign.id == campaign.id).first()
-            self.assertEqual(refreshed.status, CampaignStatus.RUNNING)
-            self.assertIsNotNone(refreshed.started_at)
+            self.assertEqual(refreshed.status, CampaignStatus.DRAFT)
+            self.assertIsNone(refreshed.started_at)
         finally:
             db.close()
 
@@ -264,6 +266,7 @@ class AICampaignRouteTests(unittest.TestCase):
             follow_redirects=False,
         )
         self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.headers["location"], f"/campaigns/{campaign.id}")
 
     def test_campaign_numbers_endpoint_returns_ai_observability_fields(self):
         campaign = Campaign(
@@ -319,6 +322,26 @@ class AICampaignRouteTests(unittest.TestCase):
         self.assertIn("application/xml", response.headers["content-type"])
         self.assertIn("<Say>Hello</Say>", response.text)
 
+    def test_ai_realtime_twiml_endpoint_returns_stream_xml(self):
+        original_factory = api_router_module._create_realtime_session_service
+
+        class FakeSessionService:
+            def get_session(self, campaign_number_id):
+                if campaign_number_id == 999:
+                    return {"auth_token": "session-token"}
+                return None
+
+        api_router_module._create_realtime_session_service = lambda: FakeSessionService()
+        try:
+            response = self.client.get("/api/ai-realtime/twiml/999?token=session-token")
+        finally:
+            api_router_module._create_realtime_session_service = original_factory
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("application/xml", response.headers["content-type"])
+        self.assertIn("<Stream", response.text)
+        self.assertIn("/api/ai-realtime/ws/999/session-token", response.text)
+
     def test_ai_runtime_gather_uses_speech_result_for_ai_campaign(self):
         campaign = Campaign(
             user_id=self.user.id,
@@ -328,7 +351,7 @@ class AICampaignRouteTests(unittest.TestCase):
             ai_agent_id=self.ai_agent.id,
             audio_id=None,
             campaign_mode=CampaignMode.AI_AGENT,
-            voice_provider=VoiceProvider.SIGNALWIRE,
+            voice_provider=VoiceProvider.TWILIO,
             press_1_to_talk_with_agent=False,
             max_concurrent_calls=1,
             status=CampaignStatus.RUNNING,

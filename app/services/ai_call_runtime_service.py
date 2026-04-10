@@ -1,12 +1,12 @@
 """
 AI runtime service for AI-agent campaigns.
 
-Active path (legacy):
-- Telephony answer URL -> /api/ai-runtime/twiml/{campaign_number_id}
-- Turn-based loop (Gather -> OpenAI Chat -> ElevenLabs TTS -> Play/Gather)
+Primary path:
+- Twilio call launch -> /api/ai-realtime/twiml/{campaign_number_id}
+- Twilio Media Streams websocket -> OpenAI Realtime -> ElevenLabs TTS
 
-Realtime helpers/endpoints are kept for compatibility but are no longer the
-operational path for AI campaigns.
+Legacy /api/ai-runtime/* helpers remain only as compatibility surface for
+older sessions and tests.
 """
 from __future__ import annotations
 
@@ -27,6 +27,8 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.database import SessionLocal
 from app.models import AIAgent, CampaignMode, CampaignNumber
+from app.services.ai_realtime_bridge_worker import AIRealtimeBridgeWorker
+from app.services.ai_realtime_session_service import AIRealtimeSessionService
 from app.services.signalwire_service import SignalWireService
 from app.services.twilio_service import TwilioService
 from app.services.user_elevenlabs_service import get_user_elevenlabs_credentials
@@ -138,11 +140,12 @@ def update_campaign_number_ai_observability(campaign_number_id: int, **updates) 
 class AICallRuntimeService:
     """AI-agent runtime facade used by campaign worker."""
 
-    def __init__(self, db: Session, user_id: int, provider: str = "signalwire"):
+    def __init__(self, db: Session, user_id: int, provider: str = "twilio"):
         self.db = db
         self.user_id = user_id
         self.provider = (provider or "signalwire").strip().lower()
-        self.handoff_via_event_bus = False
+        self.handoff_via_event_bus = self.provider == "twilio"
+        self.realtime_sessions: AIRealtimeSessionService | None = None
 
         openai_api_key, openai_org_id = get_user_openai_credentials(db, user_id)
         if not openai_api_key:
@@ -166,6 +169,7 @@ class AICallRuntimeService:
             if not account_sid or not auth_token:
                 raise ValueError("Twilio credentials not configured")
             self.call_service = TwilioService(account_sid=account_sid, auth_token=auth_token)
+            self.realtime_sessions = AIRealtimeSessionService()
         else:
             raise ValueError(f"Unsupported AI runtime provider: {self.provider}")
 
@@ -191,6 +195,40 @@ class AICallRuntimeService:
         if not campaign_number_id:
             raise ValueError("AI runtime requires campaign_number_id metadata")
 
+        if self.provider == "twilio":
+            realtime_session, agent = self._create_realtime_session(
+                campaign_number_id=campaign_number_id,
+                transfer_number=transfer_number,
+                from_number=from_number,
+                to_number=to_number,
+                campaign_id=campaign_id,
+            )
+            self._start_realtime_bridge(campaign_number_id, agent)
+            answer_url = (
+                f"{settings.BASE_URL.rstrip('/')}/api/ai-realtime/twiml/"
+                f"{campaign_number_id}?token={realtime_session['auth_token']}"
+            )
+            make_call_kwargs: dict[str, Any] = {
+                "to_number": to_number,
+                "from_number": from_number,
+                "audio_url": None,
+                "transfer_number": transfer_number,
+                "campaign_id": campaign_id,
+                "timeout": timeout,
+                "metadata": metadata,
+                "answer_url": answer_url,
+                "enable_machine_detection": False,
+            }
+            try:
+                result = self.call_service.make_call(**make_call_kwargs)
+            except Exception:
+                cleanup_ai_runtime_artifacts(campaign_number_id)
+                raise
+            if self.realtime_sessions:
+                self.realtime_sessions.set_call_sid(campaign_number_id, str(result.get("call_sid") or ""))
+                self.realtime_sessions.update_session(campaign_number_id, status="dialing")
+            return result
+
         self._create_runtime_session(
             campaign_number_id=campaign_number_id,
             transfer_number=transfer_number,
@@ -200,7 +238,7 @@ class AICallRuntimeService:
         )
 
         answer_url = f"{settings.BASE_URL.rstrip('/')}/api/ai-runtime/twiml/{campaign_number_id}"
-        make_call_kwargs: dict[str, Any] = {
+        make_call_kwargs = {
             "to_number": to_number,
             "from_number": from_number,
             "audio_url": None,
@@ -218,6 +256,87 @@ class AICallRuntimeService:
 
     def update_call_twiml(self, call_sid: str, twiml: str) -> None:
         self.call_service.update_call_twiml(call_sid, twiml)
+
+    def _create_realtime_session(
+        self,
+        *,
+        campaign_number_id: int,
+        transfer_number: str,
+        from_number: str,
+        to_number: str,
+        campaign_id: int | None,
+    ) -> tuple[dict[str, Any], AIAgent]:
+        if self.provider != "twilio":
+            raise ValueError("Realtime AI runtime currently supports Twilio only")
+        if self.realtime_sessions is None:
+            raise ValueError("Realtime session service is not available")
+
+        number = self.db.query(CampaignNumber).filter(CampaignNumber.id == campaign_number_id).first()
+        if not number or not number.campaign:
+            raise ValueError("Campaign number not found for AI runtime")
+
+        campaign = number.campaign
+        if campaign.campaign_mode != CampaignMode.AI_AGENT:
+            raise ValueError("Campaign is not in AI agent mode")
+
+        if campaign_id and int(campaign.id) != int(campaign_id):
+            raise ValueError("Campaign mismatch for AI runtime session")
+
+        agent = campaign.ai_agent
+        if not agent or not agent.is_active:
+            raise ValueError("AI agent is not available")
+
+        session_payload = self.realtime_sessions.create_session(
+            campaign_number_id=campaign_number_id,
+            campaign_id=int(campaign.id),
+            user_id=int(campaign.user_id),
+            ai_agent_id=int(agent.id),
+            provider=self.provider,
+            agent_name=str(agent.name or "").strip(),
+            agent_language=str(agent.language or "en").strip().lower(),
+            model=str(agent.model or settings.OPENAI_DEFAULT_MODEL).strip(),
+            voice_id=str(agent.voice_id or "").strip(),
+            temperature=float(agent.temperature or 0.7),
+            handoff_description=str(agent.handoff_description or "").strip(),
+            from_number=str(from_number or "").strip(),
+            to_number=str(to_number or "").strip(),
+            transfer_number=str(transfer_number or "").strip(),
+        )
+
+        update_campaign_number_ai_observability(
+            campaign_number_id,
+            ai_turn_count=0,
+            ai_no_input_turns=0,
+            ai_last_user_input=None,
+            ai_last_assistant_text=None,
+            ai_handoff_reason=None,
+            ai_runtime_error=None,
+        )
+        return session_payload, agent
+
+    def _start_realtime_bridge(self, campaign_number_id: int, agent: AIAgent) -> None:
+        existing = _bridge_threads.pop(campaign_number_id, None)
+        if existing:
+            bridge, _thread = existing
+            try:
+                bridge.stop()
+            except Exception:
+                pass
+
+        bridge = AIRealtimeBridgeWorker(
+            campaign_number_id=campaign_number_id,
+            agent=agent,
+            openai_api_key=self.openai_api_key,
+            openai_org_id=self.openai_org_id,
+            elevenlabs_api_key=self.elevenlabs_api_key,
+        )
+        thread = threading.Thread(
+            target=bridge.run,
+            daemon=True,
+            name=f"ai-rt-bridge-{campaign_number_id}",
+        )
+        _bridge_threads[campaign_number_id] = (bridge, thread)
+        thread.start()
 
     def build_initial_twiml(self, campaign_number_id: int) -> str:
         session = self._read_session(campaign_number_id)
@@ -867,6 +986,11 @@ def cleanup_ai_runtime_artifacts(campaign_number_id: int) -> None:
             bridge.stop()
         except Exception:
             pass
+
+    try:
+        AIRealtimeSessionService().delete_session(campaign_number_id)
+    except Exception:
+        pass
 
     session_path = AI_RUNTIME_DIR / f"{campaign_number_id}.json"
     if session_path.exists():

@@ -29,6 +29,38 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def get_redis_health(redis_url: str | None = None) -> dict[str, Any]:
+    if Redis is None:
+        return {
+            "available": False,
+            "detail": "redis package is not installed",
+        }
+
+    target_url = redis_url or settings.REDIS_URL
+    try:
+        client = Redis.from_url(target_url, decode_responses=True)
+        try:
+            client.ping()
+        finally:
+            try:
+                client.close()
+            except Exception:
+                pass
+        return {
+            "available": True,
+            "detail": "",
+        }
+    except Exception as exc:
+        return {
+            "available": False,
+            "detail": str(exc)[:500],
+        }
+
+
+def is_redis_available(redis_url: str | None = None) -> bool:
+    return bool(get_redis_health(redis_url).get("available"))
+
+
 class AIRealtimeSessionService:
     def __init__(self, redis_url: str | None = None):
         if Redis is None:
@@ -46,6 +78,13 @@ class AIRealtimeSessionService:
         from_number: str,
         to_number: str,
         transfer_number: str,
+        provider: str = "twilio",
+        agent_name: str = "",
+        agent_language: str = "",
+        model: str = "",
+        voice_id: str = "",
+        temperature: float = 0.7,
+        handoff_description: str = "",
     ) -> dict[str, Any]:
         now_ms = int(time.time() * 1000)
         session = {
@@ -55,6 +94,13 @@ class AIRealtimeSessionService:
             "campaign_id": int(campaign_id),
             "user_id": int(user_id),
             "ai_agent_id": int(ai_agent_id),
+            "provider": str(provider or "twilio").strip().lower(),
+            "agent_name": str(agent_name or "").strip(),
+            "agent_language": str(agent_language or "").strip().lower(),
+            "model": str(model or "").strip(),
+            "voice_id": str(voice_id or "").strip(),
+            "temperature": float(temperature or 0.7),
+            "handoff_description": str(handoff_description or "").strip(),
             "from_number": str(from_number or "").strip(),
             "to_number": str(to_number or "").strip(),
             "transfer_number": str(transfer_number or "").strip(),
@@ -129,3 +175,9 @@ class AIRealtimeSessionService:
 
     def end_session(self, campaign_number_id: int, status: str = "ended") -> dict[str, Any] | None:
         return self.update_session(campaign_number_id, status=status)
+
+    def delete_session(self, campaign_number_id: int) -> None:
+        try:
+            self.redis.delete(_session_key(campaign_number_id))
+        except Exception:
+            pass

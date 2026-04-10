@@ -3,12 +3,14 @@ import sqlite3
 import subprocess
 import tempfile
 import unittest
+import asyncio
 from pathlib import Path
 
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import sessionmaker
 
 import app.database as database_module
+import app.main as main_module
 
 
 class RuntimeHardeningTests(unittest.TestCase):
@@ -169,3 +171,37 @@ class RuntimeHardeningTests(unittest.TestCase):
             )
 
         self.assertEqual(result.stdout.strip(), f"{python_bin} worker.py")
+
+    def test_health_is_degraded_when_redis_is_unavailable(self):
+        original_schema = main_module.get_ai_schema_health
+        original_worker = main_module.get_worker_health
+        original_redis = main_module.get_redis_health
+        try:
+            main_module.get_ai_schema_health = lambda: {"ready": True, "missing_items": ()}
+            main_module.get_worker_health = lambda: {"online": True, "age_seconds": 1}
+            main_module.get_redis_health = lambda: {"available": False, "detail": "connection refused"}
+            payload = asyncio.run(main_module.health())
+        finally:
+            main_module.get_ai_schema_health = original_schema
+            main_module.get_worker_health = original_worker
+            main_module.get_redis_health = original_redis
+
+        self.assertEqual(payload["status"], "degraded")
+        self.assertFalse(payload["redis"]["available"])
+
+    def test_health_is_healthy_when_schema_worker_and_redis_are_ready(self):
+        original_schema = main_module.get_ai_schema_health
+        original_worker = main_module.get_worker_health
+        original_redis = main_module.get_redis_health
+        try:
+            main_module.get_ai_schema_health = lambda: {"ready": True, "missing_items": ()}
+            main_module.get_worker_health = lambda: {"online": True, "age_seconds": 1}
+            main_module.get_redis_health = lambda: {"available": True, "detail": "ok"}
+            payload = asyncio.run(main_module.health())
+        finally:
+            main_module.get_ai_schema_health = original_schema
+            main_module.get_worker_health = original_worker
+            main_module.get_redis_health = original_redis
+
+        self.assertEqual(payload["status"], "healthy")
+        self.assertTrue(payload["redis"]["available"])

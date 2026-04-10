@@ -10,6 +10,7 @@ from app.templating import Jinja2Templates
 from app.config import get_settings
 from app.database import init_db
 from app.services.ai_campaign_readiness_service import get_ai_schema_health
+from app.services.ai_realtime_session_service import get_redis_health
 from app.services.worker_health_service import get_worker_health
 
 settings = get_settings()
@@ -100,13 +101,15 @@ async def health():
     """Health check endpoint"""
     schema_health = get_ai_schema_health()
     worker_health = get_worker_health()
+    redis_health = get_redis_health()
     overall_status = "healthy"
-    if not schema_health["ready"] or not worker_health["online"]:
+    if not schema_health["ready"] or not worker_health["online"] or not redis_health["available"]:
         overall_status = "degraded"
     return {
         "status": overall_status,
         "schema": schema_health,
         "worker": worker_health,
+        "redis": redis_health,
     }
 
 

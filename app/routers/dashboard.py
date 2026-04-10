@@ -14,6 +14,7 @@ from app.database import get_db
 from app.dependencies import get_current_user, require_active_rental
 from app.models import User, Campaign, CampaignNumber, CampaignStatus, CampaignMode, AIAgent
 from app.services.ai_campaign_readiness_service import get_ai_schema_health
+from app.services.ai_realtime_session_service import get_redis_health
 from app.services.rental_service import get_active_rental
 from app.services.user_telnyx_service import (
     has_user_telnyx_credentials,
@@ -148,6 +149,12 @@ async def dashboard(
                 ).scalar() or 0.0
             ),
         }
+    latest_ai_runtime_error = None
+    if ai_campaign_ids:
+        latest_ai_runtime_error = db.query(CampaignNumber.ai_runtime_error).filter(
+            CampaignNumber.campaign_id.in_(ai_campaign_ids),
+            CampaignNumber.ai_runtime_error.isnot(None),
+        ).order_by(CampaignNumber.processed_at.desc(), CampaignNumber.id.desc()).scalar()
     ai_agents_total = db.query(func.count(AIAgent.id)).filter(AIAgent.user_id == user.id).scalar() or 0
     active_ai_agents_total = db.query(func.count(AIAgent.id)).filter(
         AIAgent.user_id == user.id,
@@ -174,6 +181,7 @@ async def dashboard(
 
     worker_health = get_worker_health()
     ai_schema_health = get_ai_schema_health(db.get_bind())
+    redis_health = get_redis_health()
 
     stats = {
         "total_campaigns": len(all_campaigns),
@@ -193,6 +201,8 @@ async def dashboard(
         "worker_online": bool(worker_health.get("online")),
         "worker_age_seconds": worker_health.get("age_seconds"),
         "worker_last_heartbeat_at": worker_health.get("last_heartbeat_at"),
+        "redis_available": bool(redis_health.get("available")),
+        "redis_detail": redis_health.get("detail"),
         "ai_schema_ready": bool(ai_schema_health["ready"]),
         "ai_schema_missing_items": list(ai_schema_health["missing_items"]),
         "twilio_balance": twilio_balance,
@@ -206,6 +216,7 @@ async def dashboard(
         "ai_runtime_errors": ai_runtime_totals["errors"],
         "ai_runtime_silent_turns": ai_runtime_totals["silent_turns"],
         "ai_runtime_avg_turns": ai_runtime_totals["avg_turns"],
+        "latest_ai_runtime_error": latest_ai_runtime_error,
     }
     active_rental = get_active_rental(db, user.id)
     stats["rental_active"] = bool(active_rental)

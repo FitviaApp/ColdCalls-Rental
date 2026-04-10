@@ -323,10 +323,12 @@
                                 The transfer tool execution failed during the call.
                                 {% elif 'OpenAI request failed' in ai_runtime_summary.last_runtime_error %}
                                 OpenAI did not respond successfully after retries.
-                                {% elif 'OpenAI TTS request failed' in ai_runtime_summary.last_runtime_error %}
-                                OpenAI did not return voice audio after retries.
-                                {% elif 'SignalWire' in ai_runtime_summary.last_runtime_error %}
-                                SignalWire could not complete the live call flow.
+                                {% elif 'ElevenLabs' in ai_runtime_summary.last_runtime_error %}
+                                ElevenLabs could not synthesize realtime voice audio.
+                                {% elif 'Redis' in ai_runtime_summary.last_runtime_error %}
+                                Redis was unavailable for the realtime session registry.
+                                {% elif 'Twilio' in ai_runtime_summary.last_runtime_error %}
+                                Twilio could not complete the realtime call flow.
                                 {% else %}
                                 the runtime hit an operational error and the call was stopped.
                                 {% endif %}
@@ -441,9 +443,9 @@ function campaignDetail() {
                 return detail ? `Transfer tool execution failed: ${detail}` : 'Transfer tool execution failed';
             }
             if (normalized.includes('openai request failed')) return 'OpenAI did not respond successfully after retries';
-            if (normalized.includes('openai tts request failed')) return 'OpenAI did not return voice audio after retries';
             if (normalized.includes('elevenlabs')) return `ElevenLabs voice issue: ${value}`;
-            if (normalized.includes('signalwire')) return 'SignalWire could not complete the call flow';
+            if (normalized.includes('redis')) return `Redis session issue: ${value}`;
+            if (normalized.includes('twilio')) return 'Twilio could not complete the realtime call flow';
             return value;
         },
         statusBadgeClass(status) {

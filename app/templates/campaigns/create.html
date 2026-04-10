@@ -32,7 +32,7 @@
 
     {% if not ai_runtime_configured %}
     <div class="mb-6 bg-blue-50 border border-blue-200 text-blue-800 px-4 py-3 rounded">
-        To run AI agent campaigns, configure Twilio or SignalWire, OpenAI, and ElevenLabs in
+        To run AI agent campaigns, configure Twilio, OpenAI, and ElevenLabs in
         <a href="/dashboard/settings#openai" class="underline font-medium">Settings</a>.
     </div>
     {% endif %}
@@ -50,7 +50,7 @@
                         <option value="audio" {% if form.get('campaign_mode', 'audio') == 'audio' %}selected{% endif %}>Audio / transfer campaign</option>
                         <option value="ai_agent" {% if form.get('campaign_mode') == 'ai_agent' %}selected{% endif %}>AI agent campaign</option>
                     </select>
-                    <p class="mt-1 text-xs text-gray-500">Audio campaigns use recorded assets. AI agent campaigns use Twilio/SignalWire + OpenAI Chat + ElevenLabs voice and talk in English.</p>
+                    <p class="mt-1 text-xs text-gray-500">Audio campaigns use recorded assets. AI agent campaigns use Twilio Media Streams + OpenAI Realtime + ElevenLabs voice and talk in English.</p>
                 </div>
 
                 <div>
@@ -63,7 +63,7 @@
                         </option>
                         {% endfor %}
                     </select>
-                    <p class="mt-1 text-xs text-gray-500">Only configured providers are available.</p>
+                    <p class="mt-1 text-xs text-gray-500">AI agent campaigns currently support Twilio only.</p>
                 </div>
 
                 <div>
@@ -111,7 +111,7 @@
                         </option>
                         {% endfor %}
                     </select>
-                    <p class="mt-1 text-xs text-gray-500">AI agent campaigns will use the selected reusable prompt, OpenAI chat model, and ElevenLabs voice ID.</p>
+                    <p class="mt-1 text-xs text-gray-500">AI agent campaigns will use the selected reusable prompt, OpenAI realtime reasoning, and the agent's ElevenLabs voice ID.</p>
                 </div>
 
                 <div class="border rounded-md p-3 bg-gray-50" id="press1_section">
@@ -225,7 +225,7 @@
 
         for (const option of providerSelect.options) {
             if (aiMode) {
-                option.disabled = !['signalwire', 'twilio'].includes(option.value) || option.textContent.includes('(not configured)');
+                option.disabled = option.value !== 'twilio' || option.textContent.includes('(not configured)');
             } else if (option.textContent.includes('(not configured)')) {
                 option.disabled = true;
             } else {
@@ -234,9 +234,9 @@
         }
 
         if (aiMode) {
-            if (!['signalwire', 'twilio'].includes(providerSelect.value)) {
+            if (providerSelect.value !== 'twilio') {
                 const fallback = Array.from(providerSelect.options).find(
-                    (option) => ['signalwire', 'twilio'].includes(option.value) && !option.disabled
+                    (option) => option.value === 'twilio' && !option.disabled
                 );
                 if (fallback) {
                     providerSelect.value = fallback.value;

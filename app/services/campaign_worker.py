@@ -657,8 +657,8 @@ class CampaignWorker:
         provider = campaign.voice_provider.value if hasattr(campaign.voice_provider, "value") else str(campaign.voice_provider)
 
         if campaign.campaign_mode == CampaignMode.AI_AGENT:
-            if provider not in {VoiceProvider.SIGNALWIRE.value, VoiceProvider.TWILIO.value}:
-                raise ValueError("AI agent campaigns require Twilio or SignalWire")
+            if provider != VoiceProvider.TWILIO.value:
+                raise ValueError("AI agent campaigns currently require Twilio")
             if not campaign.ai_agent or not campaign.ai_agent.is_active:
                 raise ValueError("AI agent is not configured or inactive")
             readiness = get_ai_campaign_readiness(

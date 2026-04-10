@@ -5,7 +5,7 @@ Plataforma web para gerenciamento de campanhas de cold calls multiusuario com:
 - FastAPI + Jinja2
 - SQLAlchemy + SQLite
 - Twilio, SignalWire, Telnyx, Vonage e Voximplant
-- Agentes de IA reutilizaveis com Twilio/SignalWire + OpenAI Chat + ElevenLabs
+- Agentes de IA reutilizaveis com Twilio Media Streams + OpenAI Realtime + ElevenLabs
 - Cloudflare R2 (audios)
 - Cobranca de aluguel via USDT (verificacao on-chain)
 
@@ -52,7 +52,7 @@ README.md
 
 - Python 3.11+
 - Pelo menos um provider de voz configurado por usuario
-- Para campanhas com agente IA: Twilio ou SignalWire + credenciais OpenAI + ElevenLabs por usuario
+- Para campanhas com agente IA: Twilio + Redis + credenciais OpenAI + ElevenLabs por usuario
 - Bucket Cloudflare R2 (para audios)
 - Chave Etherscan (verificacao de pagamento)
 - `BASE_URL` publica para callbacks de providers
@@ -79,7 +79,7 @@ Crie um arquivo `.env` na raiz do projeto.
 APP_NAME=ColdCalls Platform
 SECRET_KEY=change-me-in-production-min-32-chars
 DEBUG=false
-# URL publica para callbacks Twilio, SignalWire, Telnyx e Voximplant.
+# URL publica para callbacks Twilio, Telnyx, Voximplant e runtime de IA.
 # Em deploy real, nao use localhost ou IP privado.
 BASE_URL=https://your-public-domain.example.com
 OPENAI_API_BASE=https://api.openai.com/v1
@@ -221,7 +221,7 @@ sudo journalctl -u coldcalls-worker -f
 6. O usuario paga aluguel em `/billing`.
 7. Crie e inicie campanhas em `/campaigns`.
    - `audio`: usa audio gravado e/ou transferencia direta
-   - `ai_agent`: usa Twilio ou SignalWire + `/api/ai-runtime/*` + OpenAI Chat + ElevenLabs para conversa e transferencia
+   - `ai_agent`: usa Twilio + `/api/ai-realtime/*` + OpenAI Realtime + ElevenLabs para conversa e transferencia
 
 ## Rotas principais
 
@@ -241,7 +241,10 @@ sudo journalctl -u coldcalls-worker -f
   - `/api/data/audios`
   - `/api/twiml/{campaign_id}` (Twilio/SignalWire)
   - `/api/telnyx/texml/{campaign_id}`
-  - `/api/ai-runtime/twiml/{campaign_number_id}` (Twilio/SignalWire + IA)
+  - `/api/ai-realtime/twiml/{campaign_number_id}` (Twilio + IA realtime)
+  - `/api/ai-realtime/ws/{campaign_number_id}/{token}`
+  - `/api/ai-realtime/session/{campaign_number_id}/health`
+  - `/api/ai-runtime/twiml/{campaign_number_id}` (compatibilidade legada)
   - `/api/ai-runtime/audio/{campaign_number_id}/{audio_token}`
   - `/api/voximplant/callback`
 
@@ -249,27 +252,29 @@ sudo journalctl -u coldcalls-worker -f
 
 Fluxo da v1:
 
-1. O usuario cadastra Twilio ou SignalWire, OpenAI e ElevenLabs em `/dashboard/settings`.
+1. O usuario cadastra Twilio, OpenAI e ElevenLabs em `/dashboard/settings`.
 2. O usuario cria um agente reutilizavel em `/ai-agents` com:
    - nome
    - prompt do sistema
    - `voice_id` do ElevenLabs
-   - modelo OpenAI Chat (ex.: `gpt-4o-mini`)
+   - modelo OpenAI Realtime (ex.: `gpt-realtime`)
    - regra de handoff
 3. Em `/campaigns/create`, escolhe `Campaign Mode = AI agent`.
-4. A campanha usa Twilio ou SignalWire para originar a chamada.
-5. O provider busca `/api/ai-runtime/twiml/{campaign_number_id}` na sua `BASE_URL` publica.
-6. O backend executa um loop TwiML/Gather, chama OpenAI Chat para decidir a proxima resposta e sintetiza audio com ElevenLabs.
-7. Quando o modelo decide transferir, a chamada vai para o `transfer_number` do usuario.
+4. A campanha usa Twilio para originar a chamada.
+5. Twilio busca `/api/ai-realtime/twiml/{campaign_number_id}` na sua `BASE_URL` publica.
+6. O backend abre um Media Stream, usa Redis para sessao/eventos, envia audio do lead ao OpenAI Realtime e sintetiza a resposta com ElevenLabs.
+7. Quando o modelo decide transferir, o worker recebe `tool.transfer_call` e atualiza a chamada ativa para o `transfer_number` do usuario.
 
 Observacoes:
 
 - O idioma padrao da v1 e ingles.
 - O modo IA nao usa `audio_id`.
 - O modo IA nao usa o fluxo `Press 1`.
-- `BASE_URL` precisa estar acessivel publicamente para os callbacks `/api/ai-runtime/*`.
+- O modo IA aceita apenas `voice_provider=twilio`.
+- Redis e obrigatorio para campanhas IA.
+- `BASE_URL` precisa estar acessivel publicamente para os callbacks `/api/ai-realtime/*`.
 - Campanhas IA falham cedo se `BASE_URL` apontar para `localhost`, `.local` ou IP privado.
-- O dashboard e `/health` agora mostram estado do worker e prontidao do schema de IA.
+- O dashboard e `/health` agora mostram estado do worker, Redis e prontidao do schema de IA.
 
 ## Recuperacao rapida no servidor
 

@@ -14,9 +14,9 @@ from app.config import get_settings
 from app.database import engine
 from app.models import VoiceProvider
 from app.services.callback_url_service import validate_public_callback_url
+from app.services.ai_realtime_session_service import is_redis_available
 from app.services.user_elevenlabs_service import has_user_elevenlabs_credentials
 from app.services.user_openai_service import has_user_openai_credentials
-from app.services.user_signalwire_service import has_user_signalwire_credentials
 from app.services.user_twilio_service import has_user_twilio_credentials
 
 settings = get_settings()
@@ -36,11 +36,9 @@ REQUIRED_AI_TABLES = {
     "ai_agents",
     "user_openai_credentials",
     "user_elevenlabs_credentials",
-    "user_signalwire_credentials",
 }
 PROVIDER_LABELS = {
     VoiceProvider.TWILIO.value: "Twilio",
-    VoiceProvider.SIGNALWIRE.value: "SignalWire",
 }
 
 
@@ -113,26 +111,26 @@ def get_ai_campaign_readiness(
             missing_schema_items=tuple(schema_health["missing_items"]),
         )
 
-    if provider == VoiceProvider.TWILIO.value:
-        if not has_user_twilio_credentials(db, user_id):
-            return AICampaignReadiness(
-                ok=False,
-                error="Please configure Twilio credentials in Settings first",
-                schema_ready=bool(schema_health["ready"]),
-                missing_schema_items=tuple(schema_health["missing_items"]),
-            )
-    elif provider == VoiceProvider.SIGNALWIRE.value:
-        if not has_user_signalwire_credentials(db, user_id):
-            return AICampaignReadiness(
-                ok=False,
-                error="Please configure SignalWire credentials in Settings first",
-                schema_ready=bool(schema_health["ready"]),
-                missing_schema_items=tuple(schema_health["missing_items"]),
-            )
-    else:
+    if provider != VoiceProvider.TWILIO.value:
         return AICampaignReadiness(
             ok=False,
-            error="AI agent campaigns require Twilio or SignalWire",
+            error="AI agent campaigns currently require Twilio as the voice provider.",
+            schema_ready=bool(schema_health["ready"]),
+            missing_schema_items=tuple(schema_health["missing_items"]),
+        )
+
+    if not is_redis_available():
+        return AICampaignReadiness(
+            ok=False,
+            error="Redis is unavailable. AI campaigns require Redis for the realtime runtime.",
+            schema_ready=bool(schema_health["ready"]),
+            missing_schema_items=tuple(schema_health["missing_items"]),
+        )
+
+    if not has_user_twilio_credentials(db, user_id):
+        return AICampaignReadiness(
+            ok=False,
+            error="Please configure Twilio credentials in Settings first",
             schema_ready=bool(schema_health["ready"]),
             missing_schema_items=tuple(schema_health["missing_items"]),
         )

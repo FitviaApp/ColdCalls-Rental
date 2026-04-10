@@ -1,18 +1,18 @@
 """
-Worker-side bridge between SignalWire media events and OpenAI Realtime API.
+Worker-side bridge between Twilio Media Streams, OpenAI Realtime, and ElevenLabs.
 """
 from __future__ import annotations
 
 import json
-import logging
 import threading
 import asyncio
 import time
 import array
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from queue import Queue, Empty
 
+import httpx
 import websockets
 try:
     import audioop
@@ -24,7 +24,6 @@ from app.models import AIAgent
 from app.services.ai_realtime_event_bus import AIRealtimeEvent, AIRealtimeEventBus
 from app.services.ai_realtime_session_service import AIRealtimeSessionService
 
-logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
@@ -52,11 +51,13 @@ class AIRealtimeBridgeWorker:
         agent: AIAgent,
         openai_api_key: str,
         openai_org_id: str = "",
+        elevenlabs_api_key: str = "",
     ):
         self.campaign_number_id = int(campaign_number_id)
         self.agent = agent
         self.openai_api_key = (openai_api_key or "").strip()
         self.openai_org_id = (openai_org_id or "").strip()
+        self.elevenlabs_api_key = (elevenlabs_api_key or "").strip()
         self.bus = AIRealtimeEventBus()
         self.sessions = AIRealtimeSessionService()
         self._stop_event = threading.Event()
@@ -66,7 +67,6 @@ class AIRealtimeBridgeWorker:
         self._last_response_request_at = 0.0
         self._last_audio_out_at = 0.0
         self._response_retry_count = 0
-        self._voice_fallback_attempted = False
         self._output_audio_codec = "g711_ulaw"
         self._output_pcm_rate_hz = 24000
         self._pcm_ratecv_state = None
@@ -79,6 +79,9 @@ class AIRealtimeBridgeWorker:
     def run(self) -> None:
         if not self.openai_api_key:
             self._publish_error("provider_auth", "OpenAI API key is missing")
+            return
+        if not self.elevenlabs_api_key:
+            self._publish_error("provider_auth", "ElevenLabs API key is missing")
             return
         try:
             import asyncio
@@ -136,11 +139,9 @@ class AIRealtimeBridgeWorker:
                     f"{self.agent.system_prompt.strip()} "
                     f"Handoff guidance: {(self.agent.handoff_description or 'Transfer only when appropriate.').strip()}"
                 ),
-                "voice": (self.agent.voice_id or "alloy").strip().lower(),
                 "tools": [tool_schema],
                 "tool_choice": "auto",
                 "input_audio_format": "g711_ulaw",
-                "output_audio_format": "g711_ulaw",
                 "turn_detection": {"type": "server_vad"},
                 "audio": {
                     "input": {
@@ -150,10 +151,6 @@ class AIRealtimeBridgeWorker:
                             "create_response": False,
                             "interrupt_response": True,
                         },
-                    },
-                    "output": {
-                        "format": {"type": "audio/pcmu"},
-                        "voice": (self.agent.voice_id or "alloy").strip().lower(),
                     },
                 },
                 "temperature": float(self.agent.temperature or 0.7),
@@ -366,9 +363,7 @@ class AIRealtimeBridgeWorker:
         )
 
     async def _request_audio_response(self, openai_ws, instructions: str | None = None) -> None:
-        # Realtime currently accepts only ["text"] or ["audio", "text"].
-        # We request both so the model can emit spoken audio and transcript text.
-        response_payload: dict[str, Any] = {"modalities": ["audio", "text"]}
+        response_payload: dict[str, Any] = {"modalities": ["text"]}
         if instructions:
             response_payload["instructions"] = instructions
         await openai_ws.send(
@@ -389,13 +384,8 @@ class AIRealtimeBridgeWorker:
         if elapsed < 4.0:
             return
         if self._response_retry_count >= 3:
-            if not self._voice_fallback_attempted:
-                self._voice_fallback_attempted = True
-                self._response_retry_count = 0
-                asyncio.create_task(self._apply_voice_fallback_and_retry(openai_ws))
-                return
             self._awaiting_audio = False
-            self._publish_error("media_bridge", "OpenAI realtime produced no audio after retries (including voice fallback)")
+            self._publish_error("media_bridge", "OpenAI realtime produced no text response after retries")
             return
         self._response_retry_count += 1
         asyncio.create_task(
@@ -404,28 +394,6 @@ class AIRealtimeBridgeWorker:
                 instructions="Respond now with one short spoken sentence.",
             )
         )
-
-    async def _apply_voice_fallback_and_retry(self, openai_ws) -> None:
-        try:
-            await openai_ws.send(
-                json.dumps(
-                    {
-                        "type": "session.update",
-                        "session": {"voice": "alloy"},
-                    }
-                )
-            )
-            await self._request_audio_response(
-                openai_ws,
-                instructions="Speak now with a short greeting.",
-            )
-            logger.warning(
-                "AI realtime session %s retried with fallback voice=alloy due to initial silence",
-                self.campaign_number_id,
-            )
-        except Exception as exc:
-            category, detail = classify_openai_error(str(exc))
-            self._publish_error(category, detail)
 
     def _consume_bus_events(self) -> None:
         def stop_when() -> bool:
@@ -473,35 +441,11 @@ class AIRealtimeBridgeWorker:
 
         if event_type in {"session.updated", "session.created"}:
             self._set_output_audio_format(dict(data.get("session") or {}))
-            if self._output_audio_codec != "g711_ulaw" and not self._ulaw_reasserted:
-                self._ulaw_reasserted = True
-                await openai_ws.send(
-                    json.dumps(
-                        {
-                            "type": "session.update",
-                            "session": {
-                                "output_audio_format": "g711_ulaw",
-                                "audio": {
-                                    "output": {"format": {"type": "audio/pcmu"}},
-                                },
-                            },
-                        }
-                    )
-                )
             # Safety net: make sure we still trigger the first turn if session acknowledged later.
             await self._send_opening_response(openai_ws)
             return
 
         if event_type in {"response.audio.delta", "response.output_audio.delta"}:
-            delta = str(data.get("delta") or "")
-            if delta:
-                outbound_audio = self._normalize_outbound_audio_for_twilio(delta)
-                if not outbound_audio:
-                    return
-                self.bus.publish(self.campaign_number_id, "media.outbound", {"audio": outbound_audio})
-                self._awaiting_audio = False
-                self._response_retry_count = 0
-                self._last_audio_out_at = time.monotonic()
             return
 
         if event_type in {
@@ -529,6 +473,15 @@ class AIRealtimeBridgeWorker:
                 self.bus.publish(self.campaign_number_id, "transcript.final", {"text": final_text})
                 self.bus.publish(self.campaign_number_id, "assistant.response", {"text": final_text})
                 self.sessions.increment_turn_count(self.campaign_number_id)
+                outbound_audio = await asyncio.to_thread(
+                    self._synthesize_assistant_audio,
+                    final_text,
+                )
+                if outbound_audio:
+                    self.bus.publish(self.campaign_number_id, "media.outbound", {"audio": outbound_audio})
+                    self._awaiting_audio = False
+                    self._response_retry_count = 0
+                    self._last_audio_out_at = time.monotonic()
             return
 
         if event_type == "input_audio_buffer.speech_stopped":
@@ -581,3 +534,86 @@ class AIRealtimeBridgeWorker:
             "session.error",
             {"category": category, "detail": detail[:500]},
         )
+
+    def _sanitize_assistant_text(self, text: str) -> str:
+        normalized = " ".join(str(text or "").split())
+        if not normalized:
+            return "Hello, this is a quick follow-up call."
+        limit = max(40, int(settings.AI_MAX_ASSISTANT_TEXT_CHARS))
+        if len(normalized) <= limit:
+            return normalized
+        trimmed = normalized[:limit].rstrip()
+        last_sentence_break = max(trimmed.rfind("."), trimmed.rfind("?"), trimmed.rfind("!"))
+        if last_sentence_break >= 40:
+            return trimmed[: last_sentence_break + 1]
+        last_space = trimmed.rfind(" ")
+        if last_space >= 40:
+            return trimmed[:last_space].rstrip() + "..."
+        return trimmed + "..."
+
+    def _elevenlabs_output_format(self) -> str:
+        configured = str(settings.ELEVENLABS_OUTPUT_FORMAT or "").strip().lower()
+        if configured.startswith("ulaw_"):
+            return configured
+        return "ulaw_8000"
+
+    def _request_elevenlabs_audio(self, *, voice_id: str, text: str) -> bytes:
+        safe_voice_id = str(voice_id or "").strip()
+        if not safe_voice_id:
+            raise RuntimeError("ElevenLabs voice ID is empty")
+
+        output_format = self._elevenlabs_output_format()
+        url = (
+            f"{settings.ELEVENLABS_API_BASE.rstrip('/')}/text-to-speech/"
+            f"{quote(safe_voice_id)}?output_format={quote(output_format)}"
+        )
+        payload: dict[str, Any] = {"text": self._sanitize_assistant_text(text)}
+        if str(settings.ELEVENLABS_TTS_MODEL_ID or "").strip():
+            payload["model_id"] = str(settings.ELEVENLABS_TTS_MODEL_ID).strip()
+
+        headers = {
+            "xi-api-key": self.elevenlabs_api_key,
+            "Content-Type": "application/json",
+        }
+
+        with httpx.Client(timeout=float(settings.OPENAI_REQUEST_TIMEOUT_SECONDS)) as client:
+            response = client.post(url, headers=headers, json=payload)
+
+        if response.status_code >= 400:
+            body_preview = (response.text or "").strip()[:300] or "no response body"
+            raise RuntimeError(
+                f"ElevenLabs TTS failed: status={response.status_code} body={body_preview}"
+            )
+        if not response.content:
+            raise RuntimeError("ElevenLabs TTS returned empty audio")
+        return response.content
+
+    def _request_elevenlabs_audio_with_fallback(self, text: str) -> bytes:
+        primary_voice = str(self.agent.voice_id or "").strip()
+        fallback_voice = str(settings.ELEVENLABS_DEFAULT_VOICE_ID or "").strip()
+        candidates = [voice for voice in [primary_voice, fallback_voice] if voice]
+        if not candidates:
+            raise RuntimeError("ElevenLabs voice ID is not configured")
+
+        last_error = ""
+        for index, voice_id in enumerate(candidates):
+            try:
+                return self._request_elevenlabs_audio(voice_id=voice_id, text=text)
+            except Exception as exc:
+                last_error = str(exc)
+                if index == 0 and voice_id != fallback_voice:
+                    lowered = last_error.lower()
+                    if "status=404" in lowered or "voice" in lowered:
+                        continue
+                break
+
+        raise RuntimeError(last_error or "ElevenLabs TTS failed")
+
+    def _synthesize_assistant_audio(self, text: str) -> str:
+        try:
+            audio_bytes = self._request_elevenlabs_audio_with_fallback(text)
+            return self._encode_base64_audio(audio_bytes)
+        except Exception as exc:
+            category, detail = classify_openai_error(str(exc))
+            self._publish_error(category, detail)
+            return ""

@@ -70,6 +70,20 @@ class SignalWireSupportTests(unittest.TestCase):
             CallStatus.FAILED,
         )
 
+    def test_worker_build_voice_service_rejects_signalwire_ai_campaigns(self):
+        worker = CampaignWorker(db=None)  # type: ignore[arg-type]
+        campaign = SimpleNamespace(
+            campaign_mode=CampaignMode.AI_AGENT,
+            voice_provider=VoiceProvider.SIGNALWIRE,
+            ai_agent=SimpleNamespace(is_active=True),
+        )
+        user = SimpleNamespace(id=1)
+
+        with self.assertRaises(ValueError) as ctx:
+            worker._build_voice_service(campaign, user)
+
+        self.assertIn("currently require Twilio", str(ctx.exception))
+
     def test_signalwire_rate_limiter_uses_random_interval_between_3_and_5_seconds(self):
         worker = CampaignWorker(db=None)  # type: ignore[arg-type]
         limiter = worker._build_start_rate_limiter(VoiceProvider.SIGNALWIRE.value)
@@ -101,8 +115,8 @@ class SignalWireSupportTests(unittest.TestCase):
         original_openai = provider_service.has_user_openai_credentials
         original_elevenlabs = provider_service.has_user_elevenlabs_credentials
         try:
-            provider_service.has_user_signalwire_credentials = lambda db, user_id: True
-            provider_service.has_user_twilio_credentials = lambda db, user_id: False
+            provider_service.has_user_signalwire_credentials = lambda db, user_id: False
+            provider_service.has_user_twilio_credentials = lambda db, user_id: True
             provider_service.has_user_openai_credentials = lambda db, user_id: True
             provider_service.has_user_elevenlabs_credentials = lambda db, user_id: True
             self.assertTrue(has_user_ai_runtime_credentials(None, 1))
@@ -288,7 +302,7 @@ class SignalWireSupportTests(unittest.TestCase):
 
         fresh_session.unlink(missing_ok=True)
 
-    def test_campaign_form_validation_requires_twilio_or_signalwire_for_ai_mode(self):
+    def test_campaign_form_validation_requires_twilio_for_ai_mode(self):
         error = _campaign_form_validation_error(
             voice_provider=VoiceProvider.TELNYX.value,
             campaign_mode=CampaignMode.AI_AGENT.value,
@@ -297,11 +311,11 @@ class SignalWireSupportTests(unittest.TestCase):
             provider_configured=True,
             ai_runtime_configured=True,
         )
-        self.assertEqual(error, "AI agent campaigns currently require Twilio or SignalWire as the voice provider.")
+        self.assertEqual(error, "AI agent campaigns currently require Twilio as the voice provider.")
 
     def test_campaign_form_validation_rejects_press_1_for_ai_mode(self):
         error = _campaign_form_validation_error(
-            voice_provider=VoiceProvider.SIGNALWIRE.value,
+            voice_provider=VoiceProvider.TWILIO.value,
             campaign_mode=CampaignMode.AI_AGENT.value,
             press_1_to_talk_with_agent=True,
             max_concurrent_calls=1,
@@ -314,7 +328,7 @@ class SignalWireSupportTests(unittest.TestCase):
         caller_id = SimpleNamespace(vox_verification_status="verified")
         error = _campaign_resource_validation_error(
             campaign_mode=CampaignMode.AI_AGENT.value,
-            voice_provider=VoiceProvider.SIGNALWIRE.value,
+            voice_provider=VoiceProvider.TWILIO.value,
             caller_id=caller_id,
             audio=None,
             ai_agent=None,
@@ -348,7 +362,7 @@ class SignalWireSupportTests(unittest.TestCase):
         )
         self.assertEqual(
             error,
-            "Please configure Twilio or SignalWire, OpenAI, and ElevenLabs credentials in Settings first",
+            "Please configure Twilio, OpenAI, and ElevenLabs credentials in Settings first",
         )
 
     def test_campaign_start_validation_prefers_specific_ai_runtime_error(self):
@@ -379,12 +393,14 @@ class SignalWireSupportTests(unittest.TestCase):
 
     def test_ai_campaign_readiness_reports_missing_twilio_credentials(self):
         original_schema = ai_readiness_module.get_ai_schema_health
+        original_redis = ai_readiness_module.is_redis_available
         original_validate = ai_readiness_module.validate_public_callback_url
         original_twilio = ai_readiness_module.has_user_twilio_credentials
         original_openai = ai_readiness_module.has_user_openai_credentials
         original_elevenlabs = ai_readiness_module.has_user_elevenlabs_credentials
         try:
             ai_readiness_module.get_ai_schema_health = lambda bind=None: {"ready": True, "missing_items": ()}
+            ai_readiness_module.is_redis_available = lambda redis_url=None: True
             ai_readiness_module.validate_public_callback_url = lambda url, provider_name="provider": url
             ai_readiness_module.has_user_twilio_credentials = lambda db, user_id: False
             ai_readiness_module.has_user_openai_credentials = lambda db, user_id: True
@@ -397,6 +413,7 @@ class SignalWireSupportTests(unittest.TestCase):
             )
         finally:
             ai_readiness_module.get_ai_schema_health = original_schema
+            ai_readiness_module.is_redis_available = original_redis
             ai_readiness_module.validate_public_callback_url = original_validate
             ai_readiness_module.has_user_twilio_credentials = original_twilio
             ai_readiness_module.has_user_openai_credentials = original_openai
@@ -406,12 +423,14 @@ class SignalWireSupportTests(unittest.TestCase):
 
     def test_ai_campaign_readiness_reports_missing_openai_credentials(self):
         original_schema = ai_readiness_module.get_ai_schema_health
+        original_redis = ai_readiness_module.is_redis_available
         original_validate = ai_readiness_module.validate_public_callback_url
         original_twilio = ai_readiness_module.has_user_twilio_credentials
         original_openai = ai_readiness_module.has_user_openai_credentials
         original_elevenlabs = ai_readiness_module.has_user_elevenlabs_credentials
         try:
             ai_readiness_module.get_ai_schema_health = lambda bind=None: {"ready": True, "missing_items": ()}
+            ai_readiness_module.is_redis_available = lambda redis_url=None: True
             ai_readiness_module.validate_public_callback_url = lambda url, provider_name="provider": url
             ai_readiness_module.has_user_twilio_credentials = lambda db, user_id: True
             ai_readiness_module.has_user_openai_credentials = lambda db, user_id: False
@@ -424,6 +443,7 @@ class SignalWireSupportTests(unittest.TestCase):
             )
         finally:
             ai_readiness_module.get_ai_schema_health = original_schema
+            ai_readiness_module.is_redis_available = original_redis
             ai_readiness_module.validate_public_callback_url = original_validate
             ai_readiness_module.has_user_twilio_credentials = original_twilio
             ai_readiness_module.has_user_openai_credentials = original_openai
@@ -433,12 +453,14 @@ class SignalWireSupportTests(unittest.TestCase):
 
     def test_ai_campaign_readiness_reports_missing_elevenlabs_credentials(self):
         original_schema = ai_readiness_module.get_ai_schema_health
+        original_redis = ai_readiness_module.is_redis_available
         original_validate = ai_readiness_module.validate_public_callback_url
         original_twilio = ai_readiness_module.has_user_twilio_credentials
         original_openai = ai_readiness_module.has_user_openai_credentials
         original_elevenlabs = ai_readiness_module.has_user_elevenlabs_credentials
         try:
             ai_readiness_module.get_ai_schema_health = lambda bind=None: {"ready": True, "missing_items": ()}
+            ai_readiness_module.is_redis_available = lambda redis_url=None: True
             ai_readiness_module.validate_public_callback_url = lambda url, provider_name="provider": url
             ai_readiness_module.has_user_twilio_credentials = lambda db, user_id: True
             ai_readiness_module.has_user_openai_credentials = lambda db, user_id: True
@@ -451,6 +473,7 @@ class SignalWireSupportTests(unittest.TestCase):
             )
         finally:
             ai_readiness_module.get_ai_schema_health = original_schema
+            ai_readiness_module.is_redis_available = original_redis
             ai_readiness_module.validate_public_callback_url = original_validate
             ai_readiness_module.has_user_twilio_credentials = original_twilio
             ai_readiness_module.has_user_openai_credentials = original_openai
@@ -460,12 +483,14 @@ class SignalWireSupportTests(unittest.TestCase):
 
     def test_ai_campaign_readiness_reports_inactive_agent(self):
         original_schema = ai_readiness_module.get_ai_schema_health
+        original_redis = ai_readiness_module.is_redis_available
         original_validate = ai_readiness_module.validate_public_callback_url
         original_twilio = ai_readiness_module.has_user_twilio_credentials
         original_openai = ai_readiness_module.has_user_openai_credentials
         original_elevenlabs = ai_readiness_module.has_user_elevenlabs_credentials
         try:
             ai_readiness_module.get_ai_schema_health = lambda bind=None: {"ready": True, "missing_items": ()}
+            ai_readiness_module.is_redis_available = lambda redis_url=None: True
             ai_readiness_module.validate_public_callback_url = lambda url, provider_name="provider": url
             ai_readiness_module.has_user_twilio_credentials = lambda db, user_id: True
             ai_readiness_module.has_user_openai_credentials = lambda db, user_id: True
@@ -478,6 +503,7 @@ class SignalWireSupportTests(unittest.TestCase):
             )
         finally:
             ai_readiness_module.get_ai_schema_health = original_schema
+            ai_readiness_module.is_redis_available = original_redis
             ai_readiness_module.validate_public_callback_url = original_validate
             ai_readiness_module.has_user_twilio_credentials = original_twilio
             ai_readiness_module.has_user_openai_credentials = original_openai
@@ -487,12 +513,14 @@ class SignalWireSupportTests(unittest.TestCase):
 
     def test_ai_campaign_readiness_reports_invalid_public_base_url(self):
         original_schema = ai_readiness_module.get_ai_schema_health
+        original_redis = ai_readiness_module.is_redis_available
         original_validate = ai_readiness_module.validate_public_callback_url
         original_twilio = ai_readiness_module.has_user_twilio_credentials
         original_openai = ai_readiness_module.has_user_openai_credentials
         original_elevenlabs = ai_readiness_module.has_user_elevenlabs_credentials
         try:
             ai_readiness_module.get_ai_schema_health = lambda bind=None: {"ready": True, "missing_items": ()}
+            ai_readiness_module.is_redis_available = lambda redis_url=None: True
             ai_readiness_module.validate_public_callback_url = (
                 lambda url, provider_name="provider": (_ for _ in ()).throw(
                     ValueError("BASE_URL must be a public http(s) URL reachable by Twilio callbacks")
@@ -509,6 +537,7 @@ class SignalWireSupportTests(unittest.TestCase):
             )
         finally:
             ai_readiness_module.get_ai_schema_health = original_schema
+            ai_readiness_module.is_redis_available = original_redis
             ai_readiness_module.validate_public_callback_url = original_validate
             ai_readiness_module.has_user_twilio_credentials = original_twilio
             ai_readiness_module.has_user_openai_credentials = original_openai
@@ -517,6 +546,60 @@ class SignalWireSupportTests(unittest.TestCase):
         self.assertEqual(
             readiness.error,
             "BASE_URL must be a public http(s) URL reachable by Twilio callbacks",
+        )
+
+    def test_ai_campaign_readiness_reports_missing_redis(self):
+        original_schema = ai_readiness_module.get_ai_schema_health
+        original_redis = ai_readiness_module.is_redis_available
+        original_validate = ai_readiness_module.validate_public_callback_url
+        original_twilio = ai_readiness_module.has_user_twilio_credentials
+        original_openai = ai_readiness_module.has_user_openai_credentials
+        original_elevenlabs = ai_readiness_module.has_user_elevenlabs_credentials
+        try:
+            ai_readiness_module.get_ai_schema_health = lambda bind=None: {"ready": True, "missing_items": ()}
+            ai_readiness_module.is_redis_available = lambda redis_url=None: False
+            ai_readiness_module.validate_public_callback_url = lambda url, provider_name="provider": url
+            ai_readiness_module.has_user_twilio_credentials = lambda db, user_id: True
+            ai_readiness_module.has_user_openai_credentials = lambda db, user_id: True
+            ai_readiness_module.has_user_elevenlabs_credentials = lambda db, user_id: True
+            readiness = ai_readiness_module.get_ai_campaign_readiness(
+                SimpleNamespace(get_bind=lambda: None),
+                user_id=1,
+                voice_provider=VoiceProvider.TWILIO.value,
+                ai_agent=SimpleNamespace(is_active=True),
+            )
+        finally:
+            ai_readiness_module.get_ai_schema_health = original_schema
+            ai_readiness_module.is_redis_available = original_redis
+            ai_readiness_module.validate_public_callback_url = original_validate
+            ai_readiness_module.has_user_twilio_credentials = original_twilio
+            ai_readiness_module.has_user_openai_credentials = original_openai
+            ai_readiness_module.has_user_elevenlabs_credentials = original_elevenlabs
+
+        self.assertEqual(
+            readiness.error,
+            "Redis is unavailable. AI campaigns require Redis for the realtime runtime.",
+        )
+
+    def test_ai_campaign_readiness_rejects_signalwire_provider(self):
+        original_schema = ai_readiness_module.get_ai_schema_health
+        original_validate = ai_readiness_module.validate_public_callback_url
+        try:
+            ai_readiness_module.get_ai_schema_health = lambda bind=None: {"ready": True, "missing_items": ()}
+            ai_readiness_module.validate_public_callback_url = lambda url, provider_name="provider": url
+            readiness = ai_readiness_module.get_ai_campaign_readiness(
+                SimpleNamespace(get_bind=lambda: None),
+                user_id=1,
+                voice_provider=VoiceProvider.SIGNALWIRE.value,
+                ai_agent=SimpleNamespace(is_active=True),
+            )
+        finally:
+            ai_readiness_module.get_ai_schema_health = original_schema
+            ai_readiness_module.validate_public_callback_url = original_validate
+
+        self.assertEqual(
+            readiness.error,
+            "AI agent campaigns currently require Twilio as the voice provider.",
         )
 
     def test_elevenlabs_voice_fallback_uses_default_voice(self):
@@ -561,7 +644,7 @@ class SignalWireSupportTests(unittest.TestCase):
             audio_id="",
             ai_agent_id="7",
             campaign_mode=CampaignMode.AI_AGENT.value,
-            voice_provider=VoiceProvider.SIGNALWIRE.value,
+            voice_provider=VoiceProvider.TWILIO.value,
             press_1_to_talk_with_agent=False,
             max_concurrent_calls=4,
             numbers_text="+15551234567",
@@ -570,7 +653,7 @@ class SignalWireSupportTests(unittest.TestCase):
         self.assertEqual(form_data["caller_id_id"], "3")
         self.assertEqual(form_data["ai_agent_id"], "7")
         self.assertEqual(form_data["campaign_mode"], "ai_agent")
-        self.assertEqual(form_data["voice_provider"], "signalwire")
+        self.assertEqual(form_data["voice_provider"], "twilio")
         self.assertEqual(form_data["max_concurrent_calls"], 4)
         self.assertEqual(form_data["numbers_text"], "+15551234567")
 
@@ -810,7 +893,7 @@ class SignalWireSupportTests(unittest.TestCase):
         try:
             service = AICallRuntimeService.__new__(AICallRuntimeService)
             audio_bytes = service._post_binary_with_retries(
-                provider_name="OpenAI TTS",
+                provider_name="ElevenLabs",
                 url="https://example.com",
                 headers={},
                 json_payload={},
@@ -860,7 +943,7 @@ class SignalWireSupportTests(unittest.TestCase):
             service = AICallRuntimeService.__new__(AICallRuntimeService)
             with self.assertRaises(RuntimeError) as ctx:
                 service._post_binary_with_retries(
-                    provider_name="OpenAI TTS",
+                    provider_name="ElevenLabs",
                     url="https://example.com",
                     headers={},
                     json_payload={},
