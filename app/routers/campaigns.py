@@ -8,7 +8,6 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, Form, Request, UploadFile, File, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
 from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
@@ -18,6 +17,7 @@ from app.models import (
     User, Campaign, CampaignNumber, CallerID, Country, Audio, AIAgent,
     CampaignStatus, CallStatus, VoiceProvider, VoxCallerIDVerificationStatus, CampaignMode
 )
+from app.templating import Jinja2Templates
 from app.services.ai_agent_service import list_user_ai_agents
 from app.services.user_voice_provider_service import (
     get_user_voice_provider_status,
