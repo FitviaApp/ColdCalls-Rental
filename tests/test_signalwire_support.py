@@ -1,3 +1,5 @@
+import asyncio
+import threading
 import unittest
 from types import SimpleNamespace
 
@@ -11,6 +13,7 @@ from app.routers.campaigns import (
     _parse_campaign_numbers,
 )
 import app.services.ai_campaign_readiness_service as ai_readiness_module
+from app.services.ai_realtime_bridge_worker import AIRealtimeBridgeWorker
 from app.services.ai_call_runtime_service import (
     AI_RUNTIME_DIR,
     AICallRuntimeService,
@@ -83,6 +86,29 @@ class SignalWireSupportTests(unittest.TestCase):
             worker._build_voice_service(campaign, user)
 
         self.assertIn("currently require Twilio", str(ctx.exception))
+
+    def test_realtime_bridge_waits_for_stream_before_opening_response(self):
+        bridge = AIRealtimeBridgeWorker.__new__(AIRealtimeBridgeWorker)
+        bridge.campaign_number_id = 123
+        bridge._opening_response_sent = False
+        bridge._provider_stream_ready = threading.Event()
+        bridge._last_stream_ready_check_at = 0.0
+        bridge.sessions = SimpleNamespace(get_session=lambda campaign_number_id: {"status": "created", "stream_sid": ""})
+
+        captured = {"count": 0}
+
+        async def fake_send_opening_response(_openai_ws):
+            captured["count"] += 1
+            bridge._opening_response_sent = True
+
+        bridge._send_opening_response = fake_send_opening_response
+
+        asyncio.run(bridge._maybe_send_opening_response_when_ready(object()))
+        self.assertEqual(captured["count"], 0)
+
+        bridge.sessions = SimpleNamespace(get_session=lambda campaign_number_id: {"status": "streaming", "stream_sid": "MZ123"})
+        asyncio.run(bridge._maybe_send_opening_response_when_ready(object()))
+        self.assertEqual(captured["count"], 1)
 
     def test_signalwire_rate_limiter_uses_random_interval_between_3_and_5_seconds(self):
         worker = CampaignWorker(db=None)  # type: ignore[arg-type]

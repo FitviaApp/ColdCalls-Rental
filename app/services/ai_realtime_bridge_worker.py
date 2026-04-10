@@ -61,11 +61,13 @@ class AIRealtimeBridgeWorker:
         self.bus = AIRealtimeEventBus()
         self.sessions = AIRealtimeSessionService()
         self._stop_event = threading.Event()
+        self._provider_stream_ready = threading.Event()
         self._inbound_audio_queue: Queue[str] = Queue()
         self._opening_response_sent = False
         self._awaiting_audio = False
         self._last_response_request_at = 0.0
         self._last_audio_out_at = 0.0
+        self._last_stream_ready_check_at = 0.0
         self._response_retry_count = 0
         self._output_audio_codec = "g711_ulaw"
         self._output_pcm_rate_hz = 24000
@@ -104,12 +106,12 @@ class AIRealtimeBridgeWorker:
 
         async with websockets.connect(ws_url, additional_headers=headers, max_size=4_000_000) as openai_ws:
             await self._send_realtime_session_update(openai_ws)
-            self.bus.publish(self.campaign_number_id, "session.started", {"source": "worker"})
 
             consumer_thread = threading.Thread(target=self._consume_bus_events, daemon=True)
             consumer_thread.start()
 
             while not self._stop_event.is_set():
+                await self._maybe_send_opening_response_when_ready(openai_ws)
                 await self._flush_inbound_audio(openai_ws)
                 self._maybe_retry_silent_response(openai_ws)
                 try:
@@ -157,7 +159,6 @@ class AIRealtimeBridgeWorker:
             },
         }
         await openai_ws.send(json.dumps(event))
-        await self._send_opening_response(openai_ws)
 
     def _set_output_audio_format(self, session_payload: dict[str, Any]) -> None:
         if not isinstance(session_payload, dict):
@@ -362,6 +363,29 @@ class AIRealtimeBridgeWorker:
             ),
         )
 
+    def _has_provider_stream_started(self) -> bool:
+        if self._provider_stream_ready.is_set():
+            return True
+        now = time.monotonic()
+        if now - self._last_stream_ready_check_at < 0.25:
+            return False
+        self._last_stream_ready_check_at = now
+        session = self.sessions.get_session(self.campaign_number_id) or {}
+        if str(session.get("stream_sid") or "").strip():
+            self._provider_stream_ready.set()
+            return True
+        if str(session.get("status") or "").strip().lower() == "streaming":
+            self._provider_stream_ready.set()
+            return True
+        return False
+
+    async def _maybe_send_opening_response_when_ready(self, openai_ws) -> None:
+        if self._opening_response_sent:
+            return
+        if not self._has_provider_stream_started():
+            return
+        await self._send_opening_response(openai_ws)
+
     async def _request_audio_response(self, openai_ws, instructions: str | None = None) -> None:
         response_payload: dict[str, Any] = {"modalities": ["text"]}
         if instructions:
@@ -405,6 +429,8 @@ class AIRealtimeBridgeWorker:
                 if not payload:
                     return
                 self._inbound_audio_queue.put(payload)
+            elif event.event == "session.started":
+                self._provider_stream_ready.set()
             elif event.event == "session.ended":
                 self._stop_event.set()
 
@@ -441,8 +467,6 @@ class AIRealtimeBridgeWorker:
 
         if event_type in {"session.updated", "session.created"}:
             self._set_output_audio_format(dict(data.get("session") or {}))
-            # Safety net: make sure we still trigger the first turn if session acknowledged later.
-            await self._send_opening_response(openai_ws)
             return
 
         if event_type in {"response.audio.delta", "response.output_audio.delta"}:
