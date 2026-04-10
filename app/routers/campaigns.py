@@ -608,6 +608,10 @@ async def campaign_detail(
                 (n.ai_runtime_error for n in reversed(numbers) if n.ai_runtime_error),
                 None,
             ),
+            "auto_pause_reason": next(
+                (n.ai_runtime_error for n in reversed(numbers) if n.ai_runtime_error),
+                None,
+            ) if campaign.status == CampaignStatus.PAUSED else None,
             "policy_paused": any(
                 "policy" in (n.ai_runtime_error or "").lower()
                 for n in numbers

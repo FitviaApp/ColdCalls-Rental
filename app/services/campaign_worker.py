@@ -83,6 +83,44 @@ class CampaignWorker:
         self.db = db
         self.running = True
 
+    def _pause_campaign(
+        self,
+        db: Session,
+        campaign: Campaign,
+        reason: str,
+        *,
+        campaign_number: CampaignNumber | None = None,
+    ) -> None:
+        message = str(reason or "Campaign paused by worker").strip()[:500]
+        campaign.status = CampaignStatus.PAUSED
+        db.commit()
+
+        if campaign.campaign_mode != CampaignMode.AI_AGENT:
+            return
+
+        target_number = campaign_number
+        if target_number is None:
+            target_number = db.query(CampaignNumber).filter(
+                CampaignNumber.campaign_id == campaign.id,
+            ).order_by(CampaignNumber.id).first()
+
+        if target_number is None:
+            return
+
+        db.query(CampaignNumber).filter(
+            CampaignNumber.id == target_number.id
+        ).update(
+            {
+                CampaignNumber.error_message: message,
+            },
+            synchronize_session=False,
+        )
+        db.commit()
+        update_campaign_number_ai_observability(
+            target_number.id,
+            ai_runtime_error=message,
+        )
+
     def process_pending_campaigns(self):
         """Find and process all running campaigns"""
         removed_artifacts = prune_stale_ai_runtime_artifacts()
@@ -103,8 +141,11 @@ class CampaignWorker:
                 self.process_campaign(campaign)
             except Exception as e:
                 logger.error(f"Error processing campaign {campaign.id}: {e}")
-                campaign.status = CampaignStatus.PAUSED
-                self.db.commit()
+                self._pause_campaign(
+                    self.db,
+                    campaign,
+                    f"Worker crashed while processing campaign: {str(e)[:420]}",
+                )
 
     def process_campaign(self, campaign: Campaign):
         """Process a single campaign"""
@@ -113,47 +154,47 @@ class CampaignWorker:
 
         # Check user has active rental.
         if not has_active_rental(self.db, user.id):
-            logger.warning(f"Campaign {campaign.id}: Rental expired or inactive, pausing")
-            campaign.status = CampaignStatus.PAUSED
-            self.db.commit()
+            reason = "Rental expired or inactive"
+            logger.warning(f"Campaign {campaign.id}: {reason}, pausing")
+            self._pause_campaign(self.db, campaign, reason)
             return
 
         # Check user has transfer number configured
         if not user.transfer_number:
-            logger.warning(f"Campaign {campaign.id}: User transfer number not configured, pausing")
-            campaign.status = CampaignStatus.PAUSED
-            self.db.commit()
+            reason = "Transfer number is not configured for this user"
+            logger.warning(f"Campaign {campaign.id}: {reason}, pausing")
+            self._pause_campaign(self.db, campaign, reason)
             return
 
         # Enforce tenant ownership for resources.
         if campaign.caller_id.user_id != user.id:
-            logger.warning(f"Campaign {campaign.id}: Resource ownership mismatch, pausing")
-            campaign.status = CampaignStatus.PAUSED
-            self.db.commit()
+            reason = "Caller ID ownership mismatch"
+            logger.warning(f"Campaign {campaign.id}: {reason}, pausing")
+            self._pause_campaign(self.db, campaign, reason)
             return
         if campaign.audio_id is not None and campaign.audio is None:
-            logger.warning(f"Campaign {campaign.id}: Audio resource not found, pausing")
-            campaign.status = CampaignStatus.PAUSED
-            self.db.commit()
+            reason = "Selected audio resource was not found"
+            logger.warning(f"Campaign {campaign.id}: {reason}, pausing")
+            self._pause_campaign(self.db, campaign, reason)
             return
         if campaign.audio and campaign.audio.user_id != user.id:
-            logger.warning(f"Campaign {campaign.id}: Resource ownership mismatch, pausing")
-            campaign.status = CampaignStatus.PAUSED
-            self.db.commit()
+            reason = "Audio ownership mismatch"
+            logger.warning(f"Campaign {campaign.id}: {reason}, pausing")
+            self._pause_campaign(self.db, campaign, reason)
             return
         if campaign.ai_agent and campaign.ai_agent.user_id != user.id:
-            logger.warning(f"Campaign {campaign.id}: AI agent ownership mismatch, pausing")
-            campaign.status = CampaignStatus.PAUSED
-            self.db.commit()
+            reason = "AI agent ownership mismatch"
+            logger.warning(f"Campaign {campaign.id}: {reason}, pausing")
+            self._pause_campaign(self.db, campaign, reason)
             return
 
         # Validate provider credentials before dispatching calls.
         try:
             self._build_voice_service(campaign, user)
         except Exception as e:
-            logger.error(f"Campaign {campaign.id}: Failed to init voice provider: {e}")
-            campaign.status = CampaignStatus.PAUSED
-            self.db.commit()
+            reason = f"Failed to initialize AI runtime: {str(e)[:420]}"
+            logger.error(f"Campaign {campaign.id}: {reason}")
+            self._pause_campaign(self.db, campaign, reason)
             return
 
         max_concurrent_calls = self._normalize_concurrency(campaign.max_concurrent_calls)
@@ -269,44 +310,44 @@ class CampaignWorker:
             user = campaign.user
 
             if not has_active_rental(db, user.id):
-                logger.warning(f"Campaign {campaign.id}: Rental expired while processing number {number.id}")
-                campaign.status = CampaignStatus.PAUSED
-                db.commit()
+                reason = "Rental expired while processing a campaign number"
+                logger.warning(f"Campaign {campaign.id}: {reason}")
+                self._pause_campaign(db, campaign, reason, campaign_number=number)
                 return
 
             if not user.transfer_number:
-                logger.warning(f"Campaign {campaign.id}: transfer number missing while processing number {number.id}")
-                campaign.status = CampaignStatus.PAUSED
-                db.commit()
+                reason = "Transfer number missing while processing a campaign number"
+                logger.warning(f"Campaign {campaign.id}: {reason}")
+                self._pause_campaign(db, campaign, reason, campaign_number=number)
                 return
 
             if campaign.caller_id.user_id != user.id:
-                logger.warning(f"Campaign {campaign.id}: resource ownership mismatch while processing number {number.id}")
-                campaign.status = CampaignStatus.PAUSED
-                db.commit()
+                reason = "Caller ID ownership mismatch while processing a campaign number"
+                logger.warning(f"Campaign {campaign.id}: {reason}")
+                self._pause_campaign(db, campaign, reason, campaign_number=number)
                 return
             if campaign.audio_id is not None and campaign.audio is None:
-                logger.warning(f"Campaign {campaign.id}: audio resource not found while processing number {number.id}")
-                campaign.status = CampaignStatus.PAUSED
-                db.commit()
+                reason = "Selected audio resource was not found while processing a campaign number"
+                logger.warning(f"Campaign {campaign.id}: {reason}")
+                self._pause_campaign(db, campaign, reason, campaign_number=number)
                 return
             if campaign.audio and campaign.audio.user_id != user.id:
-                logger.warning(f"Campaign {campaign.id}: resource ownership mismatch while processing number {number.id}")
-                campaign.status = CampaignStatus.PAUSED
-                db.commit()
+                reason = "Audio ownership mismatch while processing a campaign number"
+                logger.warning(f"Campaign {campaign.id}: {reason}")
+                self._pause_campaign(db, campaign, reason, campaign_number=number)
                 return
             if campaign.ai_agent and campaign.ai_agent.user_id != user.id:
-                logger.warning(f"Campaign {campaign.id}: AI agent ownership mismatch while processing number {number.id}")
-                campaign.status = CampaignStatus.PAUSED
-                db.commit()
+                reason = "AI agent ownership mismatch while processing a campaign number"
+                logger.warning(f"Campaign {campaign.id}: {reason}")
+                self._pause_campaign(db, campaign, reason, campaign_number=number)
                 return
 
             try:
                 voice_service = self._build_voice_service(campaign, user, db=db)
             except Exception as e:
-                logger.error(f"Campaign {campaign.id}: Failed to init voice provider: {e}")
-                campaign.status = CampaignStatus.PAUSED
-                db.commit()
+                reason = f"Failed to initialize AI runtime while processing a campaign number: {str(e)[:390]}"
+                logger.error(f"Campaign {campaign.id}: {reason}")
+                self._pause_campaign(db, campaign, reason, campaign_number=number)
                 return
 
             self._process_number_with_session(
