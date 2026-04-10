@@ -52,6 +52,18 @@ echo "🌿 Branch de deploy: $DEPLOY_BRANCH"
 git fetch origin "$DEPLOY_BRANCH"
 git reset --hard "origin/$DEPLOY_BRANCH"
 
+# Garante que os wrappers usados pelo systemd continuem executáveis
+# mesmo após um reset duro para uma branch antiga.
+if [ -f "deploy.sh" ]; then
+    chmod +x deploy.sh || true
+fi
+if [ -f "deploy/bin/start-app.sh" ]; then
+    chmod +x deploy/bin/start-app.sh || true
+fi
+if [ -f "deploy/bin/start-worker.sh" ]; then
+    chmod +x deploy/bin/start-worker.sh || true
+fi
+
 # Restaura DB local preservado após reset duro.
 if [ -n "$DB_TMP" ] && [ -f "$DB_TMP" ]; then
     cp "$DB_TMP" "$DB_FILE"
