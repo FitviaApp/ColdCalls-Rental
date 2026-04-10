@@ -1,29 +1,60 @@
 """
 Authentication Router - Login, Register, Logout
 """
+import logging
+
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
-from app.auth import create_access_token, verify_password
+from app.auth import create_access_token, decode_access_token, verify_password
 from app.config import get_settings
 from app.database import get_db
-from app.dependencies import get_current_user_optional
 from app.models import User
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 templates = Jinja2Templates(directory="app/templates")
 settings = get_settings()
+logger = logging.getLogger(__name__)
+
+
+def _get_authenticated_user_or_none(request: Request, db: Session) -> User | None:
+    """
+    Public auth pages should still render even if a stale cookie or transient DB
+    issue prevents us from resolving the current user.
+    """
+    token = request.cookies.get("access_token")
+    if not token:
+        return None
+
+    try:
+        payload = decode_access_token(token)
+        if not payload:
+            return None
+
+        user_id = payload.get("sub")
+        if not user_id:
+            return None
+
+        user = db.query(User).filter(User.id == int(user_id)).first()
+        if not user or not user.is_active:
+            return None
+
+        return user
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Ignoring auth cookie on public auth page: %s", exc)
+        return None
 
 
 @router.get("/login", response_class=HTMLResponse)
 async def login_page(
     request: Request,
     registration: str = "",
-    user: User = Depends(get_current_user_optional)
+    db: Session = Depends(get_db)
 ):
     """Display login page"""
+    user = _get_authenticated_user_or_none(request, db)
     if user:
         return RedirectResponse(url="/dashboard", status_code=302)
 
@@ -87,10 +118,11 @@ async def login(
 
 @router.get("/register", response_class=HTMLResponse)
 async def register_page(
-    _request: Request,
-    user: User = Depends(get_current_user_optional)
+    request: Request,
+    db: Session = Depends(get_db)
 ):
     """Public registration is disabled; admin creates users"""
+    user = _get_authenticated_user_or_none(request, db)
     if user:
         return RedirectResponse(url="/dashboard", status_code=302)
 
