@@ -20,6 +20,12 @@ if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     exit 1
 fi
 
+CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)"
+DEPLOY_BRANCH="${DEPLOY_BRANCH:-$CURRENT_BRANCH}"
+if [ -z "$DEPLOY_BRANCH" ] || [ "$DEPLOY_BRANCH" = "HEAD" ]; then
+    DEPLOY_BRANCH="main"
+fi
+
 DB_FILE="coldcalls.db"
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
 BACKUP_FILE="${DB_FILE}.backup.${TIMESTAMP}"
@@ -42,8 +48,9 @@ if git ls-files --error-unmatch "$DB_FILE" >/dev/null 2>&1 && [ -f "$DB_FILE" ];
 fi
 
 echo "📥 Puxando mudanças do GitHub..."
-git fetch origin main
-git reset --hard origin/main
+echo "🌿 Branch de deploy: $DEPLOY_BRANCH"
+git fetch origin "$DEPLOY_BRANCH"
+git reset --hard "origin/$DEPLOY_BRANCH"
 
 # Restaura DB local preservado após reset duro.
 if [ -n "$DB_TMP" ] && [ -f "$DB_TMP" ]; then
@@ -59,8 +66,10 @@ elif [ -f "venv/bin/activate" ]; then
     # shellcheck disable=SC1091
     source venv/bin/activate
 else
-    echo -e "${RED}❌ Virtualenv não encontrado (.venv ou venv).${NC}"
-    exit 1
+    echo -e "${YELLOW}⚠️  Virtualenv não encontrado. Criando .venv...${NC}"
+    python3 -m venv .venv
+    # shellcheck disable=SC1091
+    source .venv/bin/activate
 fi
 
 echo "📦 Atualizando dependências..."
