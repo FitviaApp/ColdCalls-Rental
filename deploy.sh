@@ -35,10 +35,62 @@ APP_PORT="${APP_PORT:-8000}"
 NGINX_SERVER_NAME="${NGINX_SERVER_NAME:-18.231.196.243}"
 NGINX_SITE_NAME="${NGINX_SITE_NAME:-coldcalls}"
 CONFIGURE_NGINX="${CONFIGURE_NGINX:-1}"
+ENSURE_REDIS="${ENSURE_REDIS:-1}"
+REDIS_SERVICE="${REDIS_SERVICE:-}"
+REDIS_URL_EFFECTIVE=""
+HAS_REDIS_SERVICE=1
 NGINX_AVAILABLE_PATH="/etc/nginx/sites-available/${NGINX_SITE_NAME}"
 NGINX_ENABLED_PATH="/etc/nginx/sites-enabled/${NGINX_SITE_NAME}"
 NGINX_TEMPLATE_PATH="${PROJECT_DIR}/deploy/nginx/coldcalls.conf.template"
 HAS_NGINX_CONFIG=0
+
+read_env_value() {
+    local env_file="$1"
+    local key="$2"
+    if [ ! -f "$env_file" ]; then
+        return
+    fi
+    grep -E "^${key}=" "$env_file" | tail -n 1 | cut -d'=' -f2-
+}
+
+is_local_redis_url() {
+    local value="$1"
+    if [ -z "$value" ]; then
+        return 0
+    fi
+    case "$value" in
+        redis://localhost*|redis://127.0.0.1*|redis://[::1]*|unix://*|redis+socket://*)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+detect_systemd_service() {
+    local service_name
+    for service_name in "$@"; do
+        if [ -n "$service_name" ] && systemctl list-unit-files "${service_name}.service" --no-legend 2>/dev/null | grep -q "${service_name}.service"; then
+            printf '%s\n' "$service_name"
+            return 0
+        fi
+    done
+    return 1
+}
+
+install_redis_server_if_needed() {
+    if [ "$ENSURE_REDIS" != "1" ]; then
+        return 1
+    fi
+    if ! command -v apt-get >/dev/null 2>&1; then
+        return 1
+    fi
+    echo "🧠 Redis não encontrado; instalando redis-server..."
+    sudo -n apt-get update -y
+    sudo -n apt-get install -y redis-server
+    return 0
+}
 
 # Backup antes de atualizar código para evitar perda em reset.
 if [ -f "$DB_FILE" ]; then
@@ -83,6 +135,29 @@ if [ -z "$WORKER_SERVICE" ]; then
     done
 fi
 
+REDIS_URL_EFFECTIVE="$(read_env_value "${PROJECT_DIR}/.env" "REDIS_URL" || true)"
+if [ -z "$REDIS_URL_EFFECTIVE" ]; then
+    REDIS_URL_EFFECTIVE="redis://localhost:6379/0"
+fi
+
+if is_local_redis_url "$REDIS_URL_EFFECTIVE"; then
+    if [ -z "$REDIS_SERVICE" ]; then
+        REDIS_SERVICE="$(detect_systemd_service redis-server redis || true)"
+    fi
+
+    if [ -z "$REDIS_SERVICE" ]; then
+        install_redis_server_if_needed || true
+        REDIS_SERVICE="$(detect_systemd_service redis-server redis || true)"
+    fi
+
+    if [ -z "$REDIS_SERVICE" ]; then
+        HAS_REDIS_SERVICE=0
+        echo -e "${RED}❌ Redis é obrigatório para campanhas IA e não foi encontrado neste servidor.${NC}"
+        echo -e "${YELLOW}   Configure REDIS_URL para um Redis remoto ou instale redis-server localmente.${NC}"
+        exit 1
+    fi
+fi
+
 if [ -z "$WORKER_SERVICE" ]; then
     HAS_WORKER_SERVICE=0
     echo -e "${YELLOW}⚠️  Serviço do worker não detectado. Deploy seguirá apenas com app.${NC}"
@@ -106,12 +181,25 @@ if [ "$HAS_NGINX_CONFIG" -eq 1 ]; then
 fi
 
 echo "🔄 Reiniciando serviços..."
+if [ "$HAS_REDIS_SERVICE" -eq 1 ] && [ -n "$REDIS_SERVICE" ]; then
+    sudo -n systemctl enable --now "$REDIS_SERVICE"
+fi
 sudo -n systemctl restart "$APP_SERVICE"
 if [ "$HAS_WORKER_SERVICE" -eq 1 ]; then
     sudo -n systemctl restart "$WORKER_SERVICE"
 fi
 
 sleep 3
+
+if [ "$HAS_REDIS_SERVICE" -eq 1 ] && [ -n "$REDIS_SERVICE" ]; then
+    if systemctl is-active --quiet "$REDIS_SERVICE"; then
+        echo -e "${GREEN}✅ Redis: RODANDO${NC}"
+    else
+        echo -e "${RED}❌ Redis: ERRO${NC}"
+        sudo journalctl -u "$REDIS_SERVICE" -n 20 --no-pager
+        exit 1
+    fi
+fi
 
 if systemctl is-active --quiet "$APP_SERVICE"; then
     echo -e "${GREEN}✅ App: RODANDO${NC}"

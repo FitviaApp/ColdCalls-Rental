@@ -145,6 +145,7 @@ bash deploy/bin/start-worker.sh
 
 O worker verifica campanhas `running` a cada 10 segundos.
 Os wrappers usam `.venv` primeiro e fazem fallback para `venv`.
+Campanhas com agente IA tambem exigem Redis acessivel em `REDIS_URL`.
 
 ## Publicando com Nginx
 
@@ -164,10 +165,11 @@ Ao executar `./deploy.sh`, ele vai:
 
 1. atualizar o codigo
 2. instalar dependencias
-3. gerar `/etc/nginx/sites-available/coldcalls`
-4. criar o link em `/etc/nginx/sites-enabled/coldcalls`
-5. validar com `nginx -t`
-6. recarregar o `nginx`
+3. garantir que o Redis local esteja ativo quando `REDIS_URL` apontar para `localhost`
+4. gerar `/etc/nginx/sites-available/coldcalls`
+5. criar o link em `/etc/nginx/sites-enabled/coldcalls`
+6. validar com `nginx -t`
+7. recarregar o `nginx`
 
 Exemplo de upstream esperado:
 
@@ -185,6 +187,8 @@ O repositorio inclui templates em `deploy/systemd/` e wrappers em `deploy/bin/`:
 - `coldcalls.service` para a aplicacao web
 - `coldcalls-worker.service` para o worker
 - `start-app.sh` e `start-worker.sh` para resolver o virtualenv de forma consistente
+
+Os templates tambem declaram dependencia de `redis-server.service` para ambientes Ubuntu com Redis local.
 
 No servidor Ubuntu:
 
