@@ -62,6 +62,7 @@ async def login_page(
         "auth/login.html",
         {
             "request": request,
+            "user": None,
             "registration_disabled": registration == "disabled",
             "error": None
         }
@@ -83,6 +84,7 @@ async def login(
             "auth/login.html",
             {
                 "request": request,
+                "user": None,
                 "error": "Invalid email or password",
                 "registration_disabled": False
             },
@@ -94,6 +96,7 @@ async def login(
             "auth/login.html",
             {
                 "request": request,
+                "user": None,
                 "error": "Your account has been disabled",
                 "registration_disabled": False
             },
