@@ -10,6 +10,7 @@ from app.routers.campaigns import (
     _campaign_start_validation_error,
     _parse_campaign_numbers,
 )
+import app.services.ai_campaign_readiness_service as ai_readiness_module
 from app.services.ai_call_runtime_service import (
     AI_RUNTIME_DIR,
     AICallRuntimeService,
@@ -209,6 +210,24 @@ class SignalWireSupportTests(unittest.TestCase):
         self.assertEqual(captured["url"], "https://example.com/api/ai-realtime/twiml/1?token=x")
         self.assertNotIn("twiml", captured)
 
+    def test_twilio_answer_url_requires_public_base_url(self):
+        service = TwilioService.__new__(TwilioService)
+        service.client = SimpleNamespace(calls=SimpleNamespace(create=lambda **kwargs: kwargs))
+        service.account_sid = "AC123"
+        service.auth_token = "token"
+
+        with self.assertRaises(ValueError) as ctx:
+            service.make_call(
+                to_number="+15550000001",
+                from_number="+15550000002",
+                audio_url=None,
+                transfer_number="+15550000003",
+                answer_url="http://localhost:8000/api/ai-runtime/twiml/1",
+                enable_machine_detection=False,
+            )
+
+        self.assertIn("public http(s) URL", str(ctx.exception))
+
     def test_twilio_update_call_twiml_updates_active_call(self):
         service = TwilioService.__new__(TwilioService)
         captured = {}
@@ -330,6 +349,174 @@ class SignalWireSupportTests(unittest.TestCase):
         self.assertEqual(
             error,
             "Please configure Twilio or SignalWire, OpenAI, and ElevenLabs credentials in Settings first",
+        )
+
+    def test_campaign_start_validation_prefers_specific_ai_runtime_error(self):
+        user = SimpleNamespace(id=1, transfer_number="+15550001111")
+        caller_id = SimpleNamespace(
+            user_id=1,
+            vox_verification_status="verified",
+        )
+        ai_agent = SimpleNamespace(user_id=1, is_active=True)
+        campaign = SimpleNamespace(
+            voice_provider=VoiceProvider.TWILIO,
+            campaign_mode=CampaignMode.AI_AGENT,
+            ai_agent_id=5,
+            ai_agent=ai_agent,
+            press_1_to_talk_with_agent=False,
+            caller_id=caller_id,
+            audio_id=None,
+            audio=None,
+        )
+        error = _campaign_start_validation_error(
+            campaign=campaign,
+            user=user,
+            provider_configured=True,
+            ai_runtime_configured=True,
+            ai_runtime_error="Please configure Twilio credentials in Settings first",
+        )
+        self.assertEqual(error, "Please configure Twilio credentials in Settings first")
+
+    def test_ai_campaign_readiness_reports_missing_twilio_credentials(self):
+        original_schema = ai_readiness_module.get_ai_schema_health
+        original_validate = ai_readiness_module.validate_public_callback_url
+        original_twilio = ai_readiness_module.has_user_twilio_credentials
+        original_openai = ai_readiness_module.has_user_openai_credentials
+        original_elevenlabs = ai_readiness_module.has_user_elevenlabs_credentials
+        try:
+            ai_readiness_module.get_ai_schema_health = lambda bind=None: {"ready": True, "missing_items": ()}
+            ai_readiness_module.validate_public_callback_url = lambda url, provider_name="provider": url
+            ai_readiness_module.has_user_twilio_credentials = lambda db, user_id: False
+            ai_readiness_module.has_user_openai_credentials = lambda db, user_id: True
+            ai_readiness_module.has_user_elevenlabs_credentials = lambda db, user_id: True
+            readiness = ai_readiness_module.get_ai_campaign_readiness(
+                SimpleNamespace(get_bind=lambda: None),
+                user_id=1,
+                voice_provider=VoiceProvider.TWILIO.value,
+                ai_agent=SimpleNamespace(is_active=True),
+            )
+        finally:
+            ai_readiness_module.get_ai_schema_health = original_schema
+            ai_readiness_module.validate_public_callback_url = original_validate
+            ai_readiness_module.has_user_twilio_credentials = original_twilio
+            ai_readiness_module.has_user_openai_credentials = original_openai
+            ai_readiness_module.has_user_elevenlabs_credentials = original_elevenlabs
+
+        self.assertEqual(readiness.error, "Please configure Twilio credentials in Settings first")
+
+    def test_ai_campaign_readiness_reports_missing_openai_credentials(self):
+        original_schema = ai_readiness_module.get_ai_schema_health
+        original_validate = ai_readiness_module.validate_public_callback_url
+        original_twilio = ai_readiness_module.has_user_twilio_credentials
+        original_openai = ai_readiness_module.has_user_openai_credentials
+        original_elevenlabs = ai_readiness_module.has_user_elevenlabs_credentials
+        try:
+            ai_readiness_module.get_ai_schema_health = lambda bind=None: {"ready": True, "missing_items": ()}
+            ai_readiness_module.validate_public_callback_url = lambda url, provider_name="provider": url
+            ai_readiness_module.has_user_twilio_credentials = lambda db, user_id: True
+            ai_readiness_module.has_user_openai_credentials = lambda db, user_id: False
+            ai_readiness_module.has_user_elevenlabs_credentials = lambda db, user_id: True
+            readiness = ai_readiness_module.get_ai_campaign_readiness(
+                SimpleNamespace(get_bind=lambda: None),
+                user_id=1,
+                voice_provider=VoiceProvider.TWILIO.value,
+                ai_agent=SimpleNamespace(is_active=True),
+            )
+        finally:
+            ai_readiness_module.get_ai_schema_health = original_schema
+            ai_readiness_module.validate_public_callback_url = original_validate
+            ai_readiness_module.has_user_twilio_credentials = original_twilio
+            ai_readiness_module.has_user_openai_credentials = original_openai
+            ai_readiness_module.has_user_elevenlabs_credentials = original_elevenlabs
+
+        self.assertEqual(readiness.error, "Please configure OpenAI credentials in Settings first")
+
+    def test_ai_campaign_readiness_reports_missing_elevenlabs_credentials(self):
+        original_schema = ai_readiness_module.get_ai_schema_health
+        original_validate = ai_readiness_module.validate_public_callback_url
+        original_twilio = ai_readiness_module.has_user_twilio_credentials
+        original_openai = ai_readiness_module.has_user_openai_credentials
+        original_elevenlabs = ai_readiness_module.has_user_elevenlabs_credentials
+        try:
+            ai_readiness_module.get_ai_schema_health = lambda bind=None: {"ready": True, "missing_items": ()}
+            ai_readiness_module.validate_public_callback_url = lambda url, provider_name="provider": url
+            ai_readiness_module.has_user_twilio_credentials = lambda db, user_id: True
+            ai_readiness_module.has_user_openai_credentials = lambda db, user_id: True
+            ai_readiness_module.has_user_elevenlabs_credentials = lambda db, user_id: False
+            readiness = ai_readiness_module.get_ai_campaign_readiness(
+                SimpleNamespace(get_bind=lambda: None),
+                user_id=1,
+                voice_provider=VoiceProvider.TWILIO.value,
+                ai_agent=SimpleNamespace(is_active=True),
+            )
+        finally:
+            ai_readiness_module.get_ai_schema_health = original_schema
+            ai_readiness_module.validate_public_callback_url = original_validate
+            ai_readiness_module.has_user_twilio_credentials = original_twilio
+            ai_readiness_module.has_user_openai_credentials = original_openai
+            ai_readiness_module.has_user_elevenlabs_credentials = original_elevenlabs
+
+        self.assertEqual(readiness.error, "Please configure ElevenLabs credentials in Settings first")
+
+    def test_ai_campaign_readiness_reports_inactive_agent(self):
+        original_schema = ai_readiness_module.get_ai_schema_health
+        original_validate = ai_readiness_module.validate_public_callback_url
+        original_twilio = ai_readiness_module.has_user_twilio_credentials
+        original_openai = ai_readiness_module.has_user_openai_credentials
+        original_elevenlabs = ai_readiness_module.has_user_elevenlabs_credentials
+        try:
+            ai_readiness_module.get_ai_schema_health = lambda bind=None: {"ready": True, "missing_items": ()}
+            ai_readiness_module.validate_public_callback_url = lambda url, provider_name="provider": url
+            ai_readiness_module.has_user_twilio_credentials = lambda db, user_id: True
+            ai_readiness_module.has_user_openai_credentials = lambda db, user_id: True
+            ai_readiness_module.has_user_elevenlabs_credentials = lambda db, user_id: True
+            readiness = ai_readiness_module.get_ai_campaign_readiness(
+                SimpleNamespace(get_bind=lambda: None),
+                user_id=1,
+                voice_provider=VoiceProvider.TWILIO.value,
+                ai_agent=SimpleNamespace(is_active=False),
+            )
+        finally:
+            ai_readiness_module.get_ai_schema_health = original_schema
+            ai_readiness_module.validate_public_callback_url = original_validate
+            ai_readiness_module.has_user_twilio_credentials = original_twilio
+            ai_readiness_module.has_user_openai_credentials = original_openai
+            ai_readiness_module.has_user_elevenlabs_credentials = original_elevenlabs
+
+        self.assertEqual(readiness.error, "Selected AI agent is inactive")
+
+    def test_ai_campaign_readiness_reports_invalid_public_base_url(self):
+        original_schema = ai_readiness_module.get_ai_schema_health
+        original_validate = ai_readiness_module.validate_public_callback_url
+        original_twilio = ai_readiness_module.has_user_twilio_credentials
+        original_openai = ai_readiness_module.has_user_openai_credentials
+        original_elevenlabs = ai_readiness_module.has_user_elevenlabs_credentials
+        try:
+            ai_readiness_module.get_ai_schema_health = lambda bind=None: {"ready": True, "missing_items": ()}
+            ai_readiness_module.validate_public_callback_url = (
+                lambda url, provider_name="provider": (_ for _ in ()).throw(
+                    ValueError("BASE_URL must be a public http(s) URL reachable by Twilio callbacks")
+                )
+            )
+            ai_readiness_module.has_user_twilio_credentials = lambda db, user_id: True
+            ai_readiness_module.has_user_openai_credentials = lambda db, user_id: True
+            ai_readiness_module.has_user_elevenlabs_credentials = lambda db, user_id: True
+            readiness = ai_readiness_module.get_ai_campaign_readiness(
+                SimpleNamespace(get_bind=lambda: None),
+                user_id=1,
+                voice_provider=VoiceProvider.TWILIO.value,
+                ai_agent=SimpleNamespace(is_active=True),
+            )
+        finally:
+            ai_readiness_module.get_ai_schema_health = original_schema
+            ai_readiness_module.validate_public_callback_url = original_validate
+            ai_readiness_module.has_user_twilio_credentials = original_twilio
+            ai_readiness_module.has_user_openai_credentials = original_openai
+            ai_readiness_module.has_user_elevenlabs_credentials = original_elevenlabs
+
+        self.assertEqual(
+            readiness.error,
+            "BASE_URL must be a public http(s) URL reachable by Twilio callbacks",
         )
 
     def test_elevenlabs_voice_fallback_uses_default_voice(self):

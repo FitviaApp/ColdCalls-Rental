@@ -5,7 +5,7 @@ Plataforma web para gerenciamento de campanhas de cold calls multiusuario com:
 - FastAPI + Jinja2
 - SQLAlchemy + SQLite
 - Twilio, SignalWire, Telnyx, Vonage e Voximplant
-- Agentes de IA reutilizaveis com OpenAI Realtime Audio + SignalWire
+- Agentes de IA reutilizaveis com Twilio/SignalWire + OpenAI Chat + ElevenLabs
 - Cloudflare R2 (audios)
 - Cobranca de aluguel via USDT (verificacao on-chain)
 
@@ -52,7 +52,7 @@ README.md
 
 - Python 3.11+
 - Pelo menos um provider de voz configurado por usuario
-- Para campanhas com agente IA: SignalWire + credenciais OpenAI Realtime por usuario
+- Para campanhas com agente IA: Twilio ou SignalWire + credenciais OpenAI + ElevenLabs por usuario
 - Bucket Cloudflare R2 (para audios)
 - Chave Etherscan (verificacao de pagamento)
 - `BASE_URL` publica para callbacks de providers
@@ -79,8 +79,9 @@ Crie um arquivo `.env` na raiz do projeto.
 APP_NAME=ColdCalls Platform
 SECRET_KEY=change-me-in-production-min-32-chars
 DEBUG=false
-# URL publica para callbacks Twilio, SignalWire, Telnyx e Voximplant
-BASE_URL=http://localhost:8000
+# URL publica para callbacks Twilio, SignalWire, Telnyx e Voximplant.
+# Em deploy real, nao use localhost ou IP privado.
+BASE_URL=https://your-public-domain.example.com
 OPENAI_API_BASE=https://api.openai.com/v1
 OPENAI_DEFAULT_MODEL=gpt-4o-mini
 OPENAI_REALTIME_MODEL=gpt-realtime
@@ -133,16 +134,17 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 ### 1) Aplicacao web
 
 ```bash
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+bash deploy/bin/start-app.sh
 ```
 
 ### 2) Worker (em outro terminal)
 
 ```bash
-python worker.py
+bash deploy/bin/start-worker.sh
 ```
 
 O worker verifica campanhas `running` a cada 10 segundos.
+Os wrappers usam `.venv` primeiro e fazem fallback para `venv`.
 
 ## Publicando com Nginx
 
@@ -178,10 +180,11 @@ Se quiser pular essa etapa em algum ambiente, use `CONFIGURE_NGINX=0`.
 
 ## Rodando com systemd
 
-O repositorio inclui templates em `deploy/systemd/`:
+O repositorio inclui templates em `deploy/systemd/` e wrappers em `deploy/bin/`:
 
 - `coldcalls.service` para a aplicacao web
 - `coldcalls-worker.service` para o worker
+- `start-app.sh` e `start-worker.sh` para resolver o virtualenv de forma consistente
 
 No servidor Ubuntu:
 
@@ -209,7 +212,8 @@ sudo journalctl -u coldcalls-worker -f
 5. Cada usuario configura:
    - Numero de transferencia em `/dashboard/settings`
    - Credenciais de voz em `/dashboard/settings`
-   - Credenciais OpenAI Realtime em `/dashboard/settings`
+   - Credenciais OpenAI em `/dashboard/settings`
+   - Credenciais ElevenLabs em `/dashboard/settings`
    - Caller IDs em `/assets/caller-ids`
    - Audios em `/assets/audios`
    - Agentes IA reutilizaveis em `/ai-agents`
@@ -217,7 +221,7 @@ sudo journalctl -u coldcalls-worker -f
 6. O usuario paga aluguel em `/billing`.
 7. Crie e inicie campanhas em `/campaigns`.
    - `audio`: usa audio gravado e/ou transferencia direta
-   - `ai_agent`: usa SignalWire + OpenAI Realtime Audio para conversa bidirecional e transferencia via ferramenta explicita
+   - `ai_agent`: usa Twilio ou SignalWire + `/api/ai-runtime/*` + OpenAI Chat + ElevenLabs para conversa e transferencia
 
 ## Rotas principais
 
@@ -237,7 +241,7 @@ sudo journalctl -u coldcalls-worker -f
   - `/api/data/audios`
   - `/api/twiml/{campaign_id}` (Twilio/SignalWire)
   - `/api/telnyx/texml/{campaign_id}`
-  - `/api/ai-runtime/twiml/{campaign_number_id}` (SignalWire + IA)
+  - `/api/ai-runtime/twiml/{campaign_number_id}` (Twilio/SignalWire + IA)
   - `/api/ai-runtime/audio/{campaign_number_id}/{audio_token}`
   - `/api/voximplant/callback`
 
@@ -245,17 +249,17 @@ sudo journalctl -u coldcalls-worker -f
 
 Fluxo da v1:
 
-1. O usuario cadastra SignalWire e OpenAI Realtime em `/dashboard/settings`.
+1. O usuario cadastra Twilio ou SignalWire, OpenAI e ElevenLabs em `/dashboard/settings`.
 2. O usuario cria um agente reutilizavel em `/ai-agents` com:
    - nome
    - prompt do sistema
-   - `voice_id` da OpenAI (ex.: `alloy`)
-   - modelo OpenAI Realtime (ex.: `gpt-realtime`)
+   - `voice_id` do ElevenLabs
+   - modelo OpenAI Chat (ex.: `gpt-4o-mini`)
    - regra de handoff
 3. Em `/campaigns/create`, escolhe `Campaign Mode = AI agent`.
-4. A campanha usa SignalWire para originar a chamada.
-5. OpenAI Realtime processa audio bidirecional e decide quando chamar a ferramenta `transfer_call`.
-6. Quando o modelo dispara `transfer_call`, a chamada e redirecionada para o numero de transferencia.
+4. A campanha usa Twilio ou SignalWire para originar a chamada.
+5. O provider busca `/api/ai-runtime/twiml/{campaign_number_id}` na sua `BASE_URL` publica.
+6. O backend executa um loop TwiML/Gather, chama OpenAI Chat para decidir a proxima resposta e sintetiza audio com ElevenLabs.
 7. Quando o modelo decide transferir, a chamada vai para o `transfer_number` do usuario.
 
 Observacoes:
@@ -264,6 +268,25 @@ Observacoes:
 - O modo IA nao usa `audio_id`.
 - O modo IA nao usa o fluxo `Press 1`.
 - `BASE_URL` precisa estar acessivel publicamente para os callbacks `/api/ai-runtime/*`.
+- Campanhas IA falham cedo se `BASE_URL` apontar para `localhost`, `.local` ou IP privado.
+- O dashboard e `/health` agora mostram estado do worker e prontidao do schema de IA.
+
+## Recuperacao rapida no servidor
+
+Se campanhas IA com Twilio estiverem falhando logo no inicio:
+
+```bash
+sudo journalctl -u coldcalls -n 100 --no-pager
+sudo journalctl -u coldcalls-worker -n 100 --no-pager
+curl -s http://127.0.0.1:8000/health
+```
+
+Verifique tambem:
+
+- `/var/www/ColdCalls-Rental/.env` existe
+- `BASE_URL` e publica e alcancavel pelo provider
+- app e worker subiram ao menos uma vez apos o deploy para aplicar `init_db()`
+- o schema contem `campaign_mode`, `ai_agent_id` e as colunas `campaign_numbers.ai_*`
 
 ## Voximplant
 
@@ -313,5 +336,5 @@ python3 scripts/cleanup_legacy_schema.py --apply
 ## Observacoes
 
 - O banco e criado automaticamente no startup (`init_db()`), sem Alembic.
-- O endpoint `/health` retorna status da aplicacao.
+- O endpoint `/health` retorna status da aplicacao, do worker e do schema de IA.
 - Rotas admin antigas de Caller IDs e Audios estao descontinuadas; a gestao e por usuario em `/assets`.

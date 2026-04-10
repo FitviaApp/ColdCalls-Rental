@@ -65,13 +65,25 @@
                     <div class="ml-5 w-0 flex-1">
                         <dl>
                             <dt class="text-sm font-medium text-gray-500 truncate">AI Agent Runtime</dt>
-                            {% if stats.ai_runtime_configured %}
+                            {% if stats.ai_runtime_configured and stats.ai_schema_ready %}
                             <dd class="text-lg font-semibold text-gray-900">Ready</dd>
                             <dd class="text-sm text-gray-500">Twilio/SignalWire, OpenAI Chat, and ElevenLabs Voice are configured.</dd>
                             {% else %}
                             <dd class="text-sm font-medium text-gray-600">
                                 Finish AI setup in
                                 <a href="/dashboard/settings#openai" class="text-indigo-600 hover:text-indigo-500">Settings</a>.
+                            </dd>
+                            {% endif %}
+                            <dd class="mt-2 text-xs {% if stats.worker_online %}text-green-700{% else %}text-amber-700{% endif %}">
+                                Worker: {% if stats.worker_online %}online{% else %}offline or stale{% endif %}
+                                {% if stats.worker_age_seconds is not none %}(last heartbeat {{ stats.worker_age_seconds }}s ago){% endif %}
+                            </dd>
+                            <dd class="mt-1 text-xs {% if stats.ai_schema_ready %}text-green-700{% else %}text-red-700{% endif %}">
+                                Schema: {% if stats.ai_schema_ready %}ready{% else %}missing AI columns/tables{% endif %}
+                            </dd>
+                            {% if not stats.ai_schema_ready and stats.ai_schema_missing_items %}
+                            <dd class="mt-1 text-xs text-red-700">
+                                Missing: {{ stats.ai_schema_missing_items[:4]|join(', ') }}{% if stats.ai_schema_missing_items|length > 4 %}, ...{% endif %}
                             </dd>
                             {% endif %}
                         </dl>

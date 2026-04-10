@@ -24,6 +24,7 @@ from app.services.ai_call_runtime_service import (
     prune_stale_ai_runtime_artifacts,
     update_campaign_number_ai_observability,
 )
+from app.services.ai_campaign_readiness_service import get_ai_campaign_readiness, get_ai_schema_health
 from app.config import get_settings
 from app.services.telnyx_service import TelnyxService
 from app.services.twilio_service import TwilioService
@@ -36,6 +37,7 @@ from app.services.user_telnyx_service import get_user_telnyx_credentials
 from app.services.user_twilio_service import get_user_twilio_credentials
 from app.services.user_vonage_service import get_user_vonage_credentials
 from app.services.user_voximplant_service import get_user_voximplant_credentials
+from app.services.worker_health_service import touch_worker_heartbeat
 
 # Configure logging
 logging.basicConfig(
@@ -659,6 +661,14 @@ class CampaignWorker:
                 raise ValueError("AI agent campaigns require Twilio or SignalWire")
             if not campaign.ai_agent or not campaign.ai_agent.is_active:
                 raise ValueError("AI agent is not configured or inactive")
+            readiness = get_ai_campaign_readiness(
+                session,
+                user_id=user.id,
+                voice_provider=provider,
+                ai_agent=campaign.ai_agent,
+            )
+            if readiness.error:
+                raise ValueError(readiness.error)
             return AICallRuntimeService(session, user.id, provider=provider)
 
         if provider == VoiceProvider.TWILIO.value:
@@ -703,6 +713,9 @@ def run_worker(check_interval: int = 10):
     logger.info("Starting campaign worker...")
     # Ensure tables and lightweight schema patches are applied even if app has not started.
     init_db()
+    schema_health = get_ai_schema_health()
+    if not schema_health["ready"]:
+        logger.error("AI schema is incomplete after init_db: %s", ", ".join(schema_health["missing_items"]))
 
     # Handle graceful shutdown
     worker = None
@@ -741,7 +754,7 @@ def run_worker(check_interval: int = 10):
 def _touch_heartbeat():
     """Update worker heartbeat timestamp for health checks."""
     try:
-        WORKER_HEARTBEAT_FILE.touch()
+        touch_worker_heartbeat()
     except Exception as e:
         logger.warning(f"Could not update worker heartbeat: {e}")
 

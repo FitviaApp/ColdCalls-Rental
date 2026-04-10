@@ -13,6 +13,7 @@ from app.auth import hash_password, verify_password
 from app.database import get_db
 from app.dependencies import get_current_user, require_active_rental
 from app.models import User, Campaign, CampaignNumber, CampaignStatus, CampaignMode, AIAgent
+from app.services.ai_campaign_readiness_service import get_ai_schema_health
 from app.services.rental_service import get_active_rental
 from app.services.user_telnyx_service import (
     has_user_telnyx_credentials,
@@ -48,6 +49,7 @@ from app.services.user_voice_provider_service import has_any_user_voice_provider
 from app.services.user_voice_provider_service import has_user_ai_runtime_credentials
 from app.services.twilio_service import TwilioService
 from app.services.voximplant_management_service import ensure_user_voximplant_resources
+from app.services.worker_health_service import get_worker_health
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 templates = Jinja2Templates(directory="app/templates")
@@ -170,6 +172,9 @@ async def dashboard(
         except Exception:
             twilio_balance_error = "Unable to load Twilio balance right now."
 
+    worker_health = get_worker_health()
+    ai_schema_health = get_ai_schema_health(db.get_bind())
+
     stats = {
         "total_campaigns": len(all_campaigns),
         "active_campaigns": len([c for c in all_campaigns if c.status == CampaignStatus.RUNNING]),
@@ -185,6 +190,11 @@ async def dashboard(
         "openai_configured": has_user_openai_credentials(db, user.id),
         "elevenlabs_configured": has_user_elevenlabs_credentials(db, user.id),
         "ai_runtime_configured": has_user_ai_runtime_credentials(db, user.id),
+        "worker_online": bool(worker_health.get("online")),
+        "worker_age_seconds": worker_health.get("age_seconds"),
+        "worker_last_heartbeat_at": worker_health.get("last_heartbeat_at"),
+        "ai_schema_ready": bool(ai_schema_health["ready"]),
+        "ai_schema_missing_items": list(ai_schema_health["missing_items"]),
         "twilio_balance": twilio_balance,
         "twilio_balance_currency": twilio_balance_currency,
         "twilio_balance_error": twilio_balance_error,

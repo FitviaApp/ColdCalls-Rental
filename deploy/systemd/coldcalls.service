@@ -8,7 +8,7 @@ User=ubuntu
 Group=ubuntu
 WorkingDirectory=/var/www/ColdCalls-Rental
 EnvironmentFile=/var/www/ColdCalls-Rental/.env
-ExecStart=/var/www/ColdCalls-Rental/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+ExecStart=/bin/bash /var/www/ColdCalls-Rental/deploy/bin/start-app.sh
 Restart=always
 RestartSec=5
 

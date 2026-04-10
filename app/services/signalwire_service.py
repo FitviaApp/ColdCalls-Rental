@@ -5,37 +5,15 @@ from __future__ import annotations
 
 import logging
 import time
-import ipaddress
 from typing import Callable, Optional
-from urllib.parse import urlparse
 
 import httpx
 
 from app.config import get_settings
+from app.services.callback_url_service import build_public_callback_url, validate_public_callback_url
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
-
-
-def _is_public_callback_url(url: str) -> bool:
-    try:
-        parsed = urlparse(str(url or "").strip())
-    except Exception:
-        return False
-
-    if parsed.scheme not in {"http", "https"}:
-        return False
-
-    host = (parsed.hostname or "").strip().lower()
-    if not host or host in {"localhost", "0.0.0.0"} or host.endswith(".local"):
-        return False
-
-    try:
-        ip = ipaddress.ip_address(host)
-    except ValueError:
-        return True
-
-    return ip.is_global
 
 
 class SignalWireService:
@@ -82,21 +60,18 @@ class SignalWireService:
             "Timeout": int(timeout),
         }
         if answer_url:
-            if not _is_public_callback_url(answer_url):
-                raise ValueError(
-                    "BASE_URL must be a public http(s) URL reachable by SignalWire callbacks"
-                )
-            payload["Url"] = answer_url
+            payload["Url"] = validate_public_callback_url(
+                answer_url,
+                provider_name="SignalWire",
+            )
         elif press_1_to_talk_with_agent:
             if campaign_id is None:
                 raise ValueError("campaign_id is required when press_1_to_talk_with_agent is enabled")
-            base_url = settings.BASE_URL.rstrip("/")
-            callback_url = f"{base_url}/api/twiml/{campaign_id}"
-            if not _is_public_callback_url(callback_url):
-                raise ValueError(
-                    "BASE_URL must be a public http(s) URL reachable by SignalWire callbacks"
-                )
-            payload["Url"] = callback_url
+            payload["Url"] = build_public_callback_url(
+                settings.BASE_URL,
+                f"/api/twiml/{campaign_id}",
+                provider_name="SignalWire",
+            )
         else:
             if audio_url:
                 twiml = f"""<Response>

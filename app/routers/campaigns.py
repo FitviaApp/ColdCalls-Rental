@@ -3,7 +3,6 @@ Campaigns Router - CRUD and campaign management
 """
 import re
 from datetime import datetime
-from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Form, Request, UploadFile, File, HTTPException
@@ -18,6 +17,7 @@ from app.models import (
     User, Campaign, CampaignNumber, CallerID, Country, Audio, AIAgent,
     CampaignStatus, CallStatus, VoiceProvider, VoxCallerIDVerificationStatus, CampaignMode
 )
+from app.services.ai_campaign_readiness_service import get_ai_campaign_readiness
 from app.services.ai_agent_service import list_user_ai_agents
 from app.services.user_voice_provider_service import (
     get_user_voice_provider_status,
@@ -27,10 +27,10 @@ from app.services.user_voice_provider_service import (
     provider_supports_press_1,
     supported_voice_providers,
 )
+from app.services.worker_health_service import is_worker_online
 
 router = APIRouter(prefix="/campaigns", tags=["campaigns"])
 templates = Jinja2Templates(directory="app/templates")
-WORKER_HEARTBEAT_FILE = Path("/tmp/coldcalls_worker_heartbeat")
 MIN_CONCURRENT_CALLS = 1
 MAX_CONCURRENT_CALLS = 20
 
@@ -81,16 +81,19 @@ def _campaign_form_validation_error(
     max_concurrent_calls: int,
     provider_configured: bool,
     ai_runtime_configured: bool,
+    ai_runtime_error: str | None = None,
 ) -> str | None:
     if voice_provider not in supported_voice_providers():
         return "Invalid voice provider selected."
-    if not provider_configured:
-        return f"Selected provider ({voice_provider}) is not configured in Settings."
     if (
         campaign_mode == CampaignMode.AI_AGENT.value
         and voice_provider not in {VoiceProvider.SIGNALWIRE.value, VoiceProvider.TWILIO.value}
     ):
         return "AI agent campaigns currently require Twilio or SignalWire as the voice provider."
+    if campaign_mode == CampaignMode.AI_AGENT.value and ai_runtime_error:
+        return ai_runtime_error
+    if not provider_configured:
+        return f"Selected provider ({voice_provider}) is not configured in Settings."
     if campaign_mode == CampaignMode.AI_AGENT.value and not ai_runtime_configured:
         return "Configure Twilio or SignalWire, OpenAI, and ElevenLabs in Settings before creating an AI agent campaign."
     if press_1_to_talk_with_agent and not provider_supports_press_1(voice_provider):
@@ -137,6 +140,7 @@ def _campaign_start_validation_error(
     user,
     provider_configured: bool,
     ai_runtime_configured: bool,
+    ai_runtime_error: str | None = None,
 ) -> str | None:
     provider = campaign.voice_provider.value if hasattr(campaign.voice_provider, "value") else str(campaign.voice_provider)
 
@@ -149,6 +153,8 @@ def _campaign_start_validation_error(
             return "Campaign AI agent is missing or invalid"
         if not campaign.ai_agent.is_active:
             return "Selected AI agent is inactive"
+        if ai_runtime_error:
+            return ai_runtime_error
         if not ai_runtime_configured:
             return "Please configure Twilio or SignalWire, OpenAI, and ElevenLabs credentials in Settings first"
     if not provider_configured:
@@ -237,14 +243,7 @@ def _render_create_campaign_error(
 
 
 def _is_worker_online(max_age_seconds: int = 60) -> bool:
-    """Check if the background worker heartbeat is recent."""
-    try:
-        if not WORKER_HEARTBEAT_FILE.exists():
-            return False
-        age_seconds = (datetime.utcnow().timestamp() - WORKER_HEARTBEAT_FILE.stat().st_mtime)
-        return age_seconds <= max_age_seconds
-    except Exception:
-        return False
+    return is_worker_online(max_age_seconds=max_age_seconds)
 
 
 @router.get("", response_class=HTMLResponse)
@@ -390,6 +389,15 @@ async def create_campaign(
 
     voice_provider = (voice_provider or "").strip().lower()
     form_data["voice_provider"] = voice_provider
+    ai_runtime_error = None
+    if campaign_mode == CampaignMode.AI_AGENT.value:
+        ai_runtime_error = get_ai_campaign_readiness(
+            db,
+            user_id=user.id,
+            voice_provider=voice_provider,
+            ai_agent=None,
+            require_active_agent=False,
+        ).error
     form_error = _campaign_form_validation_error(
         voice_provider=voice_provider,
         campaign_mode=campaign_mode,
@@ -397,6 +405,7 @@ async def create_campaign(
         max_concurrent_calls=max_concurrent_calls,
         provider_configured=has_user_voice_provider_credentials(db, user.id, voice_provider),
         ai_runtime_configured=has_user_ai_runtime_credentials(db, user.id),
+        ai_runtime_error=ai_runtime_error,
     )
     if form_error:
         return _render_create_campaign_error(
@@ -494,6 +503,21 @@ async def create_campaign(
             error=resource_error,
             form_data=form_data,
         )
+    if campaign_mode == CampaignMode.AI_AGENT.value:
+        readiness = get_ai_campaign_readiness(
+            db,
+            user_id=user.id,
+            voice_provider=voice_provider,
+            ai_agent=ai_agent,
+        )
+        if readiness.error:
+            return _render_create_campaign_error(
+                request,
+                user,
+                deps,
+                error=readiness.error,
+                form_data=form_data,
+            )
     if campaign_mode == CampaignMode.AUDIO.value and selected_audio_id is None and not press_1_to_talk_with_agent:
         # Direct transfer without audio remains valid.
         pass
@@ -643,15 +667,24 @@ async def start_campaign(
     if not _is_worker_online():
         raise HTTPException(
             status_code=503,
-            detail="Worker is offline. Start/restart worker.py and try again."
+            detail="Worker is offline or stale. Start/restart worker.py and try again."
         )
 
     provider = campaign.voice_provider.value if hasattr(campaign.voice_provider, "value") else str(campaign.voice_provider)
+    ai_runtime_error = None
+    if campaign.campaign_mode == CampaignMode.AI_AGENT:
+        ai_runtime_error = get_ai_campaign_readiness(
+            db,
+            user_id=user.id,
+            voice_provider=provider,
+            ai_agent=campaign.ai_agent,
+        ).error
     start_error = _campaign_start_validation_error(
         campaign=campaign,
         user=user,
         provider_configured=has_user_voice_provider_credentials(db, user.id, provider),
         ai_runtime_configured=has_user_ai_runtime_credentials(db, user.id),
+        ai_runtime_error=ai_runtime_error,
     )
     if start_error:
         raise HTTPException(status_code=400, detail=start_error)

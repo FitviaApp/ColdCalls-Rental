@@ -10,6 +10,7 @@ from typing import Optional, Callable
 import httpx
 
 from app.config import get_settings
+from app.services.callback_url_service import build_public_callback_url
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -43,11 +44,11 @@ class TelnyxService:
         if campaign_id is None:
             raise ValueError("campaign_id is required for Telnyx campaigns")
 
-        callback_base = settings.BASE_URL.rstrip("/")
-        if not callback_base.startswith(("http://", "https://")):
-            raise ValueError("BASE_URL must be a public http(s) URL for Telnyx callbacks")
-
-        xml_url = f"{callback_base}/api/telnyx/texml/{campaign_id}"
+        xml_url = build_public_callback_url(
+            settings.BASE_URL,
+            f"/api/telnyx/texml/{campaign_id}",
+            provider_name="Telnyx",
+        )
         endpoint = f"{self.base_url}/Accounts/{self.account_sid}/Calls"
         payload = {
             "From": from_number,

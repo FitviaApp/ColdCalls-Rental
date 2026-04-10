@@ -9,6 +9,7 @@ from typing import Optional, Callable
 from twilio.rest import Client
 from twilio.base.exceptions import TwilioRestException
 from app.config import get_settings
+from app.services.callback_url_service import build_public_callback_url, validate_public_callback_url
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -63,12 +64,18 @@ class TwilioService:
         # For normal calls, inline TwiML avoids dependency on public BASE_URL.
         call_kwargs = {}
         if answer_url:
-            call_kwargs["url"] = answer_url
+            call_kwargs["url"] = validate_public_callback_url(
+                answer_url,
+                provider_name="Twilio",
+            )
         elif press_1_to_talk_with_agent:
             if campaign_id is None:
                 raise ValueError("campaign_id is required when press_1_to_talk_with_agent is enabled")
-            base_url = settings.BASE_URL.rstrip("/")
-            call_kwargs["url"] = f"{base_url}/api/twiml/{campaign_id}"
+            call_kwargs["url"] = build_public_callback_url(
+                settings.BASE_URL,
+                f"/api/twiml/{campaign_id}",
+                provider_name="Twilio",
+            )
         else:
             if audio_url:
                 twiml = f'''<Response>

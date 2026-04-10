@@ -8,7 +8,7 @@ User=ubuntu
 Group=ubuntu
 WorkingDirectory=/var/www/ColdCalls-Rental
 EnvironmentFile=/var/www/ColdCalls-Rental/.env
-ExecStart=/var/www/ColdCalls-Rental/venv/bin/python worker.py
+ExecStart=/bin/bash /var/www/ColdCalls-Rental/deploy/bin/start-worker.sh
 Restart=always
 RestartSec=5
 

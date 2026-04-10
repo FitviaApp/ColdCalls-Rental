@@ -12,6 +12,9 @@ YELLOW='\033[1;33m'
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="${DEPLOY_DIR:-$SCRIPT_DIR}"
 cd "$PROJECT_DIR"
+# shellcheck source=deploy/bin/common.sh
+source "${PROJECT_DIR}/deploy/bin/common.sh"
+resolve_runtime_binaries "${PROJECT_DIR}"
 
 echo "📁 Projeto: $PROJECT_DIR"
 
@@ -60,20 +63,8 @@ if [ -n "$DB_TMP" ] && [ -f "$DB_TMP" ]; then
     rm -f "$DB_TMP"
 fi
 
-# Ativa virtualenv (.venv preferido; fallback para venv).
-if [ -f ".venv/bin/activate" ]; then
-    # shellcheck disable=SC1091
-    source .venv/bin/activate
-elif [ -f "venv/bin/activate" ]; then
-    # shellcheck disable=SC1091
-    source venv/bin/activate
-else
-    echo -e "${RED}❌ Virtualenv não encontrado (.venv ou venv).${NC}"
-    exit 1
-fi
-
 echo "📦 Atualizando dependências..."
-python -m pip install -r requirements.txt --quiet
+"${PYTHON_BIN}" -m pip install -r requirements.txt --quiet
 
 if [ "$CONFIGURE_NGINX" = "1" ] && [ -f "$NGINX_TEMPLATE_PATH" ] && command -v nginx >/dev/null 2>&1; then
     HAS_NGINX_CONFIG=1
