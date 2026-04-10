@@ -58,6 +58,12 @@ if [ -n "$DB_TMP" ] && [ -f "$DB_TMP" ]; then
     rm -f "$DB_TMP"
 fi
 
+# Cria virtualenv se ele nao existir.
+if [ ! -f ".venv/bin/activate" ] && [ ! -f "venv/bin/activate" ]; then
+    echo "🐍 Virtualenv não encontrado; criando .venv..."
+    python3 -m venv .venv
+fi
+
 # Ativa virtualenv (.venv preferido; fallback para venv).
 if [ -f ".venv/bin/activate" ]; then
     # shellcheck disable=SC1091
