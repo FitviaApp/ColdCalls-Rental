@@ -123,6 +123,51 @@ class AsyncAIRealtimeEventBus:
         ).to_json()
         await self.redis.publish(realtime_channel(campaign_number_id), message)
 
+    async def consume(
+        self,
+        campaign_number_id: int,
+        *,
+        stop_event,
+        on_event,
+        poll_interval_seconds: float = 0.1,
+    ) -> None:
+        """Async consumer that yields control regularly so the event loop stays responsive."""
+        import asyncio
+
+        pubsub = self.redis.pubsub(ignore_subscribe_messages=True)
+        channel = realtime_channel(campaign_number_id)
+        await pubsub.subscribe(channel)
+        try:
+            while not stop_event.is_set():
+                try:
+                    message = await pubsub.get_message(timeout=1.0)
+                except Exception as exc:
+                    logger.warning("AI realtime async consume get_message failed: %s", exc)
+                    await asyncio.sleep(poll_interval_seconds)
+                    continue
+                if not message:
+                    await asyncio.sleep(poll_interval_seconds)
+                    continue
+                raw = str(message.get("data") or "")
+                if not raw:
+                    continue
+                try:
+                    event = AIRealtimeEvent.from_json(raw)
+                    result = on_event(event)
+                    if asyncio.iscoroutine(result):
+                        await result
+                except Exception as exc:
+                    logger.warning("AI realtime async consume handler failed: %s", exc)
+        finally:
+            try:
+                await pubsub.unsubscribe(channel)
+            except Exception:
+                pass
+            try:
+                await pubsub.aclose()
+            except Exception:
+                pass
+
     async def close(self) -> None:
         try:
             await self.redis.aclose()

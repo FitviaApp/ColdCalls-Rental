@@ -476,18 +476,66 @@ async def ai_realtime_ws(websocket: WebSocket, campaign_number_id: int, token: s
     stream_sid = ""
     pending_outbound_audio: list[str] = []
 
+    async def _send_media_chunks(audio_payload: str) -> bool:
+        chunks = list(_iter_twilio_media_chunks(audio_payload))
+        if not chunks:
+            update_campaign_number_ai_observability(
+                campaign_number_id,
+                ai_runtime_error="[media_bridge] OpenAI audio delta was not valid base64 audio",
+            )
+            return True
+        for payload in chunks:
+            try:
+                await websocket.send_text(
+                    json.dumps(
+                        {
+                            "event": "media",
+                            "streamSid": stream_sid,
+                            "media": {"payload": payload},
+                        }
+                    )
+                )
+            except WebSocketDisconnect:
+                stop_event.set()
+                return False
+            except RuntimeError as exc:
+                # WebSocket already closed while pushing chunks.
+                logger.warning(
+                    "AI realtime media send aborted for campaign_number_id=%s: %s",
+                    campaign_number_id,
+                    exc,
+                )
+                stop_event.set()
+                return False
+            # Twilio media streams are more stable with paced 20ms chunks.
+            await asyncio.sleep(0.02)
+        return True
+
     async def forward_outbound_media():
         nonlocal stream_sid, pending_outbound_audio
         try:
             while not stop_event.is_set():
-                message = await pubsub.get_message(timeout=1.0)
+                try:
+                    message = await pubsub.get_message(timeout=1.0)
+                except Exception as exc:
+                    logger.warning(
+                        "AI realtime pubsub.get_message failed for campaign_number_id=%s: %s",
+                        campaign_number_id,
+                        exc,
+                    )
+                    await asyncio.sleep(0.25)
+                    continue
                 if not message:
                     await asyncio.sleep(0.05)
                     continue
                 raw = str(message.get("data") or "")
                 if not raw:
                     continue
-                event = AIRealtimeEvent.from_json(raw)
+                try:
+                    event = AIRealtimeEvent.from_json(raw)
+                except Exception as exc:
+                    logger.warning("AI realtime event parse failed: %s", exc)
+                    continue
                 if event.event == "media.outbound":
                     audio = str((event.payload or {}).get("audio") or "")
                     if not audio:
@@ -498,23 +546,9 @@ async def ai_realtime_ws(websocket: WebSocket, campaign_number_id: int, token: s
                         if len(pending_outbound_audio) > 200:
                             del pending_outbound_audio[:-200]
                         continue
-                    chunks = list(_iter_twilio_media_chunks(audio))
-                    if not chunks:
-                        update_campaign_number_ai_observability(
-                            campaign_number_id,
-                            ai_runtime_error="[media_bridge] OpenAI audio delta was not valid base64 audio",
-                        )
-                        continue
-                    for payload in chunks:
-                        await websocket.send_text(
-                            json.dumps(
-                                {
-                                    "event": "media",
-                                    "streamSid": stream_sid,
-                                    "media": {"payload": payload},
-                                }
-                            )
-                        )
+                    ok = await _send_media_chunks(audio)
+                    if not ok:
+                        return
                 elif event.event == "assistant.response":
                     text = str((event.payload or {}).get("text") or "")
                     if text:
@@ -536,6 +570,11 @@ async def ai_realtime_ws(websocket: WebSocket, campaign_number_id: int, token: s
                         campaign_number_id,
                         ai_runtime_error=error_message[:500],
                     )
+                elif event.event == "session.ended":
+                    stop_event.set()
+                    return
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:
             logger.error(
                 "AI realtime outbound media forwarder failed for campaign_number_id=%s: %s",
@@ -550,11 +589,32 @@ async def ai_realtime_ws(websocket: WebSocket, campaign_number_id: int, token: s
             stop_event.set()
 
     outbound_task = asyncio.create_task(forward_outbound_media())
+    receive_timeout = max(5.0, float(settings.AI_REALTIME_WS_RECEIVE_TIMEOUT_SECONDS))
 
     try:
-        while True:
-            raw_message = await websocket.receive_text()
-            data = json.loads(raw_message or "{}")
+        while not stop_event.is_set():
+            try:
+                raw_message = await asyncio.wait_for(
+                    websocket.receive_text(),
+                    timeout=receive_timeout,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "AI realtime provider WS idle timeout for campaign_number_id=%s",
+                    campaign_number_id,
+                )
+                update_campaign_number_ai_observability(
+                    campaign_number_id,
+                    ai_runtime_error="[media_bridge] Provider media stream went idle — closing session",
+                )
+                session_service.end_session(campaign_number_id, status="idle_timeout")
+                await bus.publish(campaign_number_id, "session.ended", {"source": "ws_idle_timeout"})
+                break
+            try:
+                data = json.loads(raw_message or "{}")
+            except json.JSONDecodeError as exc:
+                logger.warning("AI realtime provider WS invalid JSON: %s", exc)
+                continue
             event_type = str(data.get("event") or "").lower()
             if event_type == "start":
                 start = data.get("start") or {}
@@ -565,21 +625,9 @@ async def ai_realtime_ws(websocket: WebSocket, campaign_number_id: int, token: s
                         buffered_audio = list(pending_outbound_audio)
                         pending_outbound_audio.clear()
                         for audio in buffered_audio:
-                            chunks = list(_iter_twilio_media_chunks(audio))
-                            if not chunks:
-                                continue
-                            for payload in chunks:
-                                await websocket.send_text(
-                                    json.dumps(
-                                        {
-                                            "event": "media",
-                                            "streamSid": stream_sid,
-                                            "media": {"payload": payload},
-                                        }
-                                    )
-                                )
-                                # Twilio media streams are more stable with paced 20ms chunks.
-                                await asyncio.sleep(0.02)
+                            ok = await _send_media_chunks(audio)
+                            if not ok:
+                                break
                 session_service.update_session(campaign_number_id, status="streaming")
                 await bus.publish(
                     campaign_number_id,
@@ -595,6 +643,9 @@ async def ai_realtime_ws(websocket: WebSocket, campaign_number_id: int, token: s
                         "media.inbound",
                         {"audio": payload},
                     )
+            elif event_type == "mark":
+                # Twilio mark acknowledgements keep the stream alive; nothing to do.
+                continue
             elif event_type == "stop":
                 await bus.publish(
                     campaign_number_id,
@@ -605,10 +656,39 @@ async def ai_realtime_ws(websocket: WebSocket, campaign_number_id: int, token: s
                 break
     except WebSocketDisconnect:
         session_service.end_session(campaign_number_id, status="disconnected")
-        await bus.publish(campaign_number_id, "session.ended", {"source": "ws_disconnect"})
+        try:
+            await bus.publish(campaign_number_id, "session.ended", {"source": "ws_disconnect"})
+        except Exception:
+            pass
+    except Exception as exc:
+        logger.error(
+            "AI realtime provider WS crashed for campaign_number_id=%s: %s",
+            campaign_number_id,
+            exc,
+            exc_info=True,
+        )
+        update_campaign_number_ai_observability(
+            campaign_number_id,
+            ai_runtime_error=f"[media_bridge] Provider WS crashed: {str(exc)[:420]}",
+        )
+        try:
+            await bus.publish(campaign_number_id, "session.ended", {"source": "ws_crash"})
+        except Exception:
+            pass
+        session_service.end_session(campaign_number_id, status="error")
     finally:
         stop_event.set()
-        outbound_task.cancel()
+        if not outbound_task.done():
+            try:
+                await asyncio.wait_for(outbound_task, timeout=3.0)
+            except asyncio.TimeoutError:
+                outbound_task.cancel()
+                try:
+                    await outbound_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            except (asyncio.CancelledError, Exception):
+                pass
         try:
             await pubsub.unsubscribe(channel)
             await pubsub.aclose()

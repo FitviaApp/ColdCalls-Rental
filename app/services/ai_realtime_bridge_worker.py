@@ -4,13 +4,13 @@ Worker-side bridge between Twilio Media Streams, OpenAI Realtime, and ElevenLabs
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import asyncio
 import time
 import array
 from typing import Any
 from urllib.parse import quote, urlencode
-from queue import Queue, Empty
 
 import httpx
 import websockets
@@ -21,9 +21,15 @@ except Exception:  # pragma: no cover - stdlib availability differs by Python bu
 
 from app.config import get_settings
 from app.models import AIAgent
-from app.services.ai_realtime_event_bus import AIRealtimeEvent, AIRealtimeEventBus
+from app.services.ai_realtime_event_bus import (
+    AIRealtimeEvent,
+    AIRealtimeEventBus,
+    AsyncAIRealtimeEventBus,
+    realtime_channel,
+)
 from app.services.ai_realtime_session_service import AIRealtimeSessionService
 
+logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
@@ -61,8 +67,9 @@ class AIRealtimeBridgeWorker:
         self.bus = AIRealtimeEventBus()
         self.sessions = AIRealtimeSessionService()
         self._stop_event = threading.Event()
+        self._async_stop_event: asyncio.Event | None = None
         self._provider_stream_ready = threading.Event()
-        self._inbound_audio_queue: Queue[str] = Queue()
+        self._inbound_audio_queue: asyncio.Queue[str] | None = None
         self._opening_response_sent = False
         self._awaiting_audio = False
         self._last_response_request_at = 0.0
@@ -77,6 +84,13 @@ class AIRealtimeBridgeWorker:
 
     def stop(self) -> None:
         self._stop_event.set()
+        loop = getattr(self, "_loop", None)
+        async_stop = self._async_stop_event
+        if loop is not None and async_stop is not None and not loop.is_closed():
+            try:
+                loop.call_soon_threadsafe(async_stop.set)
+            except RuntimeError:
+                pass
 
     def run(self) -> None:
         if not self.openai_api_key:
@@ -86,14 +100,16 @@ class AIRealtimeBridgeWorker:
             self._publish_error("provider_auth", "ElevenLabs API key is missing")
             return
         try:
-            import asyncio
-
             asyncio.run(self._run_async())
         except Exception as exc:
             category, detail = classify_openai_error(str(exc))
             self._publish_error(category, detail)
 
     async def _run_async(self) -> None:
+        self._loop = asyncio.get_running_loop()
+        self._async_stop_event = asyncio.Event()
+        self._inbound_audio_queue = asyncio.Queue()
+
         realtime_model = (self.agent.model or settings.OPENAI_REALTIME_MODEL).strip()
         query = urlencode({"model": realtime_model})
         ws_url = f"{settings.OPENAI_REALTIME_URL}?{query}"
@@ -104,22 +120,94 @@ class AIRealtimeBridgeWorker:
         if self.openai_org_id:
             headers["OpenAI-Organization"] = self.openai_org_id
 
-        async with websockets.connect(ws_url, additional_headers=headers, max_size=4_000_000) as openai_ws:
-            await self._send_realtime_session_update(openai_ws)
+        ping_interval = float(settings.OPENAI_REALTIME_WS_PING_INTERVAL_SECONDS)
+        ping_timeout = float(settings.OPENAI_REALTIME_WS_PING_TIMEOUT_SECONDS)
+        close_timeout = float(settings.OPENAI_REALTIME_WS_CLOSE_TIMEOUT_SECONDS)
+        recv_timeout = max(1.0, float(settings.OPENAI_REALTIME_WS_RECV_TIMEOUT_SECONDS))
 
-            consumer_thread = threading.Thread(target=self._consume_bus_events, daemon=True)
-            consumer_thread.start()
+        try:
+            async with websockets.connect(
+                ws_url,
+                additional_headers=headers,
+                max_size=4_000_000,
+                ping_interval=ping_interval,
+                ping_timeout=ping_timeout,
+                close_timeout=close_timeout,
+            ) as openai_ws:
+                await self._send_realtime_session_update(openai_ws)
 
-            while not self._stop_event.is_set():
-                await self._maybe_send_opening_response_when_ready(openai_ws)
-                await self._flush_inbound_audio(openai_ws)
-                self._maybe_retry_silent_response(openai_ws)
+                consumer_task = asyncio.create_task(
+                    self._consume_bus_events_async(),
+                    name=f"ai-rt-consumer-{self.campaign_number_id}",
+                )
+                inbound_task = asyncio.create_task(
+                    self._pump_inbound_audio(openai_ws),
+                    name=f"ai-rt-inbound-{self.campaign_number_id}",
+                )
+                maintenance_task = asyncio.create_task(
+                    self._maintenance_loop(openai_ws),
+                    name=f"ai-rt-maint-{self.campaign_number_id}",
+                )
+
                 try:
-                    message = await asyncio.wait_for(openai_ws.recv(), timeout=0.2)
+                    while not self._stop_event.is_set():
+                        try:
+                            message = await asyncio.wait_for(
+                                openai_ws.recv(),
+                                timeout=recv_timeout,
+                            )
+                        except asyncio.TimeoutError:
+                            # Silent idle window — loop continues; ping_interval keeps
+                            # the socket alive, and the maintenance loop handles retries.
+                            continue
+                        except websockets.ConnectionClosed as exc:
+                            category, detail = classify_openai_error(
+                                f"OpenAI realtime connection closed: {exc}"
+                            )
+                            self._publish_error(category, detail)
+                            break
+                        if message:
+                            await self._handle_openai_message(openai_ws, message)
+                finally:
+                    self._stop_event.set()
+                    if self._async_stop_event is not None:
+                        self._async_stop_event.set()
+                    for task in (consumer_task, inbound_task, maintenance_task):
+                        task.cancel()
+                    for task in (consumer_task, inbound_task, maintenance_task):
+                        try:
+                            await task
+                        except (asyncio.CancelledError, Exception):
+                            pass
+        except Exception as exc:
+            category, detail = classify_openai_error(str(exc))
+            self._publish_error(category, detail)
+            raise
+
+    async def _maintenance_loop(self, openai_ws) -> None:
+        try:
+            while not self._stop_event.is_set():
+                try:
+                    await self._maybe_send_opening_response_when_ready(openai_ws)
+                    await self._maybe_retry_silent_response(openai_ws)
+                except websockets.ConnectionClosed:
+                    return
+                except Exception as exc:
+                    category, detail = classify_openai_error(str(exc))
+                    self._publish_error(category, detail)
+                    self._stop_event.set()
+                    if self._async_stop_event is not None:
+                        self._async_stop_event.set()
+                    return
+                try:
+                    await asyncio.wait_for(
+                        self._async_stop_event.wait() if self._async_stop_event else asyncio.sleep(0.25),
+                        timeout=0.25,
+                    )
                 except asyncio.TimeoutError:
                     continue
-                if message:
-                    await self._handle_openai_message(openai_ws, message)
+        except asyncio.CancelledError:
+            return
 
     async def _send_realtime_session_update(self, openai_ws) -> None:
         tool_schema = {
@@ -401,7 +489,7 @@ class AIRealtimeBridgeWorker:
         self._awaiting_audio = True
         self._last_response_request_at = time.monotonic()
 
-    def _maybe_retry_silent_response(self, openai_ws) -> None:
+    async def _maybe_retry_silent_response(self, openai_ws) -> None:
         if not self._awaiting_audio:
             return
         elapsed = time.monotonic() - self._last_response_request_at
@@ -412,52 +500,95 @@ class AIRealtimeBridgeWorker:
             self._publish_error("media_bridge", "OpenAI realtime produced no text response after retries")
             return
         self._response_retry_count += 1
-        asyncio.create_task(
-            self._request_audio_response(
+        try:
+            await self._request_audio_response(
                 openai_ws,
                 instructions="Respond now with one short spoken sentence.",
             )
-        )
+        except websockets.ConnectionClosed:
+            self._stop_event.set()
+            if self._async_stop_event is not None:
+                self._async_stop_event.set()
+        except Exception as exc:
+            category, detail = classify_openai_error(str(exc))
+            self._publish_error(category, detail)
 
-    def _consume_bus_events(self) -> None:
-        def stop_when() -> bool:
-            return self._stop_event.is_set()
-
-        def on_event(event: AIRealtimeEvent) -> None:
-            if event.event == "media.inbound":
-                payload = str((event.payload or {}).get("audio") or "")
-                if not payload:
-                    return
-                self._inbound_audio_queue.put(payload)
-            elif event.event == "session.started":
-                self._provider_stream_ready.set()
-            elif event.event == "session.ended":
-                self._stop_event.set()
-
+    async def _consume_bus_events_async(self) -> None:
+        async_bus: AsyncAIRealtimeEventBus | None = None
         try:
-            self.bus.consume(
-                self.campaign_number_id,
-                stop_when=stop_when,
-                on_event=on_event,
-            )
+            async_bus = AsyncAIRealtimeEventBus()
         except Exception as exc:
             category, detail = classify_openai_error(str(exc))
             self._publish_error(category, detail)
             self._stop_event.set()
+            if self._async_stop_event is not None:
+                self._async_stop_event.set()
+            return
 
-    async def _flush_inbound_audio(self, openai_ws) -> None:
-        while True:
-            try:
-                payload = self._inbound_audio_queue.get_nowait()
-            except Empty:
-                return
-            try:
-                await openai_ws.send(json.dumps({"type": "input_audio_buffer.append", "audio": payload}))
-            except Exception as exc:
-                category, detail = classify_openai_error(str(exc))
-                self._publish_error(category, detail)
+        async def on_event(event: AIRealtimeEvent) -> None:
+            if event.event == "media.inbound":
+                payload = str((event.payload or {}).get("audio") or "")
+                if not payload:
+                    return
+                if self._inbound_audio_queue is not None:
+                    await self._inbound_audio_queue.put(payload)
+            elif event.event == "session.started":
+                self._provider_stream_ready.set()
+            elif event.event == "session.ended":
                 self._stop_event.set()
-                return
+                if self._async_stop_event is not None:
+                    self._async_stop_event.set()
+
+        try:
+            await async_bus.consume(
+                self.campaign_number_id,
+                stop_event=self._async_stop_event,
+                on_event=on_event,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            category, detail = classify_openai_error(str(exc))
+            self._publish_error(category, detail)
+            self._stop_event.set()
+            if self._async_stop_event is not None:
+                self._async_stop_event.set()
+        finally:
+            try:
+                await async_bus.close()
+            except Exception:
+                pass
+
+    async def _pump_inbound_audio(self, openai_ws) -> None:
+        if self._inbound_audio_queue is None:
+            return
+        try:
+            while not self._stop_event.is_set():
+                try:
+                    payload = await asyncio.wait_for(
+                        self._inbound_audio_queue.get(),
+                        timeout=0.5,
+                    )
+                except asyncio.TimeoutError:
+                    continue
+                try:
+                    await openai_ws.send(
+                        json.dumps({"type": "input_audio_buffer.append", "audio": payload})
+                    )
+                except websockets.ConnectionClosed:
+                    self._stop_event.set()
+                    if self._async_stop_event is not None:
+                        self._async_stop_event.set()
+                    return
+                except Exception as exc:
+                    category, detail = classify_openai_error(str(exc))
+                    self._publish_error(category, detail)
+                    self._stop_event.set()
+                    if self._async_stop_event is not None:
+                        self._async_stop_event.set()
+                    return
+        except asyncio.CancelledError:
+            return
 
     async def _handle_openai_message(self, openai_ws, raw_message: str) -> None:
         data = json.loads(raw_message)
@@ -600,7 +731,11 @@ class AIRealtimeBridgeWorker:
             "Content-Type": "application/json",
         }
 
-        with httpx.Client(timeout=float(settings.OPENAI_REQUEST_TIMEOUT_SECONDS)) as client:
+        tts_timeout = max(
+            float(settings.OPENAI_REQUEST_TIMEOUT_SECONDS),
+            float(settings.ELEVENLABS_REQUEST_TIMEOUT_SECONDS),
+        )
+        with httpx.Client(timeout=tts_timeout) as client:
             response = client.post(url, headers=headers, json=payload)
 
         if response.status_code >= 400:
@@ -619,17 +754,32 @@ class AIRealtimeBridgeWorker:
         if not candidates:
             raise RuntimeError("ElevenLabs voice ID is not configured")
 
+        max_retries = max(1, int(settings.AI_HTTP_MAX_RETRIES or 1))
+        backoff = max(0.0, float(settings.AI_HTTP_RETRY_BACKOFF_SECONDS or 0.0))
+
         last_error = ""
         for index, voice_id in enumerate(candidates):
-            try:
-                return self._request_elevenlabs_audio(voice_id=voice_id, text=text)
-            except Exception as exc:
-                last_error = str(exc)
-                if index == 0 and voice_id != fallback_voice:
+            for attempt in range(max_retries):
+                try:
+                    return self._request_elevenlabs_audio(voice_id=voice_id, text=text)
+                except Exception as exc:
+                    last_error = str(exc)
                     lowered = last_error.lower()
-                    if "status=404" in lowered or "voice" in lowered:
+                    is_voice_missing = (
+                        "status=404" in lowered
+                        and index == 0
+                        and voice_id != fallback_voice
+                    )
+                    is_retryable = any(
+                        term in lowered
+                        for term in ("timeout", "timed out", "connection reset", "temporarily", "status=5")
+                    )
+                    if is_voice_missing:
+                        break  # try next voice
+                    if is_retryable and attempt + 1 < max_retries:
+                        time.sleep(backoff * (attempt + 1))
                         continue
-                break
+                    raise RuntimeError(last_error)
 
         raise RuntimeError(last_error or "ElevenLabs TTS failed")
 
