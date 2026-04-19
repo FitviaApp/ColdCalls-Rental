@@ -3,6 +3,7 @@ API Router - JSON endpoints for AJAX calls and cXML/TwiML
 """
 import logging
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
@@ -274,7 +275,10 @@ async def voximplant_callback(
 @router.get("/ai-runtime/twiml/{campaign_number_id}")
 @router.post("/ai-runtime/twiml/{campaign_number_id}")
 async def ai_runtime_twiml(campaign_number_id: int):
-    twiml = build_ai_runtime_twiml(campaign_number_id)
+    # Offload to a worker thread: build_ai_runtime_twiml performs blocking
+    # HTTP calls and DB access; running it inline would stall the event loop
+    # and the call would be cut while other webhooks waited behind it.
+    twiml = await run_in_threadpool(build_ai_runtime_twiml, campaign_number_id)
     return Response(content=twiml, media_type="application/xml")
 
 
@@ -293,13 +297,17 @@ async def ai_runtime_twiml_gather(
     digits = str(form_data.get("Digits") or "").strip()
     user_input = speech_result or digits
 
-    twiml = build_ai_runtime_followup_twiml(campaign_number_id, user_input)
+    twiml = await run_in_threadpool(
+        build_ai_runtime_followup_twiml, campaign_number_id, user_input
+    )
     return Response(content=twiml, media_type="application/xml")
 
 
 @router.get("/ai-runtime/audio/{campaign_number_id}/{audio_token}")
 async def ai_runtime_audio(campaign_number_id: int, audio_token: str):
-    audio_bytes = get_ai_runtime_audio(campaign_number_id, audio_token)
+    audio_bytes = await run_in_threadpool(
+        get_ai_runtime_audio, campaign_number_id, audio_token
+    )
     if not audio_bytes:
         raise HTTPException(status_code=404, detail="Audio not found")
     return Response(content=audio_bytes, media_type="audio/mpeg")

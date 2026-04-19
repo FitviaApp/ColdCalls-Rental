@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import secrets
 import time
 from pathlib import Path
@@ -24,8 +25,29 @@ from app.services.user_signalwire_service import get_user_signalwire_credentials
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-AI_RUNTIME_DIR = Path("/tmp/coldcalls_ai_runtime")
+AI_RUNTIME_DIR = Path(settings.AI_RUNTIME_DIR or "/tmp/coldcalls_ai_runtime")
 AI_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+
+
+class CallTurnDeadlineError(RuntimeError):
+    """Raised when the overall TwiML turn budget is exceeded."""
+
+
+def _atomic_write_bytes(path: Path, data: bytes) -> None:
+    tmp_path = path.with_suffix(path.suffix + f".tmp-{os.getpid()}-{secrets.token_hex(4)}")
+    try:
+        tmp_path.write_bytes(data)
+        os.replace(tmp_path, path)
+    finally:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except FileNotFoundError:
+                pass
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    _atomic_write_bytes(path, text.encode("utf-8"))
 
 MAX_AGENT_TURNS = settings.AI_MAX_AGENT_TURNS
 MAX_HISTORY_MESSAGES = settings.AI_MAX_HISTORY_MESSAGES
@@ -158,6 +180,8 @@ class AICallRuntimeService:
         if not session:
             return self._hangup_twiml()
 
+        deadline = time.monotonic() + float(settings.AI_TURN_DEADLINE_SECONDS)
+
         normalized_user_input = (user_input or "").strip()
         if normalized_user_input:
             session["no_input_turns"] = 0
@@ -176,38 +200,98 @@ class AICallRuntimeService:
                 ai_no_input_turns=session["no_input_turns"],
             )
             if session["no_input_turns"] > MAX_NO_INPUT_TURNS:
-                closing_turn = self._create_assistant_turn(
+                return self._safe_finalize_turn(
+                    campaign_number_id,
                     session,
                     assistant_text="I could not hear you, so I will end the call now. Thank you and goodbye.",
                     should_transfer=False,
+                    deadline=deadline,
                 )
-                session["current_turn"] = closing_turn
-                self._write_session(campaign_number_id, session)
-                return self._twiml_for_turn(campaign_number_id, session, closing_turn)
-            reprompt_turn = self._create_assistant_turn(
+            return self._safe_finalize_turn(
+                campaign_number_id,
                 session,
-                assistant_text="I did not catch that. Are you still there?",
+                assistant_text="I didn't catch that. Are you still there?",
                 should_transfer=False,
+                deadline=deadline,
             )
-            session["current_turn"] = reprompt_turn
-            self._write_session(campaign_number_id, session)
-            return self._twiml_for_turn(campaign_number_id, session, reprompt_turn)
 
         session["turn_count"] = int(session.get("turn_count") or 0) + 1
         if session["turn_count"] > MAX_AGENT_TURNS:
-            closing_turn = self._create_assistant_turn(
+            return self._safe_finalize_turn(
+                campaign_number_id,
                 session,
                 assistant_text="Thank you for your time. We'll follow up later. Goodbye.",
                 should_transfer=False,
+                deadline=deadline,
             )
-            session["current_turn"] = closing_turn
-            self._write_session(campaign_number_id, session)
-            return self._twiml_for_turn(campaign_number_id, session, closing_turn)
 
-        next_turn = self._generate_assistant_turn(session)
+        try:
+            next_turn = self._generate_assistant_turn(session, deadline=deadline)
+        except CallTurnDeadlineError:
+            logger.warning(
+                "AI turn deadline exceeded for campaign_number_id=%s — using spoken stall",
+                campaign_number_id,
+            )
+            update_campaign_number_ai_observability(
+                campaign_number_id,
+                ai_runtime_error="[timeout] AI turn deadline exceeded — played stall prompt",
+            )
+            return self._build_redirect_twiml(
+                campaign_number_id,
+                say_text="One moment please while I pull that up.",
+            )
+        except Exception as exc:
+            logger.error(
+                "AI turn generation failed for campaign_number_id=%s: %s",
+                campaign_number_id,
+                exc,
+            )
+            update_campaign_number_ai_observability(
+                campaign_number_id,
+                ai_runtime_error=str(exc)[:500],
+            )
+            return self._build_redirect_twiml(
+                campaign_number_id,
+                say_text="One moment please.",
+            )
+
         session["current_turn"] = next_turn
         self._write_session(campaign_number_id, session)
         return self._twiml_for_turn(campaign_number_id, session, next_turn)
+
+    def _safe_finalize_turn(
+        self,
+        campaign_number_id: int,
+        session: dict[str, Any],
+        *,
+        assistant_text: str,
+        should_transfer: bool,
+        deadline: float,
+    ) -> str:
+        try:
+            turn = self._create_assistant_turn(
+                session,
+                assistant_text=assistant_text,
+                should_transfer=should_transfer,
+                deadline=deadline,
+            )
+        except CallTurnDeadlineError:
+            return self._say_then_hangup_twiml(assistant_text)
+        except Exception as exc:
+            logger.error(
+                "Assistant turn finalize failed for campaign_number_id=%s: %s",
+                campaign_number_id,
+                exc,
+            )
+            update_campaign_number_ai_observability(
+                campaign_number_id,
+                ai_runtime_error=str(exc)[:500],
+            )
+            return self._say_then_hangup_twiml(assistant_text)
+
+        session["current_turn"] = turn
+        self._write_session(campaign_number_id, session)
+        return self._twiml_for_turn(campaign_number_id, session, turn)
 
     def _create_runtime_session(
         self,
@@ -262,6 +346,7 @@ class AICallRuntimeService:
         session_payload: dict[str, Any],
         *,
         agent: Optional[AIAgent] = None,
+        deadline: float | None = None,
     ) -> dict[str, Any]:
         db = self.db
         if agent is None:
@@ -270,7 +355,9 @@ class AICallRuntimeService:
         if not agent:
             raise ValueError("AI agent not found")
 
-        reply = self._request_openai_turn(agent, session_payload.get("history") or [])
+        reply = self._request_openai_turn(
+            agent, session_payload.get("history") or [], deadline=deadline
+        )
         assistant_text = self._sanitize_assistant_text(
             reply.get("assistant_text") or "Hello, this is a quick follow-up call."
         )
@@ -284,6 +371,7 @@ class AICallRuntimeService:
             assistant_text=assistant_text,
             should_transfer=should_transfer,
             handoff_reason=handoff_reason,
+            deadline=deadline,
         )
 
     def _create_assistant_turn(
@@ -293,6 +381,7 @@ class AICallRuntimeService:
         assistant_text: str,
         should_transfer: bool,
         handoff_reason: str | None = None,
+        deadline: float | None = None,
     ) -> dict[str, Any]:
         campaign_number_id = int(session_payload["campaign_number_id"])
         audio_token = secrets.token_hex(8)
@@ -301,8 +390,9 @@ class AICallRuntimeService:
         audio_bytes = self._synthesize_text_to_speech(
             sanitized_text,
             voice_id=self._agent_voice_id(session_payload),
+            deadline=deadline,
         )
-        audio_path.write_bytes(audio_bytes)
+        _atomic_write_bytes(audio_path, audio_bytes)
         session_payload.setdefault("history", []).append(
             {"role": "assistant", "content": sanitized_text}
         )
@@ -320,7 +410,13 @@ class AICallRuntimeService:
             "audio_token": audio_token,
         }
 
-    def _request_openai_turn(self, agent: AIAgent, history: list[dict[str, str]]) -> dict[str, Any]:
+    def _request_openai_turn(
+        self,
+        agent: AIAgent,
+        history: list[dict[str, str]],
+        *,
+        deadline: float | None = None,
+    ) -> dict[str, Any]:
         system_prompt = (
             f"You are an outbound phone agent speaking only in English. "
             f"Your job is to pre-qualify the lead, keep replies concise for voice, "
@@ -367,6 +463,7 @@ class AICallRuntimeService:
             headers=headers,
             json_payload=payload,
             timeout_seconds=float(settings.OPENAI_REQUEST_TIMEOUT_SECONDS),
+            deadline=deadline,
         )
 
         choice = (data.get("choices") or [{}])[0]
@@ -412,7 +509,13 @@ class AICallRuntimeService:
             return trimmed[:last_space].rstrip() + "..."
         return trimmed + "..."
 
-    def _synthesize_text_to_speech(self, text: str, *, voice_id: str) -> bytes:
+    def _synthesize_text_to_speech(
+        self,
+        text: str,
+        *,
+        voice_id: str,
+        deadline: float | None = None,
+    ) -> bytes:
         payload = {
             "text": text,
             "model_id": settings.ELEVENLABS_TTS_MODEL,
@@ -432,6 +535,7 @@ class AICallRuntimeService:
             headers=headers,
             json_payload=payload,
             timeout_seconds=float(settings.ELEVENLABS_REQUEST_TIMEOUT_SECONDS),
+            deadline=deadline,
         )
 
     def _post_json_with_retries(
@@ -442,6 +546,7 @@ class AICallRuntimeService:
         headers: dict[str, str],
         json_payload: dict[str, Any],
         timeout_seconds: float,
+        deadline: float | None = None,
     ) -> dict[str, Any]:
         response = self._post_with_retries(
             provider_name=provider_name,
@@ -449,6 +554,7 @@ class AICallRuntimeService:
             headers=headers,
             json_payload=json_payload,
             timeout_seconds=timeout_seconds,
+            deadline=deadline,
         )
         return response.json()
 
@@ -460,6 +566,7 @@ class AICallRuntimeService:
         headers: dict[str, str],
         json_payload: dict[str, Any],
         timeout_seconds: float,
+        deadline: float | None = None,
     ) -> bytes:
         response = self._post_with_retries(
             provider_name=provider_name,
@@ -468,6 +575,7 @@ class AICallRuntimeService:
             json_payload=json_payload,
             timeout_seconds=timeout_seconds,
             response_validator=self._validate_audio_response,
+            deadline=deadline,
         )
         return response.content
 
@@ -479,14 +587,25 @@ class AICallRuntimeService:
         headers: dict[str, str],
         json_payload: dict[str, Any],
         timeout_seconds: float,
+        deadline: float | None = None,
         response_validator: Callable[[httpx.Response], None] | None = None,
     ) -> httpx.Response:
         max_attempts = max(1, int(settings.AI_HTTP_MAX_RETRIES) + 1)
         last_error: Exception | None = None
 
         for attempt in range(1, max_attempts + 1):
+            effective_timeout = timeout_seconds
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0.5:
+                    raise CallTurnDeadlineError(
+                        f"{provider_name} request aborted: turn deadline exceeded"
+                    )
+                # Never outrun the deadline, but give the provider at least 1s.
+                effective_timeout = max(1.0, min(timeout_seconds, remaining - 0.25))
+
             try:
-                with httpx.Client(timeout=timeout_seconds) as client:
+                with httpx.Client(timeout=effective_timeout) as client:
                     response = client.post(
                         url,
                         headers=headers,
@@ -506,6 +625,10 @@ class AICallRuntimeService:
                 if attempt >= max_attempts:
                     break
                 backoff_seconds = float(settings.AI_HTTP_RETRY_BACKOFF_SECONDS) * attempt
+                if deadline is not None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= backoff_seconds + 1.0:
+                        break
                 logger.warning(
                     "%s request attempt %s/%s failed: %s. Retrying in %.2fs",
                     provider_name,
@@ -565,16 +688,54 @@ class AICallRuntimeService:
             else ""
         )
 
+        gather_action = (
+            f"{settings.BASE_URL.rstrip('/')}/api/ai-runtime/twiml/{campaign_number_id}/gather"
+        )
+        # Outer Gather listens *during* playback too, so interrupting the agent
+        # works. A trailing Redirect keeps the call alive if the first Gather
+        # expires silently — it retries rather than hanging up immediately.
+        redirect_url = gather_action
         return f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Play>{audio_url}</Play>
-    <Gather input="speech dtmf" speechTimeout="{speech_timeout_seconds}" timeout="{gather_timeout_seconds}" action="{settings.BASE_URL.rstrip('/')}/api/ai-runtime/twiml/{campaign_number_id}/gather" method="POST" actionOnEmptyResult="true">{pause_block}
+    <Gather input="speech dtmf" speechTimeout="{speech_timeout_seconds}" timeout="{gather_timeout_seconds}" action="{gather_action}" method="POST" actionOnEmptyResult="true">
+        <Play>{audio_url}</Play>{pause_block}
     </Gather>
-    <Hangup/>
+    <Redirect method="POST">{redirect_url}</Redirect>
 </Response>"""
 
     def _hangup_twiml(self) -> str:
         return '<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>'
+
+    def _build_redirect_twiml(self, campaign_number_id: int, *, say_text: str) -> str:
+        """Stall for time without hanging up — say a short line and loop back."""
+        safe_text = self._xml_escape(say_text)
+        gather_action = (
+            f"{settings.BASE_URL.rstrip('/')}/api/ai-runtime/twiml/{campaign_number_id}/gather"
+        )
+        return f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Say voice="alice">{safe_text}</Say>
+    <Redirect method="POST">{gather_action}</Redirect>
+</Response>"""
+
+    def _say_then_hangup_twiml(self, say_text: str) -> str:
+        safe_text = self._xml_escape(say_text)
+        return f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Say voice="alice">{safe_text}</Say>
+    <Hangup/>
+</Response>"""
+
+    @staticmethod
+    def _xml_escape(value: str) -> str:
+        return (
+            str(value or "")
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace('"', "&quot;")
+            .replace("'", "&apos;")
+        )
 
     def _session_path(self, campaign_number_id: int) -> Path:
         return AI_RUNTIME_DIR / f"{campaign_number_id}.json"
@@ -586,10 +747,18 @@ class AICallRuntimeService:
         path = self._session_path(campaign_number_id)
         if not path.exists():
             return None
-        return json.loads(path.read_text())
+        try:
+            return json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning(
+                "AI runtime session read failed for campaign_number_id=%s: %s",
+                campaign_number_id,
+                exc,
+            )
+            return None
 
     def _write_session(self, campaign_number_id: int, payload: dict[str, Any]) -> None:
-        self._session_path(campaign_number_id).write_text(json.dumps(payload))
+        _atomic_write_text(self._session_path(campaign_number_id), json.dumps(payload))
 
 
 def build_ai_runtime_twiml(campaign_number_id: int) -> str:
