@@ -20,10 +20,12 @@ from app.models import (
 from app.templating import Jinja2Templates
 from app.services.ai_agent_service import list_user_ai_agents
 from app.services.user_voice_provider_service import (
+    PROVIDER_LABELS,
     get_user_voice_provider_status,
     has_any_user_voice_provider_credentials,
     has_user_ai_runtime_credentials,
     has_user_voice_provider_credentials,
+    provider_supports_ai_agent,
     provider_supports_press_1,
     supported_voice_providers,
 )
@@ -86,10 +88,13 @@ def _campaign_form_validation_error(
         return "Invalid voice provider selected."
     if not provider_configured:
         return f"Selected provider ({voice_provider}) is not configured in Settings."
-    if campaign_mode == CampaignMode.AI_AGENT.value and voice_provider != VoiceProvider.SIGNALWIRE.value:
-        return "AI agent campaigns currently require SignalWire as the voice provider."
+    if campaign_mode == CampaignMode.AI_AGENT.value and not provider_supports_ai_agent(voice_provider):
+        return "AI agent campaigns support only Twilio or SignalWire."
     if campaign_mode == CampaignMode.AI_AGENT.value and not ai_runtime_configured:
-        return "Configure SignalWire, OpenAI, and ElevenLabs in Settings before creating an AI agent campaign."
+        return (
+            f"Configure {PROVIDER_LABELS.get(voice_provider, voice_provider.title())}, "
+            "OpenAI, and ElevenLabs in Settings before creating an AI agent campaign."
+        )
     if press_1_to_talk_with_agent and not provider_supports_press_1(voice_provider):
         return "Press 1 flow is not available for the selected provider."
     if campaign_mode == CampaignMode.AI_AGENT.value and press_1_to_talk_with_agent:
@@ -140,14 +145,17 @@ def _campaign_start_validation_error(
     if not user.transfer_number:
         return "Please configure your Transfer Number (3CX) in Settings first"
     if campaign.campaign_mode == CampaignMode.AI_AGENT:
-        if campaign.voice_provider != VoiceProvider.SIGNALWIRE:
-            return "AI agent campaigns require SignalWire"
+        if not provider_supports_ai_agent(provider):
+            return "AI agent campaigns require Twilio or SignalWire"
         if not campaign.ai_agent_id or not campaign.ai_agent or campaign.ai_agent.user_id != user.id:
             return "Campaign AI agent is missing or invalid"
         if not campaign.ai_agent.is_active:
             return "Selected AI agent is inactive"
         if not ai_runtime_configured:
-            return "Please configure SignalWire, OpenAI, and ElevenLabs credentials in Settings first"
+            return (
+                f"Please configure {PROVIDER_LABELS.get(provider, provider.title())}, "
+                "OpenAI, and ElevenLabs credentials in Settings first"
+            )
     if not provider_configured:
         return f"Please configure {provider.title()} credentials in Settings first"
     if campaign.press_1_to_talk_with_agent and not provider_supports_press_1(provider):
@@ -393,7 +401,7 @@ async def create_campaign(
         press_1_to_talk_with_agent=press_1_to_talk_with_agent,
         max_concurrent_calls=max_concurrent_calls,
         provider_configured=has_user_voice_provider_credentials(db, user.id, voice_provider),
-        ai_runtime_configured=has_user_ai_runtime_credentials(db, user.id),
+        ai_runtime_configured=has_user_ai_runtime_credentials(db, user.id, voice_provider),
     )
     if form_error:
         return _render_create_campaign_error(
@@ -648,7 +656,7 @@ async def start_campaign(
         campaign=campaign,
         user=user,
         provider_configured=has_user_voice_provider_credentials(db, user.id, provider),
-        ai_runtime_configured=has_user_ai_runtime_credentials(db, user.id),
+        ai_runtime_configured=has_user_ai_runtime_credentials(db, user.id, provider),
     )
     if start_error:
         raise HTTPException(status_code=400, detail=start_error)

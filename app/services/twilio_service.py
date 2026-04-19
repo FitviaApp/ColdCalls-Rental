@@ -38,6 +38,7 @@ class TwilioService:
         press_1_to_talk_with_agent: bool = False,
         timeout: int = 60,
         metadata: Optional[dict] = None,
+        answer_url: Optional[str] = None,
     ) -> dict:
         """
         Initiate a call.
@@ -50,6 +51,9 @@ class TwilioService:
             campaign_id: Campaign ID for dynamic TwiML callback endpoint
             press_1_to_talk_with_agent: If true, require DTMF "1" before transfer
             timeout: Ring timeout in seconds
+            answer_url: When set, Twilio fetches TwiML from this URL on answer
+                (used by AI-agent campaigns); takes precedence over press_1 flow
+                and inline TwiML.
 
         Returns:
             dict with 'call_sid' and 'status'
@@ -57,10 +61,13 @@ class TwilioService:
         del metadata
         logger.info(f"Initiating call to {to_number} from {from_number}")
 
-        # Use dynamic callback URL only when "Press 1" is enabled.
-        # For normal calls, inline TwiML avoids dependency on public BASE_URL.
+        # AI-agent path uses a callback URL so the runtime can drive the
+        # conversation with <Gather>. Press-1 also uses a callback. Otherwise
+        # inline TwiML avoids dependency on public BASE_URL.
         call_kwargs = {}
-        if press_1_to_talk_with_agent:
+        if answer_url:
+            call_kwargs["url"] = answer_url
+        elif press_1_to_talk_with_agent:
             if campaign_id is None:
                 raise ValueError("campaign_id is required when press_1_to_talk_with_agent is enabled")
             base_url = settings.BASE_URL.rstrip("/")
@@ -81,10 +88,10 @@ class TwilioService:
         </Response>'''
             call_kwargs["twiml"] = twiml
 
-        # Keep AMD for direct transfer campaigns, but skip it on Press 1 flow.
-        # In Press 1 flow, DTMF confirmation already acts as a human gate.
+        # AMD interferes with the AI runtime's opening <Gather>, and is already
+        # redundant with the DTMF gate in Press 1 flow.
         machine_detection_kwargs = {}
-        if not press_1_to_talk_with_agent:
+        if not press_1_to_talk_with_agent and not answer_url:
             machine_detection_kwargs = {
                 "machine_detection": "Enable",
                 "machine_detection_timeout": 5,

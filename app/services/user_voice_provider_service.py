@@ -43,6 +43,14 @@ def provider_supports_press_1(provider: str) -> bool:
     }
 
 
+def provider_supports_ai_agent(provider: str) -> bool:
+    provider = (provider or "").strip().lower()
+    return provider in {
+        VoiceProvider.TWILIO.value,
+        VoiceProvider.SIGNALWIRE.value,
+    }
+
+
 def has_user_voice_provider_credentials(db: Session, user_id: int, provider: str) -> bool:
     """Check provider credentials for a specific user."""
     provider = (provider or "").strip().lower()
@@ -78,15 +86,37 @@ def get_user_voice_provider_status(db: Session, user_id: int) -> list[dict]:
                 "label": PROVIDER_LABELS.get(provider, provider.title()),
                 "configured": has_user_voice_provider_credentials(db, user_id, provider),
                 "supports_press_1": provider_supports_press_1(provider),
+                "supports_ai_agent": provider_supports_ai_agent(provider),
             }
         )
     return providers
 
 
-def has_user_ai_runtime_credentials(db: Session, user_id: int) -> bool:
-    """True when the user can run AI-agent campaigns via SignalWire + OpenAI + ElevenLabs."""
-    return (
-        has_user_signalwire_credentials(db, user_id)
-        and has_user_openai_credentials(db, user_id)
+def has_user_ai_runtime_credentials(
+    db: Session,
+    user_id: int,
+    provider: str | None = None,
+) -> bool:
+    """True when the user can run AI-agent campaigns.
+
+    Always requires OpenAI + ElevenLabs. When ``provider`` is given, checks that
+    specific provider's credentials; otherwise returns True if *any* AI-capable
+    voice provider is configured.
+    """
+    if not (
+        has_user_openai_credentials(db, user_id)
         and has_user_elevenlabs_credentials(db, user_id)
+    ):
+        return False
+
+    if provider:
+        return (
+            provider_supports_ai_agent(provider)
+            and has_user_voice_provider_credentials(db, user_id, provider)
+        )
+
+    return any(
+        has_user_voice_provider_credentials(db, user_id, p)
+        for p in supported_voice_providers()
+        if provider_supports_ai_agent(p)
     )

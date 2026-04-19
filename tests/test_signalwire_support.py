@@ -91,24 +91,35 @@ class SignalWireSupportTests(unittest.TestCase):
         self.assertIsNotNone(limiter)
         self.assertEqual(limiter._current_interval_seconds(), TWILIO_MIN_START_INTERVAL_SECONDS)  # type: ignore[union-attr]
 
-    def test_ai_runtime_credentials_require_signalwire_openai_and_elevenlabs(self):
+    def test_ai_runtime_credentials_accept_twilio_or_signalwire(self):
         import app.services.user_voice_provider_service as provider_service
 
-        original_signalwire = provider_service.has_user_signalwire_credentials
-        original_openai = provider_service.has_user_openai_credentials
-        original_elevenlabs = provider_service.has_user_elevenlabs_credentials
+        originals = {
+            "has_user_signalwire_credentials": provider_service.has_user_signalwire_credentials,
+            "has_user_twilio_credentials": provider_service.has_user_twilio_credentials,
+            "has_user_openai_credentials": provider_service.has_user_openai_credentials,
+            "has_user_elevenlabs_credentials": provider_service.has_user_elevenlabs_credentials,
+        }
         try:
-            provider_service.has_user_signalwire_credentials = lambda db, user_id: True
             provider_service.has_user_openai_credentials = lambda db, user_id: True
             provider_service.has_user_elevenlabs_credentials = lambda db, user_id: True
+            provider_service.has_user_signalwire_credentials = lambda db, user_id: True
+            provider_service.has_user_twilio_credentials = lambda db, user_id: False
             self.assertTrue(has_user_ai_runtime_credentials(None, 1))
+            self.assertTrue(has_user_ai_runtime_credentials(None, 1, VoiceProvider.SIGNALWIRE.value))
+            self.assertFalse(has_user_ai_runtime_credentials(None, 1, VoiceProvider.TWILIO.value))
+
+            provider_service.has_user_signalwire_credentials = lambda db, user_id: False
+            provider_service.has_user_twilio_credentials = lambda db, user_id: True
+            self.assertTrue(has_user_ai_runtime_credentials(None, 1))
+            self.assertTrue(has_user_ai_runtime_credentials(None, 1, VoiceProvider.TWILIO.value))
 
             provider_service.has_user_elevenlabs_credentials = lambda db, user_id: False
             self.assertFalse(has_user_ai_runtime_credentials(None, 1))
+            self.assertFalse(has_user_ai_runtime_credentials(None, 1, VoiceProvider.TWILIO.value))
         finally:
-            provider_service.has_user_signalwire_credentials = original_signalwire
-            provider_service.has_user_openai_credentials = original_openai
-            provider_service.has_user_elevenlabs_credentials = original_elevenlabs
+            for name, value in originals.items():
+                setattr(provider_service, name, value)
 
     def test_campaign_mode_enum_values(self):
         self.assertEqual(CampaignMode.AUDIO.value, "audio")
@@ -200,7 +211,18 @@ class SignalWireSupportTests(unittest.TestCase):
 
         fresh_session.unlink(missing_ok=True)
 
-    def test_campaign_form_validation_requires_signalwire_for_ai_mode(self):
+    def test_campaign_form_validation_rejects_non_ai_capable_provider_for_ai_mode(self):
+        error = _campaign_form_validation_error(
+            voice_provider=VoiceProvider.TELNYX.value,
+            campaign_mode=CampaignMode.AI_AGENT.value,
+            press_1_to_talk_with_agent=False,
+            max_concurrent_calls=1,
+            provider_configured=True,
+            ai_runtime_configured=True,
+        )
+        self.assertEqual(error, "AI agent campaigns support only Twilio or SignalWire.")
+
+    def test_campaign_form_validation_accepts_twilio_for_ai_mode(self):
         error = _campaign_form_validation_error(
             voice_provider=VoiceProvider.TWILIO.value,
             campaign_mode=CampaignMode.AI_AGENT.value,
@@ -209,7 +231,7 @@ class SignalWireSupportTests(unittest.TestCase):
             provider_configured=True,
             ai_runtime_configured=True,
         )
-        self.assertEqual(error, "AI agent campaigns currently require SignalWire as the voice provider.")
+        self.assertIsNone(error)
 
     def test_campaign_form_validation_rejects_press_1_for_ai_mode(self):
         error = _campaign_form_validation_error(
@@ -262,6 +284,31 @@ class SignalWireSupportTests(unittest.TestCase):
             error,
             "Please configure SignalWire, OpenAI, and ElevenLabs credentials in Settings first",
         )
+
+    def test_campaign_start_validation_accepts_twilio_for_ai_mode(self):
+        user = SimpleNamespace(id=1, transfer_number="+15550001111")
+        caller_id = SimpleNamespace(
+            user_id=1,
+            vox_verification_status="verified",
+        )
+        ai_agent = SimpleNamespace(user_id=1, is_active=True)
+        campaign = SimpleNamespace(
+            voice_provider=VoiceProvider.TWILIO,
+            campaign_mode=CampaignMode.AI_AGENT,
+            ai_agent_id=5,
+            ai_agent=ai_agent,
+            press_1_to_talk_with_agent=False,
+            caller_id=caller_id,
+            audio_id=None,
+            audio=None,
+        )
+        error = _campaign_start_validation_error(
+            campaign=campaign,
+            user=user,
+            provider_configured=True,
+            ai_runtime_configured=True,
+        )
+        self.assertIsNone(error)
 
     def test_parse_campaign_numbers_accepts_csv_first_column_and_counts_invalid(self):
         valid_numbers, invalid_count = _parse_campaign_numbers(

@@ -1,5 +1,6 @@
 """
-Conversational AI campaign runtime using SignalWire, OpenAI, and ElevenLabs.
+Conversational AI campaign runtime over Twilio or SignalWire, plus OpenAI and
+ElevenLabs.
 """
 from __future__ import annotations
 
@@ -16,11 +17,13 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.database import SessionLocal
-from app.models import AIAgent, CampaignNumber, CampaignMode
+from app.models import AIAgent, CampaignNumber, CampaignMode, VoiceProvider
 from app.services.signalwire_service import SignalWireService
+from app.services.twilio_service import TwilioService
 from app.services.user_elevenlabs_service import get_user_elevenlabs_credentials
 from app.services.user_openai_service import get_user_openai_credentials
 from app.services.user_signalwire_service import get_user_signalwire_credentials
+from app.services.user_twilio_service import get_user_twilio_credentials
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -90,28 +93,47 @@ def update_campaign_number_ai_observability(campaign_number_id: int, **updates) 
 
 
 class AICallRuntimeService:
-    """Drive AI-agent campaign calls over SignalWire."""
+    """Drive AI-agent campaign calls over Twilio or SignalWire."""
 
-    def __init__(self, db: Session, user_id: int):
+    def __init__(
+        self,
+        db: Session,
+        user_id: int,
+        provider: str = VoiceProvider.SIGNALWIRE.value,
+    ):
         self.db = db
         self.user_id = user_id
+        self.provider = (provider or "").strip().lower()
 
-        project_id, api_token, space_url = get_user_signalwire_credentials(db, user_id)
         openai_api_key, openai_org_id = get_user_openai_credentials(db, user_id)
         elevenlabs_api_key = get_user_elevenlabs_credentials(db, user_id)
-
-        if not project_id or not api_token or not space_url:
-            raise ValueError("SignalWire credentials not configured")
         if not openai_api_key:
             raise ValueError("OpenAI credentials not configured")
         if not elevenlabs_api_key:
             raise ValueError("ElevenLabs credentials not configured")
 
-        self.signalwire_service = SignalWireService(
-            project_id=project_id,
-            api_token=api_token,
-            space_url=space_url,
-        )
+        if self.provider == VoiceProvider.TWILIO.value:
+            account_sid, auth_token = get_user_twilio_credentials(db, user_id)
+            if not account_sid or not auth_token:
+                raise ValueError("Twilio credentials not configured")
+            self.voice_service = TwilioService(
+                account_sid=account_sid,
+                auth_token=auth_token,
+            )
+        elif self.provider == VoiceProvider.SIGNALWIRE.value:
+            project_id, api_token, space_url = get_user_signalwire_credentials(db, user_id)
+            if not project_id or not api_token or not space_url:
+                raise ValueError("SignalWire credentials not configured")
+            self.voice_service = SignalWireService(
+                project_id=project_id,
+                api_token=api_token,
+                space_url=space_url,
+            )
+        else:
+            raise ValueError(
+                f"AI agent campaigns do not support voice provider: {self.provider}"
+            )
+
         self.openai_api_key = openai_api_key
         self.openai_org_id = openai_org_id
         self.elevenlabs_api_key = elevenlabs_api_key
@@ -143,7 +165,7 @@ class AICallRuntimeService:
         answer_url = (
             f"{settings.BASE_URL.rstrip('/')}/api/ai-runtime/twiml/{campaign_number_id}"
         )
-        call_result = self.signalwire_service.make_call(
+        call_result = self.voice_service.make_call(
             to_number=to_number,
             from_number=from_number,
             audio_url=None,
@@ -152,7 +174,6 @@ class AICallRuntimeService:
             timeout=timeout,
             metadata=metadata,
             answer_url=answer_url,
-            enable_machine_detection=False,
         )
 
         session_payload["call_sid"] = call_result.get("call_sid")
@@ -160,7 +181,7 @@ class AICallRuntimeService:
         return call_result
 
     def poll_call_status(self, *args, **kwargs):
-        return self.signalwire_service.poll_call_status(*args, **kwargs)
+        return self.voice_service.poll_call_status(*args, **kwargs)
 
     def build_initial_twiml(self, campaign_number_id: int) -> str:
         session = self._read_session(campaign_number_id)
