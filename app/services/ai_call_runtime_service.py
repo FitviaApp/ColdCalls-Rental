@@ -342,6 +342,8 @@ class AICallRuntimeService:
             "transfer_number": transfer_number,
             "from_number": from_number,
             "to_number": to_number,
+            "language": (agent.language or "en"),
+            "voice_provider": self.provider,
             "turn_count": 0,
             "no_input_turns": 0,
             "history": [],
@@ -712,17 +714,44 @@ class AICallRuntimeService:
         gather_action = (
             f"{settings.BASE_URL.rstrip('/')}/api/ai-runtime/twiml/{campaign_number_id}/gather"
         )
+        language_attr = self._gather_language_attr(session_payload.get("language"))
+        # Twilio's phone_call speech model is tuned for telephony audio and is
+        # far more accurate than the default. Harmless on SignalWire (ignored).
+        provider = (
+            session_payload.get("voice_provider")
+            or getattr(self, "provider", "")
+            or ""
+        ).strip().lower()
+        speech_model_attr = ' speechModel="phone_call"' if provider == VoiceProvider.TWILIO.value else ""
         # Outer Gather listens *during* playback too, so interrupting the agent
         # works. A trailing Redirect keeps the call alive if the first Gather
         # expires silently — it retries rather than hanging up immediately.
         redirect_url = gather_action
         return f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Gather input="speech dtmf" speechTimeout="{speech_timeout_seconds}" timeout="{gather_timeout_seconds}" action="{gather_action}" method="POST" actionOnEmptyResult="true">
+    <Gather input="speech dtmf"{language_attr}{speech_model_attr} speechTimeout="{speech_timeout_seconds}" timeout="{gather_timeout_seconds}" action="{gather_action}" method="POST" actionOnEmptyResult="true">
         <Play>{audio_url}</Play>{pause_block}
     </Gather>
     <Redirect method="POST">{redirect_url}</Redirect>
 </Response>"""
+
+    @staticmethod
+    def _gather_language_attr(language: Optional[str]) -> str:
+        normalized = (language or "en").strip().lower()
+        # BCP-47 codes work as-is. 2-letter codes expand to common defaults.
+        if "-" in normalized:
+            parts = normalized.split("-", 1)
+            bcp47 = f"{parts[0]}-{parts[1].upper()}"
+        else:
+            bcp47 = {
+                "en": "en-US",
+                "pt": "pt-BR",
+                "es": "es-US",
+                "fr": "fr-FR",
+                "de": "de-DE",
+                "it": "it-IT",
+            }.get(normalized, f"{normalized}-{normalized.upper()}")
+        return f' language="{bcp47}"'
 
     def _hangup_twiml(self) -> str:
         return '<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>'
@@ -782,13 +811,23 @@ class AICallRuntimeService:
         _atomic_write_text(self._session_path(campaign_number_id), json.dumps(payload))
 
 
+def _campaign_voice_provider(campaign) -> str:
+    provider = getattr(campaign, "voice_provider", None)
+    if provider is None:
+        return VoiceProvider.SIGNALWIRE.value
+    return provider.value if hasattr(provider, "value") else str(provider)
+
+
 def build_ai_runtime_twiml(campaign_number_id: int) -> str:
     db = SessionLocal()
     try:
         number = db.query(CampaignNumber).filter(CampaignNumber.id == campaign_number_id).first()
         if not number or not number.campaign:
             return '<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>'
-        return AICallRuntimeService(db, number.campaign.user_id).build_initial_twiml(campaign_number_id)
+        provider = _campaign_voice_provider(number.campaign)
+        return AICallRuntimeService(
+            db, number.campaign.user_id, provider=provider
+        ).build_initial_twiml(campaign_number_id)
     except Exception as exc:
         logger.error(f"AI runtime initial TwiML failed for number {campaign_number_id}: {exc}")
         update_campaign_number_ai_observability(
@@ -806,7 +845,10 @@ def build_ai_runtime_followup_twiml(campaign_number_id: int, user_input: str) ->
         number = db.query(CampaignNumber).filter(CampaignNumber.id == campaign_number_id).first()
         if not number or not number.campaign:
             return '<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>'
-        return AICallRuntimeService(db, number.campaign.user_id).build_followup_twiml(
+        provider = _campaign_voice_provider(number.campaign)
+        return AICallRuntimeService(
+            db, number.campaign.user_id, provider=provider
+        ).build_followup_twiml(
             campaign_number_id,
             user_input=user_input,
         )
