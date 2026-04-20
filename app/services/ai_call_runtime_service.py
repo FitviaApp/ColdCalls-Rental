@@ -31,6 +31,12 @@ settings = get_settings()
 AI_RUNTIME_DIR = Path(settings.AI_RUNTIME_DIR or "/tmp/coldcalls_ai_runtime")
 AI_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
 
+# Shared HTTP client keeps TLS connections warm to OpenAI/ElevenLabs across turns,
+# saving ~200ms per request vs. a fresh handshake each call.
+_HTTP_CLIENT = httpx.Client(
+    limits=httpx.Limits(max_keepalive_connections=20, max_connections=40, keepalive_expiry=60.0),
+)
+
 
 class CallTurnDeadlineError(RuntimeError):
     """Raised when the overall TwiML turn budget is exceeded."""
@@ -628,12 +634,12 @@ class AICallRuntimeService:
                 effective_timeout = max(1.0, min(timeout_seconds, remaining - 0.25))
 
             try:
-                with httpx.Client(timeout=effective_timeout) as client:
-                    response = client.post(
-                        url,
-                        headers=headers,
-                        json=json_payload,
-                    )
+                response = _HTTP_CLIENT.post(
+                    url,
+                    headers=headers,
+                    json=json_payload,
+                    timeout=effective_timeout,
+                )
                 response.raise_for_status()
                 if response_validator is not None:
                     response_validator(response)

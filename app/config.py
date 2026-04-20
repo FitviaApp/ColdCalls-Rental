@@ -49,14 +49,14 @@ class Settings(BaseSettings):
     # Bounded so an OpenAI hiccup never exceeds the voice provider's webhook
     # timeout (~15s on Twilio/SignalWire) and cuts the call mid-turn.
     OPENAI_REQUEST_TIMEOUT_SECONDS: float = 8.0
-    ELEVENLABS_TTS_MODEL: str = "eleven_multilingual_v2"
+    ELEVENLABS_TTS_MODEL: str = "eleven_flash_v2_5"
     ELEVENLABS_REQUEST_TIMEOUT_SECONDS: float = 8.0
     AI_MAX_AGENT_TURNS: int = 12
     AI_MAX_HISTORY_MESSAGES: int = 16
     AI_MAX_NO_INPUT_TURNS: int = 3
     AI_MAX_ASSISTANT_TEXT_CHARS: int = 320
     AI_GATHER_TIMEOUT_SECONDS: int = 6
-    AI_GATHER_SPEECH_TIMEOUT_SECONDS: int = 2
+    AI_GATHER_SPEECH_TIMEOUT_SECONDS: int = 1
     AI_GATHER_POST_PLAY_PAUSE_SECONDS: int = 0
     AI_HTTP_MAX_RETRIES: int = 1
     AI_HTTP_RETRY_BACKOFF_SECONDS: float = 0.3
