@@ -186,6 +186,7 @@ class CampaignDetail(CampaignResponse):
 class CampaignNumberResponse(BaseModel):
     id: int
     phone_number: str
+    lead_name: Optional[str] = None
     status: CallStatus
     call_sid: Optional[str]
     duration_seconds: Optional[int]

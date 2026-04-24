@@ -260,6 +260,7 @@ class CampaignNumber(Base):
     id = Column(Integer, primary_key=True, index=True)
     campaign_id = Column(Integer, ForeignKey("campaigns.id"), nullable=False, index=True)
     phone_number = Column(String(20), nullable=False)
+    lead_name = Column(String(255), nullable=True)
     status = Column(Enum(CallStatus), default=CallStatus.PENDING, index=True)
     call_sid = Column(String(50), nullable=True)
     duration_seconds = Column(Integer, nullable=True)

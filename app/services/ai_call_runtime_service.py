@@ -348,6 +348,7 @@ class AICallRuntimeService:
             "transfer_number": transfer_number,
             "from_number": from_number,
             "to_number": to_number,
+            "lead_name": _truncate_text(number.lead_name, 255),
             "language": (agent.language or "en"),
             "voice_provider": self.provider,
             "turn_count": 0,
@@ -385,7 +386,10 @@ class AICallRuntimeService:
             raise ValueError("AI agent not found")
 
         reply = self._request_openai_turn(
-            agent, session_payload.get("history") or [], deadline=deadline
+            agent,
+            session_payload.get("history") or [],
+            lead_name=session_payload.get("lead_name"),
+            deadline=deadline,
         )
         assistant_text = self._sanitize_assistant_text(
             reply.get("assistant_text") or "Hello, this is a quick follow-up call."
@@ -444,6 +448,7 @@ class AICallRuntimeService:
         agent: AIAgent,
         history: list[dict[str, str]],
         *,
+        lead_name: str | None = None,
         deadline: float | None = None,
     ) -> dict[str, Any]:
         system_prompt = (
@@ -453,6 +458,12 @@ class AICallRuntimeService:
             f"Agent instructions: {agent.system_prompt.strip()} "
             f"Handoff guidance: {(agent.handoff_description or 'Transfer when the lead is ready for a human.').strip()}"
         )
+        normalized_lead_name = _truncate_text(lead_name, 255)
+        if normalized_lead_name:
+            system_prompt = (
+                f"{system_prompt} The lead's name is {normalized_lead_name}. "
+                "Address them by name naturally when appropriate."
+            )
         messages = [{"role": "system", "content": system_prompt}]
         messages.extend((history or [])[-MAX_HISTORY_MESSAGES:])
 

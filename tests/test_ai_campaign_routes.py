@@ -5,9 +5,11 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from cryptography.fernet import Fernet
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from app import auth as auth_module
 from app.database import Base, get_db
 from app.dependencies import require_active_rental
 from app.models import (
@@ -33,6 +35,8 @@ from app.services.user_signalwire_service import upsert_user_signalwire_credenti
 class AICampaignRouteTests(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
+        self.original_encryption_key = auth_module.settings.ENCRYPTION_KEY
+        auth_module.settings.ENCRYPTION_KEY = Fernet.generate_key().decode()
         self.db_path = Path(self.tmpdir.name) / "test.db"
         self.engine = create_engine(
             f"sqlite:///{self.db_path}",
@@ -130,6 +134,7 @@ class AICampaignRouteTests(unittest.TestCase):
         campaigns_router_module._is_worker_online = lambda max_age_seconds=60: True
 
     def tearDown(self):
+        auth_module.settings.ENCRYPTION_KEY = self.original_encryption_key
         campaigns_router_module._is_worker_online = self.original_worker_check
         self.client.close()
         self.db.close()
@@ -146,7 +151,7 @@ class AICampaignRouteTests(unittest.TestCase):
                 "ai_agent_id": str(self.ai_agent.id),
                 "voice_provider": VoiceProvider.SIGNALWIRE.value,
                 "max_concurrent_calls": "2",
-                "numbers_text": "+15551234567\n+15559876543",
+                "numbers_text": "phone,name\n+15551234567,John Doe\n+15559876543,Maria Silva",
             },
             files={},
             follow_redirects=False,
@@ -162,6 +167,10 @@ class AICampaignRouteTests(unittest.TestCase):
             self.assertEqual(campaign.ai_agent_id, self.ai_agent.id)
             self.assertIsNone(campaign.audio_id)
             self.assertEqual(campaign.total_numbers, 2)
+            leads = db.query(CampaignNumber).filter(
+                CampaignNumber.campaign_id == campaign.id
+            ).order_by(CampaignNumber.phone_number).all()
+            self.assertEqual([lead.lead_name for lead in leads], ["John Doe", "Maria Silva"])
         finally:
             db.close()
 
@@ -227,6 +236,7 @@ class AICampaignRouteTests(unittest.TestCase):
         number = CampaignNumber(
             campaign_id=campaign.id,
             phone_number="+15551234567",
+            lead_name="John Doe",
             status=CallStatus.COMPLETED,
             ai_turn_count=3,
             ai_no_input_turns=1,
@@ -243,6 +253,7 @@ class AICampaignRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertEqual(payload["numbers"][0]["ai_turn_count"], 3)
+        self.assertEqual(payload["numbers"][0]["lead_name"], "John Doe")
         self.assertEqual(payload["numbers"][0]["ai_handoff_reason"], "Strong purchase intent")
         self.assertEqual(payload["numbers"][0]["ai_last_user_input"], "Tell me more.")
 

@@ -1,7 +1,9 @@
 """
 Campaigns Router - CRUD and campaign management
 """
+import csv
 import re
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -38,6 +40,14 @@ MAX_CONCURRENT_CALLS = 20
 
 # E.164 phone number regex
 E164_PATTERN = re.compile(r'^\+[1-9]\d{1,14}$')
+CSV_PHONE_HEADERS = {"phone", "phone_number", "number", "telefone"}
+CSV_NAME_HEADERS = {"name", "lead_name", "client_name", "customer_name", "nome"}
+
+
+@dataclass(frozen=True)
+class CampaignLead:
+    phone_number: str
+    lead_name: Optional[str] = None
 
 
 def validate_phone_number(number: str) -> Optional[str]:
@@ -48,27 +58,47 @@ def validate_phone_number(number: str) -> Optional[str]:
     return None
 
 
-def _parse_campaign_numbers(numbers_raw: str) -> tuple[list[str], int]:
-    """Parse pasted/uploaded numbers, keeping valid E.164 entries and counting invalid rows."""
-    lines = (numbers_raw or "").strip().split('\n')
-    valid_numbers: list[str] = []
-    invalid_count = 0
+def _normalize_lead_name(value: str | None) -> Optional[str]:
+    normalized = " ".join(str(value or "").strip().split())
+    if not normalized:
+        return None
+    return normalized[:255]
 
-    for line in lines:
-        line = line.strip()
-        if not line:
+
+def _is_campaign_numbers_header(row: list[str]) -> bool:
+    if not row:
+        return False
+    first = str(row[0] or "").strip().lower()
+    second = str(row[1] or "").strip().lower() if len(row) > 1 else ""
+    return first in CSV_PHONE_HEADERS and (not second or second in CSV_NAME_HEADERS)
+
+
+def _parse_campaign_numbers(numbers_raw: str) -> tuple[list[CampaignLead], int]:
+    """Parse pasted/uploaded phone,name rows, keeping valid E.164 entries."""
+    valid_leads: list[CampaignLead] = []
+    invalid_count = 0
+    rows = csv.reader((numbers_raw or "").splitlines())
+
+    for raw_row in rows:
+        row = [str(cell or "").strip() for cell in raw_row]
+        if not row or not any(row):
             continue
 
-        if ',' in line:
-            line = line.split(',')[0].strip()
+        if not valid_leads and invalid_count == 0 and _is_campaign_numbers_header(row):
+            continue
 
-        number = validate_phone_number(line)
+        number = validate_phone_number(row[0] if row else "")
         if number:
-            valid_numbers.append(number)
+            valid_leads.append(
+                CampaignLead(
+                    phone_number=number,
+                    lead_name=_normalize_lead_name(row[1] if len(row) > 1 else None),
+                )
+            )
         else:
             invalid_count += 1
 
-    return valid_numbers, invalid_count
+    return valid_leads, invalid_count
 
 
 def _normalized_campaign_mode(value: str | None) -> str:
@@ -420,9 +450,9 @@ async def create_campaign(
         numbers_raw = content.decode('utf-8')
 
     # Parse and validate numbers
-    valid_numbers, invalid_count = _parse_campaign_numbers(numbers_raw)
+    valid_leads, invalid_count = _parse_campaign_numbers(numbers_raw)
 
-    if not valid_numbers:
+    if not valid_leads:
         return _render_create_campaign_error(
             request,
             user,
@@ -530,16 +560,17 @@ async def create_campaign(
         press_1_to_talk_with_agent=press_1_to_talk_with_agent,
         max_concurrent_calls=max_concurrent_calls,
         status=CampaignStatus.DRAFT,
-        total_numbers=len(valid_numbers)
+        total_numbers=len(valid_leads)
     )
     db.add(campaign)
     db.flush()
 
     # Add numbers
-    for number in valid_numbers:
+    for lead in valid_leads:
         campaign_number = CampaignNumber(
             campaign_id=campaign.id,
-            phone_number=number,
+            phone_number=lead.phone_number,
+            lead_name=lead.lead_name,
             status=CallStatus.PENDING
         )
         db.add(campaign_number)
@@ -599,6 +630,7 @@ async def campaign_detail(
         {
             "id": n.id,
             "phone_number": n.phone_number,
+            "lead_name": n.lead_name,
             "status": n.status.value,
             "duration_seconds": n.duration_seconds,
             "cost": n.cost,

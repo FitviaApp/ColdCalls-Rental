@@ -311,11 +311,29 @@ class SignalWireSupportTests(unittest.TestCase):
         self.assertIsNone(error)
 
     def test_parse_campaign_numbers_accepts_csv_first_column_and_counts_invalid(self):
-        valid_numbers, invalid_count = _parse_campaign_numbers(
+        leads, invalid_count = _parse_campaign_numbers(
             "+15551234567\n+15557654321,John Doe\ninvalid-number\n\n"
         )
-        self.assertEqual(valid_numbers, ["+15551234567", "+15557654321"])
+        self.assertEqual([lead.phone_number for lead in leads], ["+15551234567", "+15557654321"])
+        self.assertIsNone(leads[0].lead_name)
+        self.assertEqual(leads[1].lead_name, "John Doe")
         self.assertEqual(invalid_count, 1)
+
+    def test_parse_campaign_numbers_accepts_optional_phone_name_header(self):
+        leads, invalid_count = _parse_campaign_numbers(
+            "phone,name\n+15551234567,John Doe\n+15557654321,Maria Silva\n"
+        )
+        self.assertEqual([lead.phone_number for lead in leads], ["+15551234567", "+15557654321"])
+        self.assertEqual([lead.lead_name for lead in leads], ["John Doe", "Maria Silva"])
+        self.assertEqual(invalid_count, 0)
+
+    def test_parse_campaign_numbers_keeps_legacy_phone_only_lists(self):
+        leads, invalid_count = _parse_campaign_numbers(
+            "+15551234567\n+15557654321\n"
+        )
+        self.assertEqual([lead.phone_number for lead in leads], ["+15551234567", "+15557654321"])
+        self.assertEqual([lead.lead_name for lead in leads], [None, None])
+        self.assertEqual(invalid_count, 0)
 
     def test_create_form_data_preserves_expected_fields(self):
         form_data = _create_form_data(
@@ -357,7 +375,7 @@ class SignalWireSupportTests(unittest.TestCase):
     def test_ai_runtime_post_with_retries_succeeds_after_transient_failure(self):
         import app.services.ai_call_runtime_service as runtime_module
 
-        original_client = runtime_module.httpx.Client
+        original_client = runtime_module._HTTP_CLIENT
         original_retries = runtime_module.settings.AI_HTTP_MAX_RETRIES
         original_backoff = runtime_module.settings.AI_HTTP_RETRY_BACKOFF_SECONDS
 
@@ -377,13 +395,13 @@ class SignalWireSupportTests(unittest.TestCase):
             def __exit__(self, exc_type, exc, tb):
                 return False
 
-            def post(self, url, headers=None, json=None):
+            def post(self, url, headers=None, json=None, timeout=None):
                 attempts["count"] += 1
                 if attempts["count"] == 1:
                     raise runtime_module.httpx.TimeoutException("temporary timeout")
                 return DummyResponse()
 
-        runtime_module.httpx.Client = DummyClient
+        runtime_module._HTTP_CLIENT = DummyClient()
         runtime_module.settings.AI_HTTP_MAX_RETRIES = 2
         runtime_module.settings.AI_HTTP_RETRY_BACKOFF_SECONDS = 0
         try:
@@ -396,7 +414,7 @@ class SignalWireSupportTests(unittest.TestCase):
                 timeout_seconds=1.0,
             )
         finally:
-            runtime_module.httpx.Client = original_client
+            runtime_module._HTTP_CLIENT = original_client
             runtime_module.settings.AI_HTTP_MAX_RETRIES = original_retries
             runtime_module.settings.AI_HTTP_RETRY_BACKOFF_SECONDS = original_backoff
 
@@ -420,22 +438,29 @@ class SignalWireSupportTests(unittest.TestCase):
         self.assertTrue(sanitized.endswith("...") or sanitized.endswith("."))
 
     def test_ai_runtime_reprompts_on_empty_input(self):
+        import app.services.ai_call_runtime_service as runtime_module
+
         service = AICallRuntimeService.__new__(AICallRuntimeService)
         captured = {}
         session = {"no_input_turns": 0, "history": [], "campaign_number_id": 9}
+        original_update = runtime_module.update_campaign_number_ai_observability
 
         service._read_session = lambda campaign_number_id: session
-        service._create_assistant_turn = lambda payload, assistant_text, should_transfer: {
+        service._create_assistant_turn = lambda payload, assistant_text, should_transfer, **kwargs: {
             "assistant_text": assistant_text,
             "should_transfer": should_transfer,
             "audio_token": "token",
         }
         service._write_session = lambda campaign_number_id, payload: captured.update(payload)
         service._twiml_for_turn = lambda campaign_number_id, payload, turn: turn["assistant_text"]
+        runtime_module.update_campaign_number_ai_observability = lambda *args, **kwargs: None
 
-        result = service.build_followup_twiml(9, user_input="")
+        try:
+            result = service.build_followup_twiml(9, user_input="")
+        finally:
+            runtime_module.update_campaign_number_ai_observability = original_update
 
-        self.assertEqual(result, "I did not catch that. Are you still there?")
+        self.assertEqual(result, "I didn't catch that. Are you still there?")
         self.assertEqual(captured["no_input_turns"], 1)
 
     def test_ai_runtime_request_openai_turn_uses_fallback_for_empty_content(self):
@@ -490,6 +515,53 @@ class SignalWireSupportTests(unittest.TestCase):
         self.assertTrue(result["should_transfer"])
         self.assertEqual(result["handoff_reason"], "Strong purchase intent")
 
+    def test_ai_runtime_request_openai_turn_includes_lead_name_context(self):
+        captured = {}
+        service = AICallRuntimeService.__new__(AICallRuntimeService)
+        service.openai_api_key = "sk-test"
+        service.openai_org_id = ""
+
+        def fake_post_json_with_retries(**kwargs):
+            captured["payload"] = kwargs["json_payload"]
+            return {"choices": [{"message": {"content": "Hi John.", "tool_calls": []}}]}
+
+        service._post_json_with_retries = fake_post_json_with_retries
+        agent = SimpleNamespace(
+            system_prompt="Be helpful.",
+            handoff_description="Transfer on request.",
+            model="gpt-4o-mini",
+            temperature=0.3,
+        )
+
+        result = service._request_openai_turn(agent, [], lead_name="John Doe")
+
+        system_prompt = captured["payload"]["messages"][0]["content"]
+        self.assertIn("The lead's name is John Doe.", system_prompt)
+        self.assertEqual(result["assistant_text"], "Hi John.")
+
+    def test_ai_runtime_request_openai_turn_omits_empty_lead_name_context(self):
+        captured = {}
+        service = AICallRuntimeService.__new__(AICallRuntimeService)
+        service.openai_api_key = "sk-test"
+        service.openai_org_id = ""
+
+        def fake_post_json_with_retries(**kwargs):
+            captured["payload"] = kwargs["json_payload"]
+            return {"choices": [{"message": {"content": "Hello.", "tool_calls": []}}]}
+
+        service._post_json_with_retries = fake_post_json_with_retries
+        agent = SimpleNamespace(
+            system_prompt="Be helpful.",
+            handoff_description="Transfer on request.",
+            model="gpt-4o-mini",
+            temperature=0.3,
+        )
+
+        service._request_openai_turn(agent, [], lead_name="")
+
+        system_prompt = captured["payload"]["messages"][0]["content"]
+        self.assertNotIn("The lead's name is", system_prompt)
+
     def test_ai_runtime_twiml_uses_low_latency_gather_defaults(self):
         import app.services.ai_call_runtime_service as runtime_module
 
@@ -536,7 +608,7 @@ class SignalWireSupportTests(unittest.TestCase):
     def test_ai_runtime_post_binary_with_retries_retries_on_empty_audio(self):
         import app.services.ai_call_runtime_service as runtime_module
 
-        original_client = runtime_module.httpx.Client
+        original_client = runtime_module._HTTP_CLIENT
         original_retries = runtime_module.settings.AI_HTTP_MAX_RETRIES
         original_backoff = runtime_module.settings.AI_HTTP_RETRY_BACKOFF_SECONDS
 
@@ -561,13 +633,13 @@ class SignalWireSupportTests(unittest.TestCase):
             def __exit__(self, exc_type, exc, tb):
                 return False
 
-            def post(self, url, headers=None, json=None):
+            def post(self, url, headers=None, json=None, timeout=None):
                 attempts["count"] += 1
                 if attempts["count"] == 1:
                     return DummyResponse(b"")
                 return DummyResponse(b"mp3-bytes")
 
-        runtime_module.httpx.Client = DummyClient
+        runtime_module._HTTP_CLIENT = DummyClient()
         runtime_module.settings.AI_HTTP_MAX_RETRIES = 2
         runtime_module.settings.AI_HTTP_RETRY_BACKOFF_SECONDS = 0
         try:
@@ -580,7 +652,7 @@ class SignalWireSupportTests(unittest.TestCase):
                 timeout_seconds=1.0,
             )
         finally:
-            runtime_module.httpx.Client = original_client
+            runtime_module._HTTP_CLIENT = original_client
             runtime_module.settings.AI_HTTP_MAX_RETRIES = original_retries
             runtime_module.settings.AI_HTTP_RETRY_BACKOFF_SECONDS = original_backoff
 
@@ -590,7 +662,7 @@ class SignalWireSupportTests(unittest.TestCase):
     def test_ai_runtime_post_binary_with_retries_raises_for_non_audio_payload(self):
         import app.services.ai_call_runtime_service as runtime_module
 
-        original_client = runtime_module.httpx.Client
+        original_client = runtime_module._HTTP_CLIENT
         original_retries = runtime_module.settings.AI_HTTP_MAX_RETRIES
         original_backoff = runtime_module.settings.AI_HTTP_RETRY_BACKOFF_SECONDS
 
@@ -613,10 +685,10 @@ class SignalWireSupportTests(unittest.TestCase):
             def __exit__(self, exc_type, exc, tb):
                 return False
 
-            def post(self, url, headers=None, json=None):
+            def post(self, url, headers=None, json=None, timeout=None):
                 return DummyResponse()
 
-        runtime_module.httpx.Client = DummyClient
+        runtime_module._HTTP_CLIENT = DummyClient()
         runtime_module.settings.AI_HTTP_MAX_RETRIES = 0
         runtime_module.settings.AI_HTTP_RETRY_BACKOFF_SECONDS = 0
         try:
@@ -630,7 +702,7 @@ class SignalWireSupportTests(unittest.TestCase):
                     timeout_seconds=1.0,
                 )
         finally:
-            runtime_module.httpx.Client = original_client
+            runtime_module._HTTP_CLIENT = original_client
             runtime_module.settings.AI_HTTP_MAX_RETRIES = original_retries
             runtime_module.settings.AI_HTTP_RETRY_BACKOFF_SECONDS = original_backoff
 
