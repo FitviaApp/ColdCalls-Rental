@@ -612,7 +612,9 @@ class AICallRuntimeService:
 
     def build_realtime_session_config(self, campaign_number_id: int) -> dict[str, Any]:
         session = self._read_session(campaign_number_id)
-        if not session or session.get("runtime_mode") != "realtime":
+        if not session:
+            session = self._realtime_session_from_database(campaign_number_id)
+        elif session.get("runtime_mode") != "realtime":
             raise ValueError("Realtime runtime session not found")
 
         agent = self._agent_for_session(session)
@@ -675,6 +677,37 @@ class AICallRuntimeService:
                 "space_url": getattr(self, "signalwire_space_url", ""),
             }
         return config
+
+    def _realtime_session_from_database(self, campaign_number_id: int) -> dict[str, Any]:
+        number = self.db.query(CampaignNumber).filter(
+            CampaignNumber.id == campaign_number_id
+        ).first()
+        if not number or not number.campaign:
+            raise ValueError("Campaign number not found for realtime runtime")
+
+        campaign = number.campaign
+        if campaign.campaign_mode != CampaignMode.AI_AGENT:
+            raise ValueError("Campaign is not in AI agent mode")
+        if not campaign.ai_agent or not campaign.ai_agent.is_active:
+            raise ValueError("AI agent is not available")
+        if not campaign.user or not campaign.user.transfer_number:
+            raise ValueError("Transfer number is not configured")
+        if not campaign.caller_id:
+            raise ValueError("Caller ID is not configured")
+
+        return {
+            "campaign_number_id": campaign_number_id,
+            "campaign_id": campaign.id,
+            "user_id": campaign.user_id,
+            "ai_agent_id": campaign.ai_agent.id,
+            "transfer_number": campaign.user.transfer_number,
+            "from_number": campaign.caller_id.phone_number,
+            "to_number": number.phone_number,
+            "lead_name": _truncate_text(number.lead_name, 255),
+            "language": campaign.ai_agent.language or "en",
+            "voice_provider": _campaign_voice_provider(campaign),
+            "runtime_mode": "realtime",
+        }
 
     def _sanitize_assistant_text(self, text: str) -> str:
         normalized = " ".join(str(text or "").split())

@@ -85,7 +85,8 @@ async function fetchRuntimeConfig(
     },
   );
   if (!response.ok) {
-    throw new Error(`origin session config failed: ${response.status}`);
+    const body = await response.text();
+    throw new Error(`origin session config failed: ${response.status} ${body.slice(0, 240)}`);
   }
   return (await response.json()) as RuntimeConfig;
 }
@@ -106,7 +107,8 @@ async function connectOpenAI(config: RuntimeConfig, env: Env): Promise<WebSocket
   const response = await fetch(url.toString(), { headers });
   const socket = response.webSocket;
   if (!socket || response.status !== 101) {
-    throw new Error(`OpenAI realtime websocket failed: ${response.status}`);
+    const body = await response.text();
+    throw new Error(`OpenAI realtime websocket failed: ${response.status} ${body.slice(0, 240)}`);
   }
   socket.accept();
   return socket;
@@ -261,7 +263,23 @@ export class VoiceCallSession extends DurableObject<Env> {
     campaignNumberId: string,
   ): Promise<void> {
     const config = await fetchRuntimeConfig(this.env, campaignNumberId);
+    console.log(
+      JSON.stringify({
+        event: "runtime_config_loaded",
+        campaignNumberId,
+        provider: config.provider,
+        model: config.model,
+        voice: config.voice,
+      }),
+    );
     const openaiSocket = await connectOpenAI(config, this.env);
+    console.log(
+      JSON.stringify({
+        event: "openai_realtime_connected",
+        campaignNumberId,
+        model: config.model,
+      }),
+    );
     let streamSid = "";
     let callSid = "";
     let sessionReady = false;
@@ -273,8 +291,20 @@ export class VoiceCallSession extends DurableObject<Env> {
       const message = JSON.parse(String(event.data)) as JsonObject;
       const type = String(message.type || "");
 
+      if (type === "error") {
+        console.error(
+          JSON.stringify({
+            event: "openai_realtime_error",
+            campaignNumberId,
+            error: message.error,
+          }),
+        );
+        return;
+      }
+
       if (type === "session.updated" && !sessionReady) {
         sessionReady = true;
+        console.log(JSON.stringify({ event: "openai_session_ready", campaignNumberId }));
         sendJson(openaiSocket, responseCreate());
         return;
       }

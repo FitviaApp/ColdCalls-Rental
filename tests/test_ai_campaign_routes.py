@@ -27,6 +27,7 @@ from app.models import (
 )
 from app.routers import api as api_router_module
 from app.routers import campaigns as campaigns_router_module
+from app.services.ai_call_runtime_service import AICallRuntimeService
 from app.services.user_elevenlabs_service import upsert_user_elevenlabs_credentials
 from app.services.user_openai_service import upsert_user_openai_credentials
 from app.services.user_signalwire_service import upsert_user_signalwire_credentials
@@ -365,6 +366,46 @@ class AICampaignRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["campaign_number_id"], 55)
         self.assertEqual(response.json()["model"], "gpt-realtime")
+
+    def test_ai_realtime_session_config_can_rebuild_without_tmp_session(self):
+        campaign = Campaign(
+            user_id=self.user.id,
+            name="Realtime AI Campaign",
+            caller_id_id=self.caller_id.id,
+            country_id=self.country.id,
+            ai_agent_id=self.ai_agent.id,
+            audio_id=None,
+            campaign_mode=CampaignMode.AI_AGENT,
+            voice_provider=VoiceProvider.SIGNALWIRE,
+            press_1_to_talk_with_agent=False,
+            max_concurrent_calls=1,
+            status=CampaignStatus.RUNNING,
+            total_numbers=1,
+        )
+        self.db.add(campaign)
+        self.db.flush()
+        number = CampaignNumber(
+            campaign_id=campaign.id,
+            phone_number="+15551234567",
+            lead_name="John Doe",
+            status=CallStatus.IN_PROGRESS,
+        )
+        self.db.add(number)
+        self.db.commit()
+
+        service = AICallRuntimeService(
+            self.db,
+            self.user.id,
+            provider=VoiceProvider.SIGNALWIRE.value,
+        )
+        payload = service.build_realtime_session_config(number.id)
+
+        self.assertEqual(payload["campaign_number_id"], number.id)
+        self.assertEqual(payload["provider"], VoiceProvider.SIGNALWIRE.value)
+        self.assertEqual(payload["from_number"], self.caller_id.phone_number)
+        self.assertEqual(payload["to_number"], "+15551234567")
+        self.assertIn("John Doe", payload["instructions"])
+        self.assertTrue(payload["openai_api_key"].startswith("sk-test"))
 
 
 if __name__ == "__main__":
