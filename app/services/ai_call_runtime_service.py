@@ -900,10 +900,7 @@ class AICallRuntimeService:
         campaign_number_id: int,
         session_payload: dict[str, Any],
     ) -> str:
-        base_stream_url = (
-            f"{settings.AI_REALTIME_STREAM_BASE_URL.rstrip('/')}/voice/realtime/"
-            f"{campaign_number_id}"
-        )
+        base_stream_url = self._realtime_stream_url(campaign_number_id)
         provider = (
             session_payload.get("voice_provider")
             or getattr(self, "provider", "")
@@ -932,6 +929,15 @@ class AICallRuntimeService:
         </Stream>
     </Connect>
 </Response>"""
+
+    @staticmethod
+    def _realtime_stream_url(campaign_number_id: int) -> str:
+        base_url = (settings.AI_REALTIME_STREAM_BASE_URL or "").strip().rstrip("/")
+        if base_url.startswith("https://"):
+            base_url = "wss://" + base_url[len("https://"):]
+        elif base_url.startswith("http://"):
+            base_url = "ws://" + base_url[len("http://"):]
+        return f"{base_url}/voice/realtime/{campaign_number_id}"
 
     @staticmethod
     def _gather_language_attr(language: Optional[str]) -> str:

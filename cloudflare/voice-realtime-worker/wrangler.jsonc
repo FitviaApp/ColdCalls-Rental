@@ -9,7 +9,7 @@
     "head_sampling_rate": 1
   },
   "vars": {
-    "ORIGIN_BASE_URL": "https://your-fastapi-origin.example.com",
+    "ORIGIN_BASE_URL": "https://monclaire.shop",
     "OPENAI_REALTIME_BASE_URL": "https://api.openai.com/v1/realtime"
   },
   "durable_objects": {

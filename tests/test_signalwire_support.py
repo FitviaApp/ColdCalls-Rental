@@ -624,7 +624,7 @@ class SignalWireSupportTests(unittest.TestCase):
             runtime_module.settings.AI_REALTIME_EDGE_SECRET = original_secret
 
         self.assertIn("<Connect>", twiml)
-        self.assertIn('url="https://edge.example.com/voice/realtime/55"', twiml)
+        self.assertIn('url="wss://edge.example.com/voice/realtime/55"', twiml)
         self.assertIn('authBearerToken="edge-secret"', twiml)
         self.assertIn('codec="PCMU@8000h"', twiml)
 
@@ -646,7 +646,7 @@ class SignalWireSupportTests(unittest.TestCase):
             runtime_module.settings.AI_REALTIME_STREAM_BASE_URL = original_base_url
             runtime_module.settings.AI_REALTIME_EDGE_SECRET = original_secret
 
-        self.assertIn('url="https://edge.example.com/voice/realtime/55?token=edge%20secret"', twiml)
+        self.assertIn('url="wss://edge.example.com/voice/realtime/55?token=edge%20secret"', twiml)
 
     def test_ai_runtime_post_binary_with_retries_retries_on_empty_audio(self):
         import app.services.ai_call_runtime_service as runtime_module
