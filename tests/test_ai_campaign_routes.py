@@ -334,6 +334,38 @@ class AICampaignRouteTests(unittest.TestCase):
         self.assertEqual(response.content, b"mp3-bytes")
         self.assertIn("audio/mpeg", response.headers["content-type"])
 
+    def test_ai_realtime_session_endpoint_requires_edge_secret(self):
+        original_secret = api_router_module.settings.AI_REALTIME_EDGE_SECRET
+        api_router_module.settings.AI_REALTIME_EDGE_SECRET = "edge-secret"
+        try:
+            response = self.client.get("/api/ai-runtime/realtime/session/55")
+        finally:
+            api_router_module.settings.AI_REALTIME_EDGE_SECRET = original_secret
+
+        self.assertEqual(response.status_code, 401)
+
+    def test_ai_realtime_session_endpoint_returns_config_for_edge_worker(self):
+        original_secret = api_router_module.settings.AI_REALTIME_EDGE_SECRET
+        original_builder = api_router_module.build_ai_realtime_session_config
+        api_router_module.settings.AI_REALTIME_EDGE_SECRET = "edge-secret"
+        api_router_module.build_ai_realtime_session_config = lambda campaign_number_id: {
+            "campaign_number_id": campaign_number_id,
+            "provider": "signalwire",
+            "model": "gpt-realtime",
+        }
+        try:
+            response = self.client.get(
+                "/api/ai-runtime/realtime/session/55",
+                headers={"Authorization": "Bearer edge-secret"},
+            )
+        finally:
+            api_router_module.settings.AI_REALTIME_EDGE_SECRET = original_secret
+            api_router_module.build_ai_realtime_session_config = original_builder
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["campaign_number_id"], 55)
+        self.assertEqual(response.json()["model"], "gpt-realtime")
+
 
 if __name__ == "__main__":
     unittest.main()

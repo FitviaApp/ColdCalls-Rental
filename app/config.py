@@ -70,6 +70,15 @@ class Settings(BaseSettings):
     # Total budget for producing a follow-up TwiML response; must stay under
     # the voice provider's webhook timeout.
     AI_TURN_DEADLINE_SECONDS: float = 12.0
+    # Realtime speech-to-speech runtime. When enabled, AI-agent calls return
+    # <Connect><Stream> TwiML/cXML and a Cloudflare Worker bridges the provider
+    # media stream to OpenAI Realtime.
+    AI_REALTIME_ENABLED: bool = False
+    AI_REALTIME_STREAM_BASE_URL: str = ""
+    AI_REALTIME_EDGE_SECRET: str = ""
+    AI_REALTIME_MODEL: str = "gpt-realtime"
+    AI_REALTIME_VOICE: str = "verse"
+    AI_REALTIME_TURN_DETECTION: str = "server_vad"
 
     @field_validator("DEBUG", mode="before")
     @classmethod

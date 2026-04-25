@@ -88,6 +88,12 @@ AI_MAX_AGENT_TURNS=6
 AI_GATHER_TIMEOUT_SECONDS=3
 AI_GATHER_SPEECH_TIMEOUT_SECONDS=1
 AI_GATHER_POST_PLAY_PAUSE_SECONDS=0
+# Optional realtime speech-to-speech runtime via Cloudflare Worker + OpenAI Realtime
+AI_REALTIME_ENABLED=false
+AI_REALTIME_STREAM_BASE_URL=
+AI_REALTIME_EDGE_SECRET=
+AI_REALTIME_MODEL=gpt-realtime
+AI_REALTIME_VOICE=verse
 
 # Banco
 DATABASE_URL=sqlite:///./coldcalls.db
@@ -206,6 +212,40 @@ Observacoes:
 - O modo IA nao usa `audio_id`.
 - O modo IA nao usa o fluxo `Press 1`.
 - `BASE_URL` precisa estar acessivel publicamente para os callbacks `/api/ai-runtime/*`.
+- Para baixa latencia, `AI_REALTIME_ENABLED=true` troca o fluxo `<Gather>` por
+  `<Connect><Stream>` para o Worker em `cloudflare/voice-realtime-worker`.
+  Nesse modo a voz e nativa do OpenAI Realtime (`AI_REALTIME_VOICE`), nao a
+  voz ElevenLabs cadastrada no agente.
+
+## Realtime Edge Runtime
+
+O diretório `cloudflare/voice-realtime-worker` contém um POC de Worker com
+Durable Object para fazer a ponte entre SignalWire/Twilio Media Streams e
+OpenAI Realtime.
+
+Fluxo:
+
+1. O worker Python inicia a chamada normalmente.
+2. O endpoint `/api/ai-runtime/twiml/{campaign_number_id}` retorna
+   `<Connect><Stream>`.
+3. O provider abre `wss://.../voice/realtime/{campaign_number_id}` no Worker.
+4. O Worker busca a configuracao segura em
+   `/api/ai-runtime/realtime/session/{campaign_number_id}` usando
+   `AI_REALTIME_EDGE_SECRET`.
+5. O Worker conecta ao OpenAI Realtime e encaminha audio nos dois sentidos.
+6. Quando o modelo chama `transfer_call`, o Worker atualiza a chamada no
+   provider para discar o numero de transferencia.
+
+Configuracao minima:
+
+```bash
+cd cloudflare/voice-realtime-worker
+npm install
+npx wrangler secret put EDGE_SESSION_TOKEN
+npx wrangler deploy
+```
+
+Use o mesmo segredo em `EDGE_SESSION_TOKEN` e `AI_REALTIME_EDGE_SECRET`.
 
 ## Voximplant
 

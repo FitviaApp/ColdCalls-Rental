@@ -1,0 +1,29 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "coldcalls-voice-realtime",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-04-25",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "vars": {
+    "ORIGIN_BASE_URL": "https://your-fastapi-origin.example.com",
+    "OPENAI_REALTIME_BASE_URL": "https://api.openai.com/v1/realtime"
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "VOICE_CALLS",
+        "class_name": "VoiceCallSession"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["VoiceCallSession"]
+    }
+  ]
+}

@@ -11,6 +11,7 @@ import secrets
 import time
 from pathlib import Path
 from typing import Any, Callable, Optional
+from urllib.parse import quote
 
 import httpx
 from sqlalchemy.orm import Session
@@ -23,10 +24,21 @@ from app.services.twilio_service import TwilioService
 from app.services.user_elevenlabs_service import get_user_elevenlabs_credentials
 from app.services.user_openai_service import get_user_openai_credentials
 from app.services.user_signalwire_service import get_user_signalwire_credentials
+from app.services.user_signalwire_service import _normalize_space_url as normalize_signalwire_space_url
 from app.services.user_twilio_service import get_user_twilio_credentials
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+OPENAI_REALTIME_VOICES = {
+    "alloy",
+    "ash",
+    "ballad",
+    "coral",
+    "echo",
+    "sage",
+    "shimmer",
+    "verse",
+}
 
 AI_RUNTIME_DIR = Path(settings.AI_RUNTIME_DIR or "/tmp/coldcalls_ai_runtime")
 AI_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
@@ -122,6 +134,8 @@ class AICallRuntimeService:
             account_sid, auth_token = get_user_twilio_credentials(db, user_id)
             if not account_sid or not auth_token:
                 raise ValueError("Twilio credentials not configured")
+            self.twilio_account_sid = account_sid
+            self.twilio_auth_token = auth_token
             self.voice_service = TwilioService(
                 account_sid=account_sid,
                 auth_token=auth_token,
@@ -130,6 +144,9 @@ class AICallRuntimeService:
             project_id, api_token, space_url = get_user_signalwire_credentials(db, user_id)
             if not project_id or not api_token or not space_url:
                 raise ValueError("SignalWire credentials not configured")
+            self.signalwire_project_id = project_id
+            self.signalwire_api_token = api_token
+            self.signalwire_space_url = normalize_signalwire_space_url(space_url)
             self.voice_service = SignalWireService(
                 project_id=project_id,
                 api_token=api_token,
@@ -161,12 +178,20 @@ class AICallRuntimeService:
         if not campaign_number_id:
             raise ValueError("AI runtime requires campaign_number_id metadata")
 
-        session_payload = self._create_runtime_session(
-            campaign_number_id=campaign_number_id,
-            transfer_number=transfer_number,
-            from_number=from_number,
-            to_number=to_number,
-        )
+        if self._realtime_enabled_for_provider():
+            session_payload = self._create_realtime_runtime_session(
+                campaign_number_id=campaign_number_id,
+                transfer_number=transfer_number,
+                from_number=from_number,
+                to_number=to_number,
+            )
+        else:
+            session_payload = self._create_runtime_session(
+                campaign_number_id=campaign_number_id,
+                transfer_number=transfer_number,
+                from_number=from_number,
+                to_number=to_number,
+            )
 
         answer_url = (
             f"{settings.BASE_URL.rstrip('/')}/api/ai-runtime/twiml/{campaign_number_id}"
@@ -193,6 +218,8 @@ class AICallRuntimeService:
         session = self._read_session(campaign_number_id)
         if not session:
             return self._hangup_twiml()
+        if session.get("runtime_mode") == "realtime":
+            return self._realtime_stream_twiml(campaign_number_id, session)
 
         current_turn = session.get("current_turn") or {}
         return self._twiml_for_turn(campaign_number_id, session, current_turn)
@@ -320,7 +347,53 @@ class AICallRuntimeService:
         self._write_session(campaign_number_id, session)
         return self._twiml_for_turn(campaign_number_id, session, turn)
 
+    def _realtime_enabled_for_provider(self) -> bool:
+        return (
+            bool(settings.AI_REALTIME_ENABLED)
+            and bool((settings.AI_REALTIME_STREAM_BASE_URL or "").strip())
+            and self.provider in {VoiceProvider.SIGNALWIRE.value, VoiceProvider.TWILIO.value}
+        )
+
+    def _create_realtime_runtime_session(
+        self,
+        *,
+        campaign_number_id: int,
+        transfer_number: str,
+        from_number: str,
+        to_number: str,
+    ) -> dict[str, Any]:
+        session_payload = self._base_runtime_session(
+            campaign_number_id=campaign_number_id,
+            transfer_number=transfer_number,
+            from_number=from_number,
+            to_number=to_number,
+        )
+        session_payload["runtime_mode"] = "realtime"
+        self._write_session(campaign_number_id, session_payload)
+        return session_payload
+
     def _create_runtime_session(
+        self,
+        *,
+        campaign_number_id: int,
+        transfer_number: str,
+        from_number: str,
+        to_number: str,
+    ) -> dict[str, Any]:
+        session_payload = self._base_runtime_session(
+            campaign_number_id=campaign_number_id,
+            transfer_number=transfer_number,
+            from_number=from_number,
+            to_number=to_number,
+        )
+
+        agent = self._agent_for_session(session_payload)
+        first_turn = self._generate_assistant_turn(session_payload, agent=agent)
+        session_payload["current_turn"] = first_turn
+        self._write_session(campaign_number_id, session_payload)
+        return session_payload
+
+    def _base_runtime_session(
         self,
         *,
         campaign_number_id: int,
@@ -355,6 +428,7 @@ class AICallRuntimeService:
             "no_input_turns": 0,
             "history": [],
             "current_turn": None,
+            "runtime_mode": "turn_based",
         }
         update_campaign_number_ai_observability(
             campaign_number_id,
@@ -365,11 +439,14 @@ class AICallRuntimeService:
             ai_handoff_reason=None,
             ai_runtime_error=None,
         )
-
-        first_turn = self._generate_assistant_turn(session_payload, agent=agent)
-        session_payload["current_turn"] = first_turn
-        self._write_session(campaign_number_id, session_payload)
         return session_payload
+
+    def _agent_for_session(self, session_payload: dict[str, Any]) -> AIAgent:
+        agent_id = int(session_payload.get("ai_agent_id") or 0)
+        agent = self.db.query(AIAgent).filter(AIAgent.id == agent_id).first()
+        if not agent:
+            raise ValueError("AI agent not found")
+        return agent
 
     def _generate_assistant_turn(
         self,
@@ -532,6 +609,72 @@ class AICallRuntimeService:
             "should_transfer": should_transfer,
             "handoff_reason": handoff_reason,
         }
+
+    def build_realtime_session_config(self, campaign_number_id: int) -> dict[str, Any]:
+        session = self._read_session(campaign_number_id)
+        if not session or session.get("runtime_mode") != "realtime":
+            raise ValueError("Realtime runtime session not found")
+
+        agent = self._agent_for_session(session)
+        normalized_lead_name = _truncate_text(session.get("lead_name"), 255)
+        instructions = (
+            "You are an outbound phone agent. Speak naturally, keep replies short, "
+            "and only speak in the configured language. Your job is to pre-qualify "
+            "the lead and call the transfer_call tool when the lead is qualified "
+            "or explicitly asks for a human. "
+            f"Agent instructions: {agent.system_prompt.strip()} "
+            f"Handoff guidance: {(agent.handoff_description or 'Transfer when the lead is ready for a human.').strip()}"
+        )
+        if normalized_lead_name:
+            instructions = (
+                f"{instructions} The lead's name is {normalized_lead_name}. "
+                "Address them by name naturally when appropriate."
+            )
+
+        voice = (settings.AI_REALTIME_VOICE or "verse").strip().lower()
+        if voice not in OPENAI_REALTIME_VOICES:
+            voice = "verse"
+
+        config = {
+            "campaign_number_id": campaign_number_id,
+            "provider": session.get("voice_provider") or self.provider,
+            "model": settings.AI_REALTIME_MODEL,
+            "voice": voice,
+            "turn_detection": settings.AI_REALTIME_TURN_DETECTION,
+            "language": session.get("language") or "en",
+            "instructions": instructions,
+            "transfer_number": session["transfer_number"],
+            "from_number": session["from_number"],
+            "to_number": session["to_number"],
+            "openai_api_key": self.openai_api_key,
+            "openai_org_id": self.openai_org_id,
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "transfer_call",
+                    "description": "Transfer the call to the human agent when the lead is qualified or asks for a person.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "reason": {"type": "string"},
+                        },
+                        "required": ["reason"],
+                    },
+                }
+            ],
+        }
+        if self.provider == VoiceProvider.TWILIO.value:
+            config["twilio"] = {
+                "account_sid": getattr(self, "twilio_account_sid", ""),
+                "auth_token": getattr(self, "twilio_auth_token", ""),
+            }
+        elif self.provider == VoiceProvider.SIGNALWIRE.value:
+            config["signalwire"] = {
+                "project_id": getattr(self, "signalwire_project_id", ""),
+                "api_token": getattr(self, "signalwire_api_token", ""),
+                "space_url": getattr(self, "signalwire_space_url", ""),
+            }
+        return config
 
     def _sanitize_assistant_text(self, text: str) -> str:
         normalized = " ".join(str(text or "").split())
@@ -752,6 +895,44 @@ class AICallRuntimeService:
     <Redirect method="POST">{redirect_url}</Redirect>
 </Response>"""
 
+    def _realtime_stream_twiml(
+        self,
+        campaign_number_id: int,
+        session_payload: dict[str, Any],
+    ) -> str:
+        base_stream_url = (
+            f"{settings.AI_REALTIME_STREAM_BASE_URL.rstrip('/')}/voice/realtime/"
+            f"{campaign_number_id}"
+        )
+        provider = (
+            session_payload.get("voice_provider")
+            or getattr(self, "provider", "")
+            or ""
+        ).strip().lower()
+        auth_token = self._xml_escape(settings.AI_REALTIME_EDGE_SECRET)
+        if provider == VoiceProvider.SIGNALWIRE.value:
+            return f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Connect>
+        <Stream url="{base_stream_url}" authBearerToken="{auth_token}" codec="PCMU@8000h" realtime="true">
+            <Parameter name="campaign_number_id" value="{campaign_number_id}" />
+        </Stream>
+    </Connect>
+</Response>"""
+        stream_url = (
+            f"{base_stream_url}?token={quote(settings.AI_REALTIME_EDGE_SECRET, safe='')}"
+            if settings.AI_REALTIME_EDGE_SECRET
+            else base_stream_url
+        )
+        return f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Connect>
+        <Stream url="{stream_url}">
+            <Parameter name="campaign_number_id" value="{campaign_number_id}" />
+        </Stream>
+    </Connect>
+</Response>"""
+
     @staticmethod
     def _gather_language_attr(language: Optional[str]) -> str:
         normalized = (language or "en").strip().lower()
@@ -876,6 +1057,20 @@ def build_ai_runtime_followup_twiml(campaign_number_id: int, user_input: str) ->
             ai_runtime_error=str(exc),
         )
         return '<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>'
+    finally:
+        db.close()
+
+
+def build_ai_realtime_session_config(campaign_number_id: int) -> dict[str, Any]:
+    db = SessionLocal()
+    try:
+        number = db.query(CampaignNumber).filter(CampaignNumber.id == campaign_number_id).first()
+        if not number or not number.campaign:
+            raise ValueError("Campaign number not found")
+        provider = _campaign_voice_provider(number.campaign)
+        return AICallRuntimeService(
+            db, number.campaign.user_id, provider=provider
+        ).build_realtime_session_config(campaign_number_id)
     finally:
         db.close()
 

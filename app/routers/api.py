@@ -2,6 +2,7 @@
 API Router - JSON endpoints for AJAX calls and cXML/TwiML
 """
 import logging
+import secrets
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import Response
@@ -14,6 +15,7 @@ from app.models import User, Campaign, CampaignNumber, CallerID, Country, Audio,
 from app.schemas import DashboardStats, CampaignProgress, DropdownCallerID, DropdownCountry, DropdownAudio
 from app.services.rental_service import has_active_rental
 from app.services.ai_call_runtime_service import (
+    build_ai_realtime_session_config,
     build_ai_runtime_followup_twiml,
     build_ai_runtime_twiml,
     get_ai_runtime_audio,
@@ -311,6 +313,29 @@ async def ai_runtime_audio(campaign_number_id: int, audio_token: str):
     if not audio_bytes:
         raise HTTPException(status_code=404, detail="Audio not found")
     return Response(content=audio_bytes, media_type="audio/mpeg")
+
+
+@router.get("/ai-runtime/realtime/session/{campaign_number_id}")
+async def ai_runtime_realtime_session(campaign_number_id: int, request: Request):
+    expected_secret = (settings.AI_REALTIME_EDGE_SECRET or "").strip()
+    auth_header = str(request.headers.get("authorization") or "")
+    provided_secret = auth_header.removeprefix("Bearer ").strip()
+    if not expected_secret or not secrets.compare_digest(provided_secret, expected_secret):
+        raise HTTPException(status_code=401, detail="Invalid realtime edge token")
+
+    try:
+        config = await run_in_threadpool(
+            build_ai_realtime_session_config, campaign_number_id
+        )
+    except Exception as exc:
+        logger.error(
+            "AI realtime session config failed for number %s: %s",
+            campaign_number_id,
+            exc,
+        )
+        raise HTTPException(status_code=404, detail="Realtime session not found") from exc
+
+    return config
 
 
 @router.get("/stats", response_model=DashboardStats)
