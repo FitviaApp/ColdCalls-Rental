@@ -1069,17 +1069,12 @@ class AICallRuntimeService:
         campaign_number_id: int,
         session_payload: dict[str, Any],
     ) -> str:
-        base_stream_url = self._realtime_stream_url(campaign_number_id)
+        stream_url = self._realtime_stream_url(campaign_number_id)
         provider = (
             session_payload.get("voice_provider")
             or getattr(self, "provider", "")
             or ""
         ).strip().lower()
-        stream_url = (
-            f"{base_stream_url}?token={quote(settings.AI_REALTIME_EDGE_SECRET, safe='')}"
-            if settings.AI_REALTIME_EDGE_SECRET
-            else base_stream_url
-        )
         auth_token = self._xml_escape(settings.AI_REALTIME_EDGE_SECRET)
         if provider == VoiceProvider.SIGNALWIRE.value:
             return f"""<?xml version="1.0" encoding="UTF-8"?>
@@ -1106,6 +1101,9 @@ class AICallRuntimeService:
             base_url = "wss://" + base_url[len("https://"):]
         elif base_url.startswith("http://"):
             base_url = "ws://" + base_url[len("http://"):]
+        secret = (settings.AI_REALTIME_EDGE_SECRET or "").strip()
+        if secret:
+            return f"{base_url}/voice/realtime/{quote(secret, safe='')}/{campaign_number_id}"
         return f"{base_url}/voice/realtime/{campaign_number_id}"
 
     @staticmethod

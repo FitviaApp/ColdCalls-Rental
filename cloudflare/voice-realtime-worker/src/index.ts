@@ -112,6 +112,17 @@ function normalizeProvider(value: string | null): string {
   return (value || "").trim().toLowerCase();
 }
 
+function parseRealtimePath(pathname: string): { pathToken: string; campaignNumberId: string } {
+  const parts = pathname.split("/").filter(Boolean);
+  if (parts.length >= 4 && parts[0] === "voice" && parts[1] === "realtime") {
+    return { pathToken: parts[2], campaignNumberId: parts[3] };
+  }
+  if (parts.length >= 3 && parts[0] === "voice" && parts[1] === "realtime") {
+    return { pathToken: "", campaignNumberId: parts[2] };
+  }
+  return { pathToken: "", campaignNumberId: "" };
+}
+
 function basicAuth(user: string, password: string): string {
   return `Basic ${btoa(`${user}:${password}`)}`;
 }
@@ -281,7 +292,7 @@ export class VoiceCallSession extends DurableObject<Env> {
     }
 
     const url = new URL(request.url);
-    const campaignNumberId = url.pathname.split("/").filter(Boolean).pop();
+    const { pathToken, campaignNumberId } = parseRealtimePath(url.pathname);
     if (!campaignNumberId) {
       return jsonResponse({ error: "Missing campaign number id" }, 400);
     }
@@ -289,7 +300,7 @@ export class VoiceCallSession extends DurableObject<Env> {
     const expected = this.env.EDGE_SESSION_TOKEN || "";
     const headerToken = getBearerToken(request);
     const queryToken = url.searchParams.get("token") || "";
-    const provided = headerToken || queryToken;
+    const provided = pathToken || headerToken || queryToken;
     if (!expected || !timingSafeEqual(provided, expected)) {
       logRealtimeEvent(campaignNumberId, {
         event: "provider_stream_unauthorized",
@@ -297,6 +308,7 @@ export class VoiceCallSession extends DurableObject<Env> {
         hasEdgeToken: Boolean(expected),
         hasAuthorizationHeader: Boolean(headerToken),
         hasQueryToken: Boolean(queryToken),
+        hasPathToken: Boolean(pathToken),
       });
       return jsonResponse({ error: "Unauthorized" }, 401);
     }
@@ -613,7 +625,7 @@ export default {
     }
 
     if (url.pathname.startsWith("/voice/realtime/")) {
-      const campaignNumberId = url.pathname.split("/").filter(Boolean).pop();
+      const { pathToken, campaignNumberId } = parseRealtimePath(url.pathname);
       if (!campaignNumberId) {
         return jsonResponse({ error: "Missing campaign number id" }, 400);
       }
@@ -623,6 +635,7 @@ export default {
         upgrade: request.headers.get("upgrade") || "",
         hasAuthorizationHeader: request.headers.has("authorization"),
         hasQueryToken: url.searchParams.has("token"),
+        hasPathToken: Boolean(pathToken),
         hasEdgeToken: Boolean(env.EDGE_SESSION_TOKEN),
       });
       const stub = env.VOICE_CALLS.getByName(campaignNumberId);
