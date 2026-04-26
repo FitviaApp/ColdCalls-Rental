@@ -413,6 +413,7 @@ class AICallRuntimeService:
         return (
             bool(settings.AI_REALTIME_ENABLED)
             and bool((settings.AI_REALTIME_STREAM_BASE_URL or "").strip())
+            and bool((settings.AI_REALTIME_EDGE_SECRET or "").strip())
             and self.provider in {VoiceProvider.SIGNALWIRE.value, VoiceProvider.TWILIO.value}
         )
 
