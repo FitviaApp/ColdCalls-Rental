@@ -171,6 +171,18 @@ async function connectOpenAI(config: RuntimeConfig, env: Env): Promise<WebSocket
   return socket;
 }
 
+function turnDetection(config: RuntimeConfig): JsonObject {
+  const type = (config.turn_detection || "semantic_vad").trim();
+  if (type === "semantic_vad") {
+    return {
+      type: "semantic_vad",
+      eagerness: "auto",
+      interrupt_response: false,
+    };
+  }
+  return { type };
+}
+
 function sessionUpdate(config: RuntimeConfig): JsonObject {
   return {
     type: "session.update",
@@ -180,9 +192,7 @@ function sessionUpdate(config: RuntimeConfig): JsonObject {
       voice: config.voice || "verse",
       input_audio_format: "g711_ulaw",
       output_audio_format: "g711_ulaw",
-      turn_detection: {
-        type: config.turn_detection || "server_vad",
-      },
+      turn_detection: turnDetection(config),
       tools: config.tools,
       tool_choice: "auto",
       temperature: 0.7,
@@ -340,6 +350,9 @@ export class VoiceCallSession extends DurableObject<Env> {
     let transferStarted = false;
     let firstProviderMediaSeen = false;
     let firstOpenAIAudioSeen = false;
+    let responseInProgress = false;
+    let activeAssistantItemId = "";
+    let assistantPlaybackStartedAt = 0;
     const pendingProviderAudio: string[] = [];
 
     const emitEvent = (payload: JsonObject, sendToOrigin = true): void => {
@@ -539,7 +552,12 @@ export class VoiceCallSession extends DurableObject<Env> {
 
       if (type === "response.audio.delta" && streamSid) {
         const delta = String(message.delta || "");
+        const itemId = String(message.item_id || "");
         if (delta) {
+          if (itemId && itemId !== activeAssistantItemId) {
+            activeAssistantItemId = itemId;
+            assistantPlaybackStartedAt = Date.now();
+          }
           if (!firstOpenAIAudioSeen) {
             firstOpenAIAudioSeen = true;
             emitEvent({
@@ -556,11 +574,34 @@ export class VoiceCallSession extends DurableObject<Env> {
 
       if (type === "input_audio_buffer.speech_started" && streamSid) {
         sendJson(providerSocket, providerClear(streamSid));
-        sendJson(openaiSocket, { type: "response.cancel" });
+        if (activeAssistantItemId && assistantPlaybackStartedAt) {
+          const audioEndMs = Math.max(0, Date.now() - assistantPlaybackStartedAt);
+          sendJson(openaiSocket, {
+            type: "conversation.item.truncate",
+            item_id: activeAssistantItemId,
+            content_index: 0,
+            audio_end_ms: audioEndMs,
+          });
+          activeAssistantItemId = "";
+          assistantPlaybackStartedAt = 0;
+        }
+        if (responseInProgress) {
+          sendJson(openaiSocket, { type: "response.cancel" });
+        }
+        return;
+      }
+
+      if (type === "response.created") {
+        responseInProgress = true;
+        activeAssistantItemId = "";
+        assistantPlaybackStartedAt = 0;
         return;
       }
 
       if (type === "response.done") {
+        responseInProgress = false;
+        activeAssistantItemId = "";
+        assistantPlaybackStartedAt = 0;
         const response = message.response as JsonObject | undefined;
         const output = (response?.output as JsonObject[] | undefined) || [];
         const functionCall = output.find(
