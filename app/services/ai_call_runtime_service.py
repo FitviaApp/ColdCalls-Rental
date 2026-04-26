@@ -769,9 +769,13 @@ class AICallRuntimeService:
                 "Address them by name naturally when appropriate."
             )
 
-        voice = (settings.AI_REALTIME_VOICE or "verse").strip().lower()
-        if voice not in OPENAI_REALTIME_VOICES:
-            voice = "verse"
+        agent_voice = (getattr(agent, "voice_id", "") or "").strip().lower()
+        if agent_voice in OPENAI_REALTIME_VOICES:
+            voice = agent_voice
+        else:
+            voice = (settings.AI_REALTIME_VOICE or "verse").strip().lower()
+            if voice not in OPENAI_REALTIME_VOICES:
+                voice = "verse"
 
         config = {
             "campaign_number_id": campaign_number_id,
