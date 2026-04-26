@@ -1074,21 +1074,21 @@ class AICallRuntimeService:
             or getattr(self, "provider", "")
             or ""
         ).strip().lower()
-        auth_token = self._xml_escape(settings.AI_REALTIME_EDGE_SECRET)
-        if provider == VoiceProvider.SIGNALWIRE.value:
-            return f"""<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Connect>
-        <Stream url="{base_stream_url}" authBearerToken="{auth_token}" codec="PCMU@8000h" realtime="true">
-            <Parameter name="campaign_number_id" value="{campaign_number_id}" />
-        </Stream>
-    </Connect>
-</Response>"""
         stream_url = (
             f"{base_stream_url}?token={quote(settings.AI_REALTIME_EDGE_SECRET, safe='')}"
             if settings.AI_REALTIME_EDGE_SECRET
             else base_stream_url
         )
+        auth_token = self._xml_escape(settings.AI_REALTIME_EDGE_SECRET)
+        if provider == VoiceProvider.SIGNALWIRE.value:
+            return f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Connect>
+        <Stream url="{stream_url}" authBearerToken="{auth_token}" codec="PCMU@8000h" realtime="true">
+            <Parameter name="campaign_number_id" value="{campaign_number_id}" />
+        </Stream>
+    </Connect>
+</Response>"""
         return f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Connect>

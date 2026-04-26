@@ -281,15 +281,24 @@ export class VoiceCallSession extends DurableObject<Env> {
     }
 
     const url = new URL(request.url);
-    const expected = this.env.EDGE_SESSION_TOKEN || "";
-    const provided = getBearerToken(request) || url.searchParams.get("token") || "";
-    if (!expected || !timingSafeEqual(provided, expected)) {
-      return jsonResponse({ error: "Unauthorized" }, 401);
-    }
-
     const campaignNumberId = url.pathname.split("/").filter(Boolean).pop();
     if (!campaignNumberId) {
       return jsonResponse({ error: "Missing campaign number id" }, 400);
+    }
+
+    const expected = this.env.EDGE_SESSION_TOKEN || "";
+    const headerToken = getBearerToken(request);
+    const queryToken = url.searchParams.get("token") || "";
+    const provided = headerToken || queryToken;
+    if (!expected || !timingSafeEqual(provided, expected)) {
+      logRealtimeEvent(campaignNumberId, {
+        event: "provider_stream_unauthorized",
+        severity: "error",
+        hasEdgeToken: Boolean(expected),
+        hasAuthorizationHeader: Boolean(headerToken),
+        hasQueryToken: Boolean(queryToken),
+      });
+      return jsonResponse({ error: "Unauthorized" }, 401);
     }
 
     const pair = new WebSocketPair();
@@ -608,6 +617,14 @@ export default {
       if (!campaignNumberId) {
         return jsonResponse({ error: "Missing campaign number id" }, 400);
       }
+      logRealtimeEvent(campaignNumberId, {
+        event: "worker_realtime_route",
+        severity: "info",
+        upgrade: request.headers.get("upgrade") || "",
+        hasAuthorizationHeader: request.headers.has("authorization"),
+        hasQueryToken: url.searchParams.has("token"),
+        hasEdgeToken: Boolean(env.EDGE_SESSION_TOKEN),
+      });
       const stub = env.VOICE_CALLS.getByName(campaignNumberId);
       return await stub.fetch(request);
     }

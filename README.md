@@ -228,7 +228,7 @@ Fluxo:
 1. O worker Python inicia a chamada normalmente.
 2. O endpoint `/api/ai-runtime/twiml/{campaign_number_id}` retorna
    `<Connect><Stream>`.
-3. O provider abre `wss://.../voice/realtime/{campaign_number_id}` no Worker.
+3. O provider abre `wss://.../voice/realtime/{campaign_number_id}?token=...` no Worker.
 4. O Worker busca a configuracao segura em
    `/api/ai-runtime/realtime/session/{campaign_number_id}` usando
    `AI_REALTIME_EDGE_SECRET`.

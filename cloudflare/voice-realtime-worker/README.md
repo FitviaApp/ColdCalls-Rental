@@ -17,6 +17,9 @@ npx wrangler secret put EDGE_SESSION_TOKEN
 ```
 
 The same value must be configured in FastAPI as `AI_REALTIME_EDGE_SECRET`.
+The generated media stream URL includes this secret as a `token` query
+parameter because not every telephony provider forwards custom authorization
+attributes during the WebSocket upgrade.
 
 ## FastAPI environment
 
