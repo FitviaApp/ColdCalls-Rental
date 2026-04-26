@@ -43,6 +43,52 @@ function jsonResponse(payload: JsonObject, status = 200): Response {
   return Response.json(payload, { status });
 }
 
+function logRealtimeEvent(campaignNumberId: string, payload: JsonObject): void {
+  console.log(JSON.stringify({ campaignNumberId, ...payload }));
+}
+
+async function postOriginEvent(
+  env: Env,
+  campaignNumberId: string,
+  payload: JsonObject,
+): Promise<void> {
+  if (!env.EDGE_SESSION_TOKEN) {
+    return;
+  }
+  try {
+    const response = await fetch(
+      `${env.ORIGIN_BASE_URL.replace(/\/$/, "")}/api/ai-runtime/realtime/event/${campaignNumberId}`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${env.EDGE_SESSION_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      },
+    );
+    if (!response.ok) {
+      const body = await response.text();
+      console.error(
+        JSON.stringify({
+          event: "origin_event_post_failed",
+          campaignNumberId,
+          status: response.status,
+          body: body.slice(0, 240),
+        }),
+      );
+    }
+  } catch (error: unknown) {
+    console.error(
+      JSON.stringify({
+        event: "origin_event_post_failed",
+        campaignNumberId,
+        error: String(error),
+      }),
+    );
+  }
+}
+
 function getBearerToken(request: Request): string {
   const header = request.headers.get("authorization") || "";
   return header.startsWith("Bearer ") ? header.slice("Bearer ".length).trim() : "";
@@ -251,7 +297,9 @@ export class VoiceCallSession extends DurableObject<Env> {
     providerSocket.accept();
 
     this.handleStream(providerSocket, campaignNumberId).catch((error: unknown) => {
-      console.error(JSON.stringify({ event: "stream_error", error: String(error) }));
+      const payload = { event: "stream_error", severity: "error", error: String(error) };
+      logRealtimeEvent(campaignNumberId, payload);
+      this.ctx.waitUntil(postOriginEvent(this.env, campaignNumberId, payload));
       providerSocket.close(1011, "realtime bridge failed");
     });
 
@@ -269,7 +317,16 @@ export class VoiceCallSession extends DurableObject<Env> {
     let sessionReady = false;
     let providerClosed = false;
     let transferStarted = false;
+    let firstProviderMediaSeen = false;
+    let firstOpenAIAudioSeen = false;
     const pendingProviderAudio: string[] = [];
+
+    const emitEvent = (payload: JsonObject, sendToOrigin = true): void => {
+      logRealtimeEvent(campaignNumberId, payload);
+      if (sendToOrigin) {
+        this.ctx.waitUntil(postOriginEvent(this.env, campaignNumberId, payload));
+      }
+    };
 
     const closeOpenAI = (code: number, reason: string): void => {
       if (openaiSocket && openaiSocket.readyState === WebSocket.OPEN) {
@@ -309,20 +366,27 @@ export class VoiceCallSession extends DurableObject<Env> {
       if (start) {
         streamSid = start.streamSid;
         callSid = start.callSid;
-        console.log(
-          JSON.stringify({
-            event: "provider_stream_started",
-            provider: config?.provider || "unknown",
-            campaignNumberId,
-            streamSid,
-            callSid,
-          }),
-        );
+        emitEvent({
+          event: "provider_stream_started",
+          severity: "info",
+          provider: config?.provider || "unknown",
+          streamSid,
+          callSid,
+        });
         return;
       }
 
       const payload = mediaPayload(message);
       if (payload) {
+        if (!firstProviderMediaSeen) {
+          firstProviderMediaSeen = true;
+          emitEvent({
+            event: "provider_media_first",
+            severity: "info",
+            streamSid,
+            callSid,
+          });
+        }
         forwardProviderAudio(payload);
       }
     };
@@ -331,45 +395,81 @@ export class VoiceCallSession extends DurableObject<Env> {
       try {
         handleProviderMessage(JSON.parse(String(event.data)) as JsonObject);
       } catch (error: unknown) {
-        console.error(
-          JSON.stringify({
-            event: "provider_message_parse_error",
-            campaignNumberId,
-            error: String(error),
-          }),
-        );
+        emitEvent({
+          event: "provider_message_parse_error",
+          severity: "error",
+          streamSid,
+          callSid,
+          error: String(error),
+        });
         providerSocket.close(1003, "invalid provider message");
         closeOpenAI(1003, "invalid provider message");
       }
     });
 
-    providerSocket.addEventListener("close", () => {
+    providerSocket.addEventListener("close", (event: CloseEvent) => {
       providerClosed = true;
+      emitEvent({
+        event: openaiSocket ? "provider_socket_close" : "provider_closed_before_openai_ready",
+        severity: openaiSocket ? "info" : "warning",
+        provider: config?.provider || "unknown",
+        streamSid,
+        callSid,
+        code: event.code,
+        reason: event.reason || "",
+      });
       closeOpenAI(1000, "provider closed");
     });
     providerSocket.addEventListener("error", () => {
       providerClosed = true;
+      emitEvent({
+        event: "provider_socket_error",
+        severity: "error",
+        provider: config?.provider || "unknown",
+        streamSid,
+        callSid,
+      });
       closeOpenAI(1011, "provider error");
     });
 
-    config = await fetchRuntimeConfig(this.env, campaignNumberId);
-    console.log(
-      JSON.stringify({
+    try {
+      config = await fetchRuntimeConfig(this.env, campaignNumberId);
+    } catch (error: unknown) {
+      emitEvent({
+        event: "origin_config_failed",
+        severity: "error",
+        error: String(error),
+      });
+      throw error;
+    }
+    emitEvent(
+      {
         event: "runtime_config_loaded",
-        campaignNumberId,
+        severity: "info",
         provider: config.provider,
         model: config.model,
         voice: config.voice,
-      }),
+      },
+      false,
     );
-    openaiSocket = await connectOpenAI(config, this.env);
-    console.log(
-      JSON.stringify({
-        event: "openai_realtime_connected",
-        campaignNumberId,
+    try {
+      openaiSocket = await connectOpenAI(config, this.env);
+    } catch (error: unknown) {
+      emitEvent({
+        event: "openai_connect_failed",
+        severity: "error",
+        provider: config.provider,
         model: config.model,
-      }),
-    );
+        error: String(error),
+      });
+      throw error;
+    }
+    emitEvent({
+        event: "openai_realtime_connected",
+        severity: "info",
+        provider: config.provider,
+        model: config.model,
+      });
 
     if (providerClosed) {
       openaiSocket.close(1000, "provider closed");
@@ -385,13 +485,13 @@ export class VoiceCallSession extends DurableObject<Env> {
       try {
         message = JSON.parse(String(event.data)) as JsonObject;
       } catch (error: unknown) {
-        console.error(
-          JSON.stringify({
-            event: "openai_message_parse_error",
-            campaignNumberId,
-            error: String(error),
-          }),
-        );
+        emitEvent({
+          event: "openai_message_parse_error",
+          severity: "error",
+          streamSid,
+          callSid,
+          error: String(error),
+        });
         providerSocket.close(1003, "invalid openai message");
         closeOpenAI(1003, "invalid openai message");
         return;
@@ -399,19 +499,19 @@ export class VoiceCallSession extends DurableObject<Env> {
       const type = String(message.type || "");
 
       if (type === "error") {
-        console.error(
-          JSON.stringify({
-            event: "openai_realtime_error",
-            campaignNumberId,
-            error: message.error,
-          }),
-        );
+        emitEvent({
+          event: "openai_realtime_error",
+          severity: "error",
+          streamSid,
+          callSid,
+          error: JSON.stringify(message.error || {}),
+        });
         return;
       }
 
       if (type === "session.updated" && !sessionReady) {
         sessionReady = true;
-        console.log(JSON.stringify({ event: "openai_session_ready", campaignNumberId }));
+        emitEvent({ event: "openai_session_ready", severity: "info", streamSid, callSid });
         sendJson(openaiSocket, responseCreate());
         return;
       }
@@ -419,6 +519,15 @@ export class VoiceCallSession extends DurableObject<Env> {
       if (type === "response.audio.delta" && streamSid) {
         const delta = String(message.delta || "");
         if (delta) {
+          if (!firstOpenAIAudioSeen) {
+            firstOpenAIAudioSeen = true;
+            emitEvent({
+              event: "openai_audio_first",
+              severity: "info",
+              streamSid,
+              callSid,
+            });
+          }
           sendJson(providerSocket, providerMedia(streamSid, delta));
         }
         return;
@@ -440,14 +549,12 @@ export class VoiceCallSession extends DurableObject<Env> {
           transferStarted = true;
           this.ctx.waitUntil(
             transferActiveCall(activeConfig, callSid).catch((error: unknown) => {
-              console.error(
-                JSON.stringify({
-                  event: "transfer_call_failed",
-                  campaignNumberId,
-                  callSid,
-                  error: String(error),
-                }),
-              );
+              emitEvent({
+                event: "transfer_call_failed",
+                severity: "error",
+                callSid,
+                error: String(error),
+              });
             }),
           );
           sendJson(openaiSocket, {
@@ -466,8 +573,26 @@ export class VoiceCallSession extends DurableObject<Env> {
       }
     });
 
-    openaiSocket.addEventListener("close", () => providerSocket.close(1000, "openai closed"));
-    openaiSocket.addEventListener("error", () => providerSocket.close(1011, "openai error"));
+    openaiSocket.addEventListener("close", (event: CloseEvent) => {
+      emitEvent({
+        event: "openai_socket_close",
+        severity: event.code === 1000 ? "info" : "warning",
+        streamSid,
+        callSid,
+        code: event.code,
+        reason: event.reason || "",
+      });
+      providerSocket.close(1000, "openai closed");
+    });
+    openaiSocket.addEventListener("error", () => {
+      emitEvent({
+        event: "openai_socket_error",
+        severity: "error",
+        streamSid,
+        callSid,
+      });
+      providerSocket.close(1011, "openai error");
+    });
   }
 }
 

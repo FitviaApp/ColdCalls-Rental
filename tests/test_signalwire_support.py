@@ -580,6 +580,32 @@ class SignalWireSupportTests(unittest.TestCase):
         self.assertEqual(result["audio_token"], "token")
         self.assertEqual(captured["current_turn"]["audio_token"], "token")
 
+    def test_ai_realtime_event_persists_error_summary(self):
+        import app.services.ai_call_runtime_service as runtime_module
+
+        captured = {}
+        original_update = runtime_module.update_campaign_number_ai_observability
+        runtime_module.update_campaign_number_ai_observability = (
+            lambda campaign_number_id, **updates: captured.update(
+                {"campaign_number_id": campaign_number_id, **updates}
+            )
+        )
+        try:
+            runtime_module.record_ai_realtime_event(
+                55,
+                {
+                    "event": "openai_socket_error",
+                    "severity": "error",
+                    "error": "socket closed unexpectedly",
+                },
+            )
+        finally:
+            runtime_module.update_campaign_number_ai_observability = original_update
+
+        self.assertEqual(captured["campaign_number_id"], 55)
+        self.assertIn("openai_socket_error", captured["ai_runtime_error"])
+        self.assertIn("socket closed unexpectedly", captured["ai_runtime_error"])
+
     def test_ai_runtime_request_openai_turn_uses_fallback_for_empty_content(self):
         import app.services.ai_call_runtime_service as runtime_module
 

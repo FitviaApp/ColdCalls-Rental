@@ -110,6 +110,58 @@ def update_campaign_number_ai_observability(campaign_number_id: int, **updates) 
         db.close()
 
 
+def record_ai_realtime_event(campaign_number_id: int, payload: dict[str, Any]) -> None:
+    """Log a realtime Worker event and persist failures for campaign diagnostics."""
+    safe_payload: dict[str, Any] = {}
+    for key in (
+        "event",
+        "severity",
+        "provider",
+        "model",
+        "voice",
+        "streamSid",
+        "callSid",
+        "code",
+        "reason",
+        "status",
+        "error",
+    ):
+        value = payload.get(key)
+        if value is None:
+            continue
+        safe_payload[key] = _truncate_text(str(value), 240)
+
+    event_name = str(safe_payload.get("event") or "unknown")
+    severity = str(safe_payload.get("severity") or "info").lower()
+    logger.info(
+        "AI realtime event campaign_number_id=%s payload=%s",
+        campaign_number_id,
+        json.dumps(safe_payload, sort_keys=True),
+    )
+
+    should_persist = severity in {"warning", "error"} or event_name in {
+        "stream_error",
+        "openai_realtime_error",
+        "provider_message_parse_error",
+        "openai_message_parse_error",
+        "transfer_call_failed",
+        "origin_event_post_failed",
+        "provider_closed_before_openai_ready",
+    }
+    if should_persist:
+        summary_parts = [event_name]
+        if safe_payload.get("code"):
+            summary_parts.append(f"code={safe_payload['code']}")
+        if safe_payload.get("reason"):
+            summary_parts.append(f"reason={safe_payload['reason']}")
+        if safe_payload.get("error"):
+            summary_parts.append(f"error={safe_payload['error']}")
+        update_campaign_number_ai_observability(
+            campaign_number_id,
+            ai_runtime_error="AI realtime: " + " ".join(summary_parts),
+        )
+
+
 class AICallRuntimeService:
     """Drive AI-agent campaign calls over Twilio or SignalWire."""
 

@@ -370,6 +370,31 @@ class AICampaignRouteTests(unittest.TestCase):
         self.assertEqual(response.json()["campaign_number_id"], 55)
         self.assertEqual(response.json()["model"], "gpt-realtime")
 
+    def test_ai_realtime_event_endpoint_records_worker_event(self):
+        original_secret = api_router_module.settings.AI_REALTIME_EDGE_SECRET
+        original_recorder = api_router_module.record_ai_realtime_event
+        captured = {}
+        api_router_module.settings.AI_REALTIME_EDGE_SECRET = "edge-secret"
+
+        def fake_recorder(campaign_number_id, payload):
+            captured["campaign_number_id"] = campaign_number_id
+            captured["payload"] = payload
+
+        api_router_module.record_ai_realtime_event = fake_recorder
+        try:
+            response = self.client.post(
+                "/api/ai-runtime/realtime/event/55",
+                json={"event": "openai_socket_close", "code": 1000},
+                headers={"Authorization": "Bearer edge-secret"},
+            )
+        finally:
+            api_router_module.settings.AI_REALTIME_EDGE_SECRET = original_secret
+            api_router_module.record_ai_realtime_event = original_recorder
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(captured["campaign_number_id"], 55)
+        self.assertEqual(captured["payload"]["event"], "openai_socket_close")
+
     def test_ai_realtime_session_config_can_rebuild_without_tmp_session(self):
         campaign = Campaign(
             user_id=self.user.id,

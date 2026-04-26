@@ -19,6 +19,7 @@ from app.services.ai_call_runtime_service import (
     build_ai_runtime_followup_twiml,
     build_ai_runtime_twiml,
     get_ai_runtime_audio,
+    record_ai_realtime_event,
 )
 from app.services.voximplant_service import decode_voximplant_callback_token
 
@@ -56,6 +57,22 @@ def _ai_runtime_hangup_response() -> Response:
         content='<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>',
         media_type="application/xml",
     )
+
+
+def _selected_voice_fields(data) -> dict[str, str]:
+    fields = {}
+    for key in ("CallSid", "CallStatus", "AnsweredBy", "Direction"):
+        value = data.get(key)
+        if value:
+            fields[key] = str(value)[:120]
+    return fields
+
+
+def _realtime_edge_secret_is_valid(request: Request) -> bool:
+    expected_secret = (settings.AI_REALTIME_EDGE_SECRET or "").strip()
+    auth_header = str(request.headers.get("authorization") or "")
+    provided_secret = auth_header.removeprefix("Bearer ").strip()
+    return bool(expected_secret) and secrets.compare_digest(provided_secret, expected_secret)
 
 
 def _map_voximplant_callback_status(status: str) -> CallStatus:
@@ -276,11 +293,27 @@ async def voximplant_callback(
 
 @router.get("/ai-runtime/twiml/{campaign_number_id}")
 @router.post("/ai-runtime/twiml/{campaign_number_id}")
-async def ai_runtime_twiml(campaign_number_id: int):
+async def ai_runtime_twiml(campaign_number_id: int, request: Request):
+    if request.method == "POST":
+        request_data = await request.form()
+    else:
+        request_data = request.query_params
+    logger.info(
+        "AI runtime initial TwiML requested campaign_number_id=%s fields=%s",
+        campaign_number_id,
+        _selected_voice_fields(request_data),
+    )
     # Offload to a worker thread: build_ai_runtime_twiml performs blocking
     # HTTP calls and DB access; running it inline would stall the event loop
     # and the call would be cut while other webhooks waited behind it.
     twiml = await run_in_threadpool(build_ai_runtime_twiml, campaign_number_id)
+    logger.info(
+        "AI runtime initial TwiML served campaign_number_id=%s bytes=%s hangup=%s realtime=%s",
+        campaign_number_id,
+        len(twiml),
+        "<Hangup" in twiml,
+        "<Stream" in twiml,
+    )
     return Response(content=twiml, media_type="application/xml")
 
 
@@ -298,9 +331,22 @@ async def ai_runtime_twiml_gather(
     speech_result = str(form_data.get("SpeechResult") or "").strip()
     digits = str(form_data.get("Digits") or "").strip()
     user_input = speech_result or digits
+    logger.info(
+        "AI runtime gather received campaign_number_id=%s fields=%s speech_chars=%s has_digits=%s",
+        campaign_number_id,
+        _selected_voice_fields(form_data),
+        len(speech_result),
+        bool(digits),
+    )
 
     twiml = await run_in_threadpool(
         build_ai_runtime_followup_twiml, campaign_number_id, user_input
+    )
+    logger.info(
+        "AI runtime gather TwiML served campaign_number_id=%s bytes=%s hangup=%s",
+        campaign_number_id,
+        len(twiml),
+        "<Hangup" in twiml,
     )
     return Response(content=twiml, media_type="application/xml")
 
@@ -311,16 +357,28 @@ async def ai_runtime_audio(campaign_number_id: int, audio_token: str):
         get_ai_runtime_audio, campaign_number_id, audio_token
     )
     if not audio_bytes:
+        logger.warning(
+            "AI runtime audio missing campaign_number_id=%s audio_token=%s",
+            campaign_number_id,
+            audio_token,
+        )
         raise HTTPException(status_code=404, detail="Audio not found")
+    logger.info(
+        "AI runtime audio served campaign_number_id=%s audio_token=%s bytes=%s",
+        campaign_number_id,
+        audio_token,
+        len(audio_bytes),
+    )
     return Response(content=audio_bytes, media_type="audio/mpeg")
 
 
 @router.get("/ai-runtime/realtime/session/{campaign_number_id}")
 async def ai_runtime_realtime_session(campaign_number_id: int, request: Request):
-    expected_secret = (settings.AI_REALTIME_EDGE_SECRET or "").strip()
-    auth_header = str(request.headers.get("authorization") or "")
-    provided_secret = auth_header.removeprefix("Bearer ").strip()
-    if not expected_secret or not secrets.compare_digest(provided_secret, expected_secret):
+    if not _realtime_edge_secret_is_valid(request):
+        logger.warning(
+            "AI realtime session rejected campaign_number_id=%s reason=invalid_token",
+            campaign_number_id,
+        )
         raise HTTPException(status_code=401, detail="Invalid realtime edge token")
 
     try:
@@ -335,7 +393,34 @@ async def ai_runtime_realtime_session(campaign_number_id: int, request: Request)
         )
         raise HTTPException(status_code=404, detail="Realtime session not found") from exc
 
+    logger.info(
+        "AI realtime session config served campaign_number_id=%s provider=%s model=%s voice=%s",
+        campaign_number_id,
+        config.get("provider"),
+        config.get("model"),
+        config.get("voice"),
+    )
     return config
+
+
+@router.post("/ai-runtime/realtime/event/{campaign_number_id}")
+async def ai_runtime_realtime_event(campaign_number_id: int, request: Request):
+    if not _realtime_edge_secret_is_valid(request):
+        logger.warning(
+            "AI realtime event rejected campaign_number_id=%s reason=invalid_token",
+            campaign_number_id,
+        )
+        raise HTTPException(status_code=401, detail="Invalid realtime edge token")
+
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid event payload") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Invalid event payload")
+
+    await run_in_threadpool(record_ai_realtime_event, campaign_number_id, payload)
+    return {"ok": True}
 
 
 @router.get("/stats", response_model=DashboardStats)
