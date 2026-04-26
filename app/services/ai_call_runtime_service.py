@@ -217,11 +217,21 @@ class AICallRuntimeService:
     def build_initial_twiml(self, campaign_number_id: int) -> str:
         session = self._read_session(campaign_number_id)
         if not session:
-            return self._hangup_twiml()
+            session = self._recover_initial_session(campaign_number_id)
+        if not session:
+            return self._say_then_hangup_twiml(
+                "I'm sorry, I am having trouble connecting right now. Goodbye."
+            )
         if session.get("runtime_mode") == "realtime":
             return self._realtime_stream_twiml(campaign_number_id, session)
 
         current_turn = session.get("current_turn") or {}
+        if not current_turn.get("audio_token"):
+            current_turn = self._recover_missing_initial_turn(campaign_number_id, session)
+            if not current_turn:
+                return self._say_then_hangup_twiml(
+                    "I'm sorry, I am having trouble connecting right now. Goodbye."
+                )
         return self._twiml_for_turn(campaign_number_id, session, current_turn)
 
     def build_followup_twiml(
@@ -392,6 +402,79 @@ class AICallRuntimeService:
         session_payload["current_turn"] = first_turn
         self._write_session(campaign_number_id, session_payload)
         return session_payload
+
+    def _recover_initial_session(self, campaign_number_id: int) -> Optional[dict[str, Any]]:
+        logger.warning(
+            "AI runtime session missing for campaign_number_id=%s; attempting recovery",
+            campaign_number_id,
+        )
+        try:
+            if self._realtime_enabled_for_provider():
+                session_payload = self._realtime_session_from_database(campaign_number_id)
+                self._write_session(campaign_number_id, session_payload)
+                return session_payload
+
+            number = self.db.query(CampaignNumber).filter(
+                CampaignNumber.id == campaign_number_id
+            ).first()
+            if not number or not number.campaign:
+                raise ValueError("Campaign number not found for AI runtime recovery")
+            campaign = number.campaign
+            if not campaign.user or not campaign.user.transfer_number:
+                raise ValueError("Transfer number is not configured")
+            if not campaign.caller_id:
+                raise ValueError("Caller ID is not configured")
+
+            session_payload = self._base_runtime_session(
+                campaign_number_id=campaign_number_id,
+                transfer_number=campaign.user.transfer_number,
+                from_number=campaign.caller_id.phone_number,
+                to_number=number.phone_number,
+            )
+            first_turn = self._recover_missing_initial_turn(
+                campaign_number_id,
+                session_payload,
+            )
+            return session_payload if first_turn else None
+        except Exception as exc:
+            logger.error(
+                "AI runtime initial session recovery failed for campaign_number_id=%s: %s",
+                campaign_number_id,
+                exc,
+            )
+            update_campaign_number_ai_observability(
+                campaign_number_id,
+                ai_runtime_error=f"AI runtime initial session recovery failed: {exc}"[:500],
+            )
+            return None
+
+    def _recover_missing_initial_turn(
+        self,
+        campaign_number_id: int,
+        session_payload: dict[str, Any],
+    ) -> Optional[dict[str, Any]]:
+        try:
+            deadline = time.monotonic() + float(settings.AI_TURN_DEADLINE_SECONDS)
+            agent = self._agent_for_session(session_payload)
+            first_turn = self._generate_assistant_turn(
+                session_payload,
+                agent=agent,
+                deadline=deadline,
+            )
+            session_payload["current_turn"] = first_turn
+            self._write_session(campaign_number_id, session_payload)
+            return first_turn
+        except Exception as exc:
+            logger.error(
+                "AI runtime initial turn recovery failed for campaign_number_id=%s: %s",
+                campaign_number_id,
+                exc,
+            )
+            update_campaign_number_ai_observability(
+                campaign_number_id,
+                ai_runtime_error=f"AI runtime initial turn recovery failed: {exc}"[:500],
+            )
+            return None
 
     def _base_runtime_session(
         self,

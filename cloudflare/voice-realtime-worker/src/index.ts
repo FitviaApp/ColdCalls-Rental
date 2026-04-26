@@ -262,7 +262,97 @@ export class VoiceCallSession extends DurableObject<Env> {
     providerSocket: WebSocket,
     campaignNumberId: string,
   ): Promise<void> {
-    const config = await fetchRuntimeConfig(this.env, campaignNumberId);
+    let streamSid = "";
+    let callSid = "";
+    let config: RuntimeConfig | null = null;
+    let openaiSocket: WebSocket | null = null;
+    let sessionReady = false;
+    let providerClosed = false;
+    let transferStarted = false;
+    const pendingProviderAudio: string[] = [];
+
+    const closeOpenAI = (code: number, reason: string): void => {
+      if (openaiSocket && openaiSocket.readyState === WebSocket.OPEN) {
+        openaiSocket.close(code, reason);
+      }
+    };
+
+    const forwardProviderAudio = (payload: string): void => {
+      if (openaiSocket && openaiSocket.readyState === WebSocket.OPEN) {
+        sendJson(openaiSocket, {
+          type: "input_audio_buffer.append",
+          audio: payload,
+        });
+        return;
+      }
+      pendingProviderAudio.push(payload);
+    };
+
+    const flushProviderAudio = (): void => {
+      if (!openaiSocket || openaiSocket.readyState !== WebSocket.OPEN) {
+        return;
+      }
+      while (pendingProviderAudio.length > 0) {
+        const payload = pendingProviderAudio.shift();
+        if (!payload) {
+          continue;
+        }
+        sendJson(openaiSocket, {
+          type: "input_audio_buffer.append",
+          audio: payload,
+        });
+      }
+    };
+
+    const handleProviderMessage = (message: JsonObject): void => {
+      const start = parseStart(message);
+      if (start) {
+        streamSid = start.streamSid;
+        callSid = start.callSid;
+        console.log(
+          JSON.stringify({
+            event: "provider_stream_started",
+            provider: config?.provider || "unknown",
+            campaignNumberId,
+            streamSid,
+            callSid,
+          }),
+        );
+        return;
+      }
+
+      const payload = mediaPayload(message);
+      if (payload) {
+        forwardProviderAudio(payload);
+      }
+    };
+
+    providerSocket.addEventListener("message", (event: MessageEvent) => {
+      try {
+        handleProviderMessage(JSON.parse(String(event.data)) as JsonObject);
+      } catch (error: unknown) {
+        console.error(
+          JSON.stringify({
+            event: "provider_message_parse_error",
+            campaignNumberId,
+            error: String(error),
+          }),
+        );
+        providerSocket.close(1003, "invalid provider message");
+        closeOpenAI(1003, "invalid provider message");
+      }
+    });
+
+    providerSocket.addEventListener("close", () => {
+      providerClosed = true;
+      closeOpenAI(1000, "provider closed");
+    });
+    providerSocket.addEventListener("error", () => {
+      providerClosed = true;
+      closeOpenAI(1011, "provider error");
+    });
+
+    config = await fetchRuntimeConfig(this.env, campaignNumberId);
     console.log(
       JSON.stringify({
         event: "runtime_config_loaded",
@@ -272,7 +362,7 @@ export class VoiceCallSession extends DurableObject<Env> {
         voice: config.voice,
       }),
     );
-    const openaiSocket = await connectOpenAI(config, this.env);
+    openaiSocket = await connectOpenAI(config, this.env);
     console.log(
       JSON.stringify({
         event: "openai_realtime_connected",
@@ -280,15 +370,32 @@ export class VoiceCallSession extends DurableObject<Env> {
         model: config.model,
       }),
     );
-    let streamSid = "";
-    let callSid = "";
-    let sessionReady = false;
-    let transferStarted = false;
 
-    sendJson(openaiSocket, sessionUpdate(config));
+    if (providerClosed) {
+      openaiSocket.close(1000, "provider closed");
+      return;
+    }
+
+    const activeConfig = config;
+    sendJson(openaiSocket, sessionUpdate(activeConfig));
+    flushProviderAudio();
 
     openaiSocket.addEventListener("message", (event: MessageEvent) => {
-      const message = JSON.parse(String(event.data)) as JsonObject;
+      let message: JsonObject;
+      try {
+        message = JSON.parse(String(event.data)) as JsonObject;
+      } catch (error: unknown) {
+        console.error(
+          JSON.stringify({
+            event: "openai_message_parse_error",
+            campaignNumberId,
+            error: String(error),
+          }),
+        );
+        providerSocket.close(1003, "invalid openai message");
+        closeOpenAI(1003, "invalid openai message");
+        return;
+      }
       const type = String(message.type || "");
 
       if (type === "error") {
@@ -331,7 +438,18 @@ export class VoiceCallSession extends DurableObject<Env> {
         );
         if (functionCall && !transferStarted) {
           transferStarted = true;
-          this.ctx.waitUntil(transferActiveCall(config, callSid));
+          this.ctx.waitUntil(
+            transferActiveCall(activeConfig, callSid).catch((error: unknown) => {
+              console.error(
+                JSON.stringify({
+                  event: "transfer_call_failed",
+                  campaignNumberId,
+                  callSid,
+                  error: String(error),
+                }),
+              );
+            }),
+          );
           sendJson(openaiSocket, {
             type: "conversation.item.create",
             item: {
@@ -350,36 +468,6 @@ export class VoiceCallSession extends DurableObject<Env> {
 
     openaiSocket.addEventListener("close", () => providerSocket.close(1000, "openai closed"));
     openaiSocket.addEventListener("error", () => providerSocket.close(1011, "openai error"));
-
-    providerSocket.addEventListener("message", (event: MessageEvent) => {
-      const message = JSON.parse(String(event.data)) as JsonObject;
-      const start = parseStart(message);
-      if (start) {
-        streamSid = start.streamSid;
-        callSid = start.callSid;
-        console.log(
-          JSON.stringify({
-            event: "provider_stream_started",
-            provider: config.provider,
-            campaignNumberId,
-            streamSid,
-            callSid,
-          }),
-        );
-        return;
-      }
-
-      const payload = mediaPayload(message);
-      if (payload) {
-        sendJson(openaiSocket, {
-          type: "input_audio_buffer.append",
-          audio: payload,
-        });
-      }
-    });
-
-    providerSocket.addEventListener("close", () => openaiSocket.close(1000, "provider closed"));
-    providerSocket.addEventListener("error", () => openaiSocket.close(1011, "provider error"));
   }
 }
 

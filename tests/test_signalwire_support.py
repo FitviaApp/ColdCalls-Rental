@@ -286,6 +286,10 @@ class SignalWireSupportTests(unittest.TestCase):
         )
 
     def test_campaign_start_validation_accepts_twilio_for_ai_mode(self):
+        import app.routers.campaigns as campaigns_module
+
+        original_base_url = campaigns_module.settings.BASE_URL
+        campaigns_module.settings.BASE_URL = "https://app.example.com"
         user = SimpleNamespace(id=1, transfer_number="+15550001111")
         caller_id = SimpleNamespace(
             user_id=1,
@@ -302,13 +306,97 @@ class SignalWireSupportTests(unittest.TestCase):
             audio_id=None,
             audio=None,
         )
-        error = _campaign_start_validation_error(
-            campaign=campaign,
-            user=user,
-            provider_configured=True,
-            ai_runtime_configured=True,
-        )
+        try:
+            error = _campaign_start_validation_error(
+                campaign=campaign,
+                user=user,
+                provider_configured=True,
+                ai_runtime_configured=True,
+            )
+        finally:
+            campaigns_module.settings.BASE_URL = original_base_url
         self.assertIsNone(error)
+
+    def test_campaign_start_validation_rejects_local_base_url_for_ai_mode(self):
+        import app.routers.campaigns as campaigns_module
+
+        original_base_url = campaigns_module.settings.BASE_URL
+        campaigns_module.settings.BASE_URL = "http://localhost:8000"
+        user = SimpleNamespace(id=1, transfer_number="+15550001111")
+        caller_id = SimpleNamespace(
+            user_id=1,
+            vox_verification_status="verified",
+        )
+        ai_agent = SimpleNamespace(user_id=1, is_active=True)
+        campaign = SimpleNamespace(
+            voice_provider=VoiceProvider.SIGNALWIRE,
+            campaign_mode=CampaignMode.AI_AGENT,
+            ai_agent_id=5,
+            ai_agent=ai_agent,
+            press_1_to_talk_with_agent=False,
+            caller_id=caller_id,
+            audio_id=None,
+            audio=None,
+        )
+        try:
+            error = _campaign_start_validation_error(
+                campaign=campaign,
+                user=user,
+                provider_configured=True,
+                ai_runtime_configured=True,
+            )
+        finally:
+            campaigns_module.settings.BASE_URL = original_base_url
+
+        self.assertEqual(
+            error,
+            "BASE_URL must be public, not localhost, for AI agent callbacks.",
+        )
+
+    def test_campaign_start_validation_requires_realtime_edge_secret(self):
+        import app.routers.campaigns as campaigns_module
+
+        original_base_url = campaigns_module.settings.BASE_URL
+        original_realtime_enabled = campaigns_module.settings.AI_REALTIME_ENABLED
+        original_stream_url = campaigns_module.settings.AI_REALTIME_STREAM_BASE_URL
+        original_edge_secret = campaigns_module.settings.AI_REALTIME_EDGE_SECRET
+        campaigns_module.settings.BASE_URL = "https://app.example.com"
+        campaigns_module.settings.AI_REALTIME_ENABLED = True
+        campaigns_module.settings.AI_REALTIME_STREAM_BASE_URL = "https://edge.example.com"
+        campaigns_module.settings.AI_REALTIME_EDGE_SECRET = ""
+        user = SimpleNamespace(id=1, transfer_number="+15550001111")
+        caller_id = SimpleNamespace(
+            user_id=1,
+            vox_verification_status="verified",
+        )
+        ai_agent = SimpleNamespace(user_id=1, is_active=True)
+        campaign = SimpleNamespace(
+            voice_provider=VoiceProvider.SIGNALWIRE,
+            campaign_mode=CampaignMode.AI_AGENT,
+            ai_agent_id=5,
+            ai_agent=ai_agent,
+            press_1_to_talk_with_agent=False,
+            caller_id=caller_id,
+            audio_id=None,
+            audio=None,
+        )
+        try:
+            error = _campaign_start_validation_error(
+                campaign=campaign,
+                user=user,
+                provider_configured=True,
+                ai_runtime_configured=True,
+            )
+        finally:
+            campaigns_module.settings.BASE_URL = original_base_url
+            campaigns_module.settings.AI_REALTIME_ENABLED = original_realtime_enabled
+            campaigns_module.settings.AI_REALTIME_STREAM_BASE_URL = original_stream_url
+            campaigns_module.settings.AI_REALTIME_EDGE_SECRET = original_edge_secret
+
+        self.assertEqual(
+            error,
+            "AI_REALTIME_EDGE_SECRET must be configured when realtime AI voice is enabled.",
+        )
 
     def test_parse_campaign_numbers_accepts_csv_first_column_and_counts_invalid(self):
         leads, invalid_count = _parse_campaign_numbers(
@@ -462,6 +550,35 @@ class SignalWireSupportTests(unittest.TestCase):
 
         self.assertEqual(result, "I didn't catch that. Are you still there?")
         self.assertEqual(captured["no_input_turns"], 1)
+
+    def test_ai_runtime_initial_twiml_recovers_missing_session(self):
+        service = AICallRuntimeService.__new__(AICallRuntimeService)
+        service._read_session = lambda campaign_number_id: None
+        service._recover_initial_session = lambda campaign_number_id: {
+            "runtime_mode": "turn_based",
+            "current_turn": {"audio_token": "token", "should_transfer": False},
+        }
+        service._twiml_for_turn = lambda campaign_number_id, payload, turn: "RECOVERED"
+
+        result = service.build_initial_twiml(99)
+
+        self.assertEqual(result, "RECOVERED")
+
+    def test_ai_runtime_recover_missing_initial_turn_writes_session(self):
+        service = AICallRuntimeService.__new__(AICallRuntimeService)
+        session = {"campaign_number_id": 99, "ai_agent_id": 5}
+        captured = {}
+        service._agent_for_session = lambda payload: SimpleNamespace(id=5)
+        service._generate_assistant_turn = lambda payload, **kwargs: {
+            "audio_token": "token",
+            "should_transfer": False,
+        }
+        service._write_session = lambda campaign_number_id, payload: captured.update(payload)
+
+        result = service._recover_missing_initial_turn(99, session)
+
+        self.assertEqual(result["audio_token"], "token")
+        self.assertEqual(captured["current_turn"]["audio_token"], "token")
 
     def test_ai_runtime_request_openai_turn_uses_fallback_for_empty_content(self):
         import app.services.ai_call_runtime_service as runtime_module

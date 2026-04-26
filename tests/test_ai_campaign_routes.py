@@ -133,10 +133,13 @@ class AICampaignRouteTests(unittest.TestCase):
 
         self.original_worker_check = campaigns_router_module._is_worker_online
         campaigns_router_module._is_worker_online = lambda max_age_seconds=60: True
+        self.original_campaign_base_url = campaigns_router_module.settings.BASE_URL
+        campaigns_router_module.settings.BASE_URL = "https://app.example.com"
 
     def tearDown(self):
         auth_module.settings.ENCRYPTION_KEY = self.original_encryption_key
         campaigns_router_module._is_worker_online = self.original_worker_check
+        campaigns_router_module.settings.BASE_URL = self.original_campaign_base_url
         self.client.close()
         self.db.close()
         self.engine.dispose()

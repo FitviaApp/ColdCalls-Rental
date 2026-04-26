@@ -7,12 +7,14 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, Form, Request, UploadFile, File, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.database import get_db
 from app.dependencies import require_active_rental
 from app.models import (
@@ -34,9 +36,11 @@ from app.services.user_voice_provider_service import (
 
 router = APIRouter(prefix="/campaigns", tags=["campaigns"])
 templates = Jinja2Templates(directory="app/templates")
+settings = get_settings()
 WORKER_HEARTBEAT_FILE = Path("/tmp/coldcalls_worker_heartbeat")
 MIN_CONCURRENT_CALLS = 1
 MAX_CONCURRENT_CALLS = 20
+LOCAL_CALLBACK_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
 
 # E.164 phone number regex
 E164_PATTERN = re.compile(r'^\+[1-9]\d{1,14}$')
@@ -103,6 +107,35 @@ def _parse_campaign_numbers(numbers_raw: str) -> tuple[list[CampaignLead], int]:
 
 def _normalized_campaign_mode(value: str | None) -> str:
     return (value or CampaignMode.AUDIO.value).strip().lower()
+
+
+def _public_callback_base_url_error() -> str | None:
+    parsed = urlparse(str(settings.BASE_URL or "").strip())
+    hostname = (parsed.hostname or "").strip().lower()
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return "BASE_URL must be a public http(s) URL for AI agent callbacks."
+    if hostname in LOCAL_CALLBACK_HOSTS or hostname.endswith(".local"):
+        return "BASE_URL must be public, not localhost, for AI agent callbacks."
+    return None
+
+
+def _realtime_config_error() -> str | None:
+    if not settings.AI_REALTIME_ENABLED:
+        return None
+
+    stream_base_url = str(settings.AI_REALTIME_STREAM_BASE_URL or "").strip()
+    if not stream_base_url:
+        return None
+
+    parsed = urlparse(stream_base_url)
+    hostname = (parsed.hostname or "").strip().lower()
+    if parsed.scheme not in {"https", "wss"} or not parsed.netloc:
+        return "AI_REALTIME_STREAM_BASE_URL must be a public https or wss URL."
+    if hostname in LOCAL_CALLBACK_HOSTS or hostname.endswith(".local"):
+        return "AI_REALTIME_STREAM_BASE_URL must be public, not localhost."
+    if not str(settings.AI_REALTIME_EDGE_SECRET or "").strip():
+        return "AI_REALTIME_EDGE_SECRET must be configured when realtime AI voice is enabled."
+    return None
 
 
 def _campaign_form_validation_error(
@@ -186,6 +219,12 @@ def _campaign_start_validation_error(
                 f"Please configure {PROVIDER_LABELS.get(provider, provider.title())}, "
                 "OpenAI, and ElevenLabs credentials in Settings first"
             )
+        callback_error = _public_callback_base_url_error()
+        if callback_error:
+            return callback_error
+        realtime_error = _realtime_config_error()
+        if realtime_error:
+            return realtime_error
     if not provider_configured:
         return f"Please configure {provider.title()} credentials in Settings first"
     if campaign.press_1_to_talk_with_agent and not provider_supports_press_1(provider):
