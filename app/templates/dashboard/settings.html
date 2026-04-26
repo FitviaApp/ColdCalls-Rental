@@ -50,6 +50,21 @@
         ElevenLabs credentials saved successfully.
     </div>
     {% endif %}
+    {% if telegram_saved %}
+    <div class="mb-6 bg-green-50 border border-green-200 text-green-700 px-4 py-3 rounded">
+        Telegram notification settings saved successfully.
+    </div>
+    {% endif %}
+    {% if telegram_test_ok %}
+    <div class="mb-6 bg-green-50 border border-green-200 text-green-700 px-4 py-3 rounded">
+        Test message sent to Telegram successfully.
+    </div>
+    {% endif %}
+    {% if telegram_test_error %}
+    <div class="mb-6 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded">
+        Telegram test failed: {{ telegram_test_error }}
+    </div>
+    {% endif %}
     {% if voximplant_provisioned %}
     <div class="mb-6 bg-green-50 border border-green-200 text-green-700 px-4 py-3 rounded">
         Voximplant application, scenario, and rule are provisioned.
@@ -172,6 +187,24 @@
                         {% if elevenlabs_configured %}
                         <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
                             Configured
+                        </span>
+                        {% else %}
+                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">
+                            Not configured
+                        </span>
+                        {% endif %}
+                    </dd>
+                </div>
+                <div>
+                    <dt class="text-sm font-medium text-gray-500">Telegram</dt>
+                    <dd class="mt-1 text-sm">
+                        {% if telegram_configured and telegram_config.is_enabled %}
+                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                            Enabled
+                        </span>
+                        {% elif telegram_configured %}
+                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-700">
+                            Disabled
                         </span>
                         {% else %}
                         <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">
@@ -315,6 +348,62 @@
                     </button>
                 </div>
             </form>
+        </div>
+    </div>
+
+    <!-- Telegram Notifications -->
+    <div class="bg-white shadow rounded-lg mt-6" id="telegram">
+        <div class="px-4 py-5 sm:px-6">
+            <h3 class="text-lg font-medium text-gray-900">Telegram Notifications</h3>
+            <p class="mt-1 text-sm text-gray-500">
+                Send completed AI call transcripts to a Telegram group. Configure your bot via @BotFather, add it to the group, then provide the chat ID below.
+            </p>
+        </div>
+        <div class="border-t border-gray-200 px-4 py-5 sm:px-6">
+            <form action="/dashboard/settings/telegram" method="POST" class="space-y-4">
+                <div>
+                    <label for="telegram_bot_token" class="block text-sm font-medium text-gray-700">Bot Token</label>
+                    <input type="password" name="bot_token" id="telegram_bot_token" required
+                        placeholder="123456789:ABCDEF..."
+                        value="{{ telegram_config.bot_token if telegram_config else '' }}"
+                        class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border px-3 py-2">
+                </div>
+                <div>
+                    <label for="telegram_chat_id" class="block text-sm font-medium text-gray-700">Chat ID</label>
+                    <input type="text" name="chat_id" id="telegram_chat_id" required
+                        placeholder="-1001234567890"
+                        value="{{ telegram_config.chat_id if telegram_config else '' }}"
+                        class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border px-3 py-2">
+                    <p class="mt-1 text-xs text-gray-500">Group chat IDs start with <code>-100</code>. Use @userinfobot or the getUpdates API to find it.</p>
+                </div>
+                <div>
+                    <label for="telegram_keywords" class="block text-sm font-medium text-gray-700">Required keywords (comma-separated)</label>
+                    <textarea name="keywords" id="telegram_keywords" rows="2"
+                        placeholder="interessado, comprar, agendar"
+                        class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border px-3 py-2">{{ telegram_config.keywords if telegram_config else '' }}</textarea>
+                    <p class="mt-1 text-xs text-gray-500">Only calls whose transcript contains at least one of these keywords are sent. Leave empty to send every completed call.</p>
+                </div>
+                <div class="flex items-center">
+                    <input type="checkbox" name="is_enabled" id="telegram_is_enabled" value="1"
+                        {% if not telegram_config or telegram_config.is_enabled %}checked{% endif %}
+                        class="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+                    <label for="telegram_is_enabled" class="ml-2 block text-sm text-gray-700">Enabled</label>
+                </div>
+                <div class="pt-4 flex gap-3">
+                    <button type="submit"
+                        class="inline-flex justify-center py-2 px-4 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700">
+                        Save Telegram Settings
+                    </button>
+                </div>
+            </form>
+            {% if telegram_configured %}
+            <form action="/dashboard/settings/telegram/test" method="POST" class="mt-3">
+                <button type="submit"
+                    class="inline-flex justify-center py-2 px-4 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
+                    Send test message
+                </button>
+            </form>
+            {% endif %}
         </div>
     </div>
 

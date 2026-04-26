@@ -11,7 +11,11 @@ from sqlalchemy.orm import Session
 from app.auth import hash_password, verify_password
 from app.database import get_db
 from app.dependencies import get_current_user, require_active_rental
-from app.models import User, Campaign, CampaignNumber, CampaignStatus, CampaignMode, AIAgent
+from app.models import (
+    User, Campaign, CampaignNumber, CampaignStatus, CampaignMode, AIAgent,
+    UserTelegramConfig,
+)
+from app.services import telegram_service
 from app.templating import Jinja2Templates
 from app.services.rental_service import get_active_rental
 from app.services.user_telnyx_service import (
@@ -71,9 +75,15 @@ def _settings_context(
     elevenlabs_saved: bool = False,
     voximplant_provisioned: bool = False,
     password_saved: bool = False,
+    telegram_saved: bool = False,
+    telegram_test_ok: bool = False,
+    telegram_test_error: str | None = None,
     error: str | None = None,
 ) -> dict:
     voximplant_credentials = get_user_voximplant_credentials(db, user.id)
+    telegram_config = db.query(UserTelegramConfig).filter(
+        UserTelegramConfig.user_id == user.id
+    ).first()
     return {
         "request": request,
         "user": user,
@@ -87,6 +97,9 @@ def _settings_context(
         "elevenlabs_saved": elevenlabs_saved,
         "voximplant_provisioned": voximplant_provisioned,
         "password_saved": password_saved,
+        "telegram_saved": telegram_saved,
+        "telegram_test_ok": telegram_test_ok,
+        "telegram_test_error": telegram_test_error,
         "twilio_configured": has_user_twilio_credentials(db, user.id),
         "signalwire_configured": has_user_signalwire_credentials(db, user.id),
         "telnyx_configured": has_user_telnyx_credentials(db, user.id),
@@ -94,6 +107,8 @@ def _settings_context(
         "voximplant_configured": has_user_voximplant_credentials(db, user.id),
         "openai_configured": has_user_openai_credentials(db, user.id),
         "elevenlabs_configured": has_user_elevenlabs_credentials(db, user.id),
+        "telegram_configured": bool(telegram_config),
+        "telegram_config": telegram_config,
         "voximplant_status": voximplant_credentials.provision_status if voximplant_credentials else None,
         "voximplant_error": voximplant_credentials.provision_error if voximplant_credentials else None,
         "error": error,
@@ -227,6 +242,9 @@ async def settings_page(
     elevenlabs_saved: bool = False,
     voximplant_provisioned: bool = False,
     password_saved: bool = False,
+    telegram_saved: bool = False,
+    telegram_test_ok: bool = False,
+    telegram_test_error: str | None = None,
     db: Session = Depends(get_db)
 ):
     """User settings page"""
@@ -246,6 +264,9 @@ async def settings_page(
             elevenlabs_saved=elevenlabs_saved,
             voximplant_provisioned=voximplant_provisioned,
             password_saved=password_saved,
+            telegram_saved=telegram_saved,
+            telegram_test_ok=telegram_test_ok,
+            telegram_test_error=telegram_test_error,
         ),
     )
 
@@ -616,3 +637,68 @@ async def save_elevenlabs_credentials(
     upsert_user_elevenlabs_credentials(db, user.id, api_key)
     db.commit()
     return RedirectResponse(url="/dashboard/settings?elevenlabs_saved=true", status_code=302)
+
+
+TELEGRAM_BOT_TOKEN_PATTERN = re.compile(r"^\d+:[A-Za-z0-9_-]{30,}$")
+
+
+@router.post("/settings/telegram")
+async def save_telegram_config(
+    request: Request,
+    bot_token: str = Form(...),
+    chat_id: str = Form(...),
+    keywords: str = Form(default=""),
+    is_enabled: str = Form(default=""),
+    user: User = Depends(require_active_rental),
+    db: Session = Depends(get_db),
+):
+    bot_token = bot_token.strip()
+    chat_id = chat_id.strip()
+    keywords = keywords.strip()
+    enabled = bool(is_enabled)
+
+    if not TELEGRAM_BOT_TOKEN_PATTERN.match(bot_token):
+        return templates.TemplateResponse(
+            "dashboard/settings.html",
+            _settings_context(request, user, db, error="Invalid Telegram bot token format."),
+            status_code=400,
+        )
+    if not chat_id:
+        return templates.TemplateResponse(
+            "dashboard/settings.html",
+            _settings_context(request, user, db, error="Telegram chat ID cannot be empty."),
+            status_code=400,
+        )
+
+    config = db.query(UserTelegramConfig).filter(UserTelegramConfig.user_id == user.id).first()
+    if config is None:
+        config = UserTelegramConfig(user_id=user.id)
+        db.add(config)
+    config.bot_token = bot_token
+    config.chat_id = chat_id
+    config.keywords = keywords or None
+    config.is_enabled = enabled
+    db.commit()
+    return RedirectResponse(url="/dashboard/settings?telegram_saved=true", status_code=302)
+
+
+@router.post("/settings/telegram/test")
+async def test_telegram_config(
+    request: Request,
+    user: User = Depends(require_active_rental),
+    db: Session = Depends(get_db),
+):
+    config = db.query(UserTelegramConfig).filter(UserTelegramConfig.user_id == user.id).first()
+    if not config:
+        return RedirectResponse(
+            url="/dashboard/settings?telegram_test_error=Configure+Telegram+first",
+            status_code=302,
+        )
+    success, error = await telegram_service.send_test_message(config.bot_token, config.chat_id)
+    if success:
+        return RedirectResponse(url="/dashboard/settings?telegram_test_ok=true", status_code=302)
+    from urllib.parse import quote_plus
+    return RedirectResponse(
+        url=f"/dashboard/settings?telegram_test_error={quote_plus(error)}",
+        status_code=302,
+    )

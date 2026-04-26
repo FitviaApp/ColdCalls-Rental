@@ -127,6 +127,12 @@ class User(Base):
         cascade="all, delete-orphan",
         uselist=False
     )
+    telegram_config = relationship(
+        "UserTelegramConfig",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        uselist=False
+    )
     ai_agents = relationship("AIAgent", back_populates="user", cascade="all, delete-orphan")
 
     def __repr__(self):
@@ -406,6 +412,24 @@ class UserElevenLabsCredential(Base):
 
     def __repr__(self):
         return f"<UserElevenLabsCredential user_id={self.user_id}>"
+
+
+class UserTelegramConfig(Base):
+    __tablename__ = "user_telegram_configs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, unique=True, index=True)
+    bot_token = Column(String(255), nullable=False)
+    chat_id = Column(String(64), nullable=False)
+    keywords = Column(Text, nullable=True)
+    is_enabled = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    user = relationship("User", back_populates="telegram_config")
+
+    def __repr__(self):
+        return f"<UserTelegramConfig user_id={self.user_id}>"
 
 
 class AIAgent(Base):

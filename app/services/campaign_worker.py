@@ -18,12 +18,15 @@ from app.models import (
     Campaign, CampaignNumber, User,
     CampaignStatus, CallStatus, VoiceProvider, VoxCallerIDVerificationStatus, CampaignMode
 )
+import asyncio
+
 from app.services.ai_call_runtime_service import (
     AICallRuntimeService,
     cleanup_ai_runtime_artifacts,
     prune_stale_ai_runtime_artifacts,
     update_campaign_number_ai_observability,
 )
+from app.services import telegram_service
 from app.config import get_settings
 from app.services.telnyx_service import TelnyxService
 from app.services.twilio_service import TwilioService
@@ -481,6 +484,7 @@ class CampaignWorker:
                 )
 
             if campaign.campaign_mode == CampaignMode.AI_AGENT:
+                self._maybe_notify_telegram(db, campaign, number, final_status)
                 cleanup_ai_runtime_artifacts(number.id)
 
             logger.info(
@@ -518,6 +522,38 @@ class CampaignWorker:
                     ai_runtime_error=str(e),
                 )
                 cleanup_ai_runtime_artifacts(number.id)
+
+    def _maybe_notify_telegram(
+        self,
+        db: Session,
+        campaign: Campaign,
+        number: CampaignNumber,
+        final_status: CallStatus,
+    ) -> None:
+        if final_status != CallStatus.COMPLETED:
+            return
+        try:
+            user = campaign.user or db.query(User).filter(User.id == campaign.user_id).first()
+            config = getattr(user, "telegram_config", None) if user else None
+            if not config or not config.is_enabled:
+                return
+            if not config.bot_token or not config.chat_id:
+                return
+
+            transcript = telegram_service.load_transcript(number.id)
+            haystack = telegram_service.transcript_plain_text(transcript)
+            if number.ai_last_user_input:
+                haystack += "\n" + number.ai_last_user_input
+            if number.ai_last_assistant_text:
+                haystack += "\n" + number.ai_last_assistant_text
+
+            if not telegram_service.matches_keywords(haystack, config.keywords):
+                logger.info("Telegram skipped: keyword filter no match (number %s)", number.id)
+                return
+
+            asyncio.run(telegram_service.send_call_transcript(config, number, transcript))
+        except Exception as exc:
+            logger.warning("Telegram notification failed for number %s: %s", number.id, exc)
 
     def _map_status(self, provider_status: str, default: CallStatus = CallStatus.FAILED) -> CallStatus:
         """Map provider status to CallStatus enum"""
