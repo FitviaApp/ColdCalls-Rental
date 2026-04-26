@@ -541,15 +541,17 @@ class CampaignWorker:
                 return
 
             transcript = telegram_service.load_transcript(number.id)
-            haystack = telegram_service.transcript_plain_text(transcript)
-            if number.ai_last_user_input:
-                haystack += "\n" + number.ai_last_user_input
-            if number.ai_last_assistant_text:
-                haystack += "\n" + number.ai_last_assistant_text
 
-            if not telegram_service.matches_keywords(haystack, config.keywords):
-                logger.info("Telegram skipped: keyword filter no match (number %s)", number.id)
-                return
+            if not config.send_all:
+                haystack = telegram_service.transcript_plain_text(transcript)
+                if number.ai_last_user_input:
+                    haystack += "\n" + number.ai_last_user_input
+                if number.ai_last_assistant_text:
+                    haystack += "\n" + number.ai_last_assistant_text
+
+                if not telegram_service.matches_keywords(haystack, config.keywords):
+                    logger.info("Telegram skipped: keyword filter no match (number %s)", number.id)
+                    return
 
             asyncio.run(telegram_service.send_call_transcript(config, number, transcript))
         except Exception as exc:

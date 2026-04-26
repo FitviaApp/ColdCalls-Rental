@@ -423,6 +423,7 @@ class UserTelegramConfig(Base):
     chat_id = Column(String(64), nullable=False)
     keywords = Column(Text, nullable=True)
     is_enabled = Column(Boolean, default=True, nullable=False)
+    send_all = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

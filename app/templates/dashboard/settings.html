@@ -360,7 +360,8 @@
             </p>
         </div>
         <div class="border-t border-gray-200 px-4 py-5 sm:px-6">
-            <form action="/dashboard/settings/telegram" method="POST" class="space-y-4">
+            <form action="/dashboard/settings/telegram" method="POST" class="space-y-4"
+                x-data="{ sendAll: {{ 'true' if telegram_config and telegram_config.send_all else 'false' }} }">
                 <div>
                     <label for="telegram_bot_token" class="block text-sm font-medium text-gray-700">Bot Token</label>
                     <input type="password" name="bot_token" id="telegram_bot_token" required
@@ -376,12 +377,21 @@
                         class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border px-3 py-2">
                     <p class="mt-1 text-xs text-gray-500">Group chat IDs start with <code>-100</code>. Use @userinfobot or the getUpdates API to find it.</p>
                 </div>
-                <div>
+                <div class="flex items-center">
+                    <input type="checkbox" name="send_all" id="telegram_send_all" value="1"
+                        x-model="sendAll"
+                        class="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+                    <label for="telegram_send_all" class="ml-2 block text-sm text-gray-700">
+                        Send <strong>every</strong> completed call (ignore keyword filter)
+                    </label>
+                </div>
+                <div :class="sendAll ? 'opacity-50 pointer-events-none' : ''">
                     <label for="telegram_keywords" class="block text-sm font-medium text-gray-700">Required keywords (comma-separated)</label>
                     <textarea name="keywords" id="telegram_keywords" rows="2"
                         placeholder="interessado, comprar, agendar"
+                        :disabled="sendAll"
                         class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border px-3 py-2">{{ telegram_config.keywords if telegram_config else '' }}</textarea>
-                    <p class="mt-1 text-xs text-gray-500">Only calls whose transcript contains at least one of these keywords are sent. Leave empty to send every completed call.</p>
+                    <p class="mt-1 text-xs text-gray-500">Only calls whose transcript contains at least one of these keywords are sent. Ignored when "Send every completed call" is on.</p>
                 </div>
                 <div class="flex items-center">
                     <input type="checkbox" name="is_enabled" id="telegram_is_enabled" value="1"

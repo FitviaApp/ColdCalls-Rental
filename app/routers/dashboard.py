@@ -649,6 +649,7 @@ async def save_telegram_config(
     chat_id: str = Form(...),
     keywords: str = Form(default=""),
     is_enabled: str = Form(default=""),
+    send_all: str = Form(default=""),
     user: User = Depends(require_active_rental),
     db: Session = Depends(get_db),
 ):
@@ -656,6 +657,7 @@ async def save_telegram_config(
     chat_id = chat_id.strip()
     keywords = keywords.strip()
     enabled = bool(is_enabled)
+    send_all_flag = bool(send_all)
 
     if not TELEGRAM_BOT_TOKEN_PATTERN.match(bot_token):
         return templates.TemplateResponse(
@@ -678,6 +680,7 @@ async def save_telegram_config(
     config.chat_id = chat_id
     config.keywords = keywords or None
     config.is_enabled = enabled
+    config.send_all = send_all_flag
     db.commit()
     return RedirectResponse(url="/dashboard/settings?telegram_saved=true", status_code=302)
 
