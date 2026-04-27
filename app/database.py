@@ -234,3 +234,11 @@ def _apply_schema_patches():
             conn.execute(text("ALTER TABLE campaign_numbers ADD COLUMN ai_runtime_error TEXT"))
         if _column_exists("campaign_numbers", "lead_name") is False:
             conn.execute(text("ALTER TABLE campaign_numbers ADD COLUMN lead_name VARCHAR(255)"))
+
+        if _column_exists("user_telegram_configs", "send_all") is False:
+            conn.execute(
+                text(
+                    "ALTER TABLE user_telegram_configs "
+                    "ADD COLUMN send_all BOOLEAN NOT NULL DEFAULT 0"
+                )
+            )
