@@ -110,8 +110,45 @@ def update_campaign_number_ai_observability(campaign_number_id: int, **updates) 
         db.close()
 
 
+def _record_realtime_transcript(campaign_number_id: int, payload: dict[str, Any]) -> None:
+    """Append a transcript turn from the realtime Worker to the session JSON."""
+    role = str(payload.get("role") or "").strip().lower()
+    text_value = str(payload.get("text") or "").strip()
+    if role not in {"user", "assistant"} or not text_value:
+        return
+
+    session_path = AI_RUNTIME_DIR / f"{campaign_number_id}.json"
+    try:
+        if session_path.exists():
+            session = json.loads(session_path.read_text())
+        else:
+            session = {"campaign_number_id": campaign_number_id, "history": []}
+        history = session.setdefault("history", [])
+        history.append({"role": role, "content": text_value})
+        _atomic_write_text(session_path, json.dumps(session))
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning(
+            "Realtime transcript persist failed for campaign_number_id=%s: %s",
+            campaign_number_id,
+            exc,
+        )
+
+    if role == "user":
+        update_campaign_number_ai_observability(
+            campaign_number_id, ai_last_user_input=text_value
+        )
+    else:
+        update_campaign_number_ai_observability(
+            campaign_number_id, ai_last_assistant_text=text_value
+        )
+
+
 def record_ai_realtime_event(campaign_number_id: int, payload: dict[str, Any]) -> None:
     """Log a realtime Worker event and persist failures for campaign diagnostics."""
+    if str(payload.get("event") or "") == "transcript":
+        _record_realtime_transcript(campaign_number_id, payload)
+        return
+
     safe_payload: dict[str, Any] = {}
     for key in (
         "event",

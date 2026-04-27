@@ -192,6 +192,7 @@ function sessionUpdate(config: RuntimeConfig): JsonObject {
       voice: config.voice || "verse",
       input_audio_format: "g711_ulaw",
       output_audio_format: "g711_ulaw",
+      input_audio_transcription: { model: "whisper-1" },
       turn_detection: turnDetection(config),
       tools: config.tools,
       tool_choice: "auto",
@@ -595,6 +596,36 @@ export class VoiceCallSession extends DurableObject<Env> {
         responseInProgress = true;
         activeAssistantItemId = "";
         assistantPlaybackStartedAt = 0;
+        return;
+      }
+
+      if (type === "conversation.item.input_audio_transcription.completed") {
+        const transcript = String(message.transcript || "").trim();
+        if (transcript) {
+          emitEvent({
+            event: "transcript",
+            severity: "info",
+            role: "user",
+            text: transcript,
+            streamSid,
+            callSid,
+          });
+        }
+        return;
+      }
+
+      if (type === "response.audio_transcript.done") {
+        const transcript = String(message.transcript || "").trim();
+        if (transcript) {
+          emitEvent({
+            event: "transcript",
+            severity: "info",
+            role: "assistant",
+            text: transcript,
+            streamSid,
+            callSid,
+          });
+        }
         return;
       }
 
