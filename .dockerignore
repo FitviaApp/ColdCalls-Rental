@@ -1,0 +1,15 @@
+.git
+.venv
+venv
+node_modules
+.wrangler
+__pycache__
+**/__pycache__
+*.pyc
+.pytest_cache
+tests
+deploy/nginx
+deploy/systemd
+deploy.sh
+*.md
+coldcalls.db.backup.*

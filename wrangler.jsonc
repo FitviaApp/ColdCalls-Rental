@@ -1,0 +1,33 @@
+{
+  "name": "coldcalls",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "containers": [
+    {
+      "class_name": "ColdCallsContainer",
+      "image": "./Dockerfile",
+      "instance_type": "standard-2",
+      "max_instances": 1
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "COLDCALLS",
+        "class_name": "ColdCallsContainer"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["ColdCallsContainer"]
+    }
+  ],
+  "vars": {
+    "BASE_URL": ""
+  },
+  "observability": {
+    "enabled": true
+  }
+}

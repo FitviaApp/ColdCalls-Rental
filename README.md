@@ -15,6 +15,7 @@ Plataforma web para gerenciamento de campanhas de cold calls multiusuario com:
 - Frontend: Jinja2 templates + TailwindCSS + Alpine.js
 - Banco: SQLite (`coldcalls.db`)
 - Processamento: worker separado (`worker.py`)
+- Cloudflare: Workers Containers (Worker + Docker; ver secao de deploy)
 
 ## Estrutura do projeto
 
@@ -127,6 +128,74 @@ Gerar `ENCRYPTION_KEY`:
 
 ```bash
 python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+## Deploy no Cloudflare (Workers Containers)
+
+O projeto roda no Cloudflare via **Workers Containers**: um Worker encaminha HTTP/WebSocket para um container Docker que executa a app FastAPI + o `worker.py` de campanhas no mesmo processo.
+
+### Requisitos
+
+- Docker rodando localmente
+- Node.js 20+
+- Conta Cloudflare com Containers habilitado (beta)
+- Redis externo acessivel (ex.: Upstash) para campanhas com IA — o container **nao** sobe Redis local
+- Bucket R2 configurado em `.env` (`R2_*`) para audios **e** backup do `coldcalls.db`
+
+### Configurar `.env`
+
+Antes do deploy, ajuste pelo menos:
+
+```env
+# URL publica do Worker (custom domain ou *.workers.dev) para callbacks Twilio/etc.
+BASE_URL=https://coldcalls.<subdomain>.workers.dev
+
+# Redis externo (obrigatorio para campanhas IA)
+REDIS_URL=rediss://<user>:<password>@<host>:6379/0
+
+# R2 (audios + backup do banco — o disco do container e efemero)
+R2_ACCOUNT_ID=...
+R2_ACCESS_KEY_ID=...
+R2_SECRET_ACCESS_KEY=...
+R2_BUCKET_NAME=coldcalls-audios
+```
+
+O `.env` e copiado para a imagem (`Dockerfile`). Nao faça commit de segredos em repositorio publico; prefira `wrangler secret`/CI para producao.
+
+### Deploy
+
+```bash
+npm install
+npx wrangler login   # uma vez
+npm run deploy       # = wrangler deploy (constroi imagem + publica Worker)
+```
+
+A primeira execucao pode demorar alguns minutos (build/push da imagem + rollout).
+
+### Como funciona
+
+| Peca | Papel |
+|------|--------|
+| `src/index.ts` | Worker: singleton `getByName("singleton")`, encaminha HTTP e WebSocket com `container.fetch()` |
+| `wrangler.jsonc` | Container (`standard-2`, `max_instances: 1`), DO binding, migrations |
+| `Dockerfile` | Python 3.11 + deps + app |
+| `cloudflare/entrypoint.sh` | Restaura DB do R2 → sobe `worker.py` + `uvicorn` → backup periodico do DB |
+| `scripts/r2_db_sync.py` | `restore`/`backup` de `coldcalls.db` no R2 (disco do container e efemero) |
+
+Observacoes:
+
+- **Singleton**: SQLite + um unico processo de worker exigem `max_instances: 1` e nome fixo `singleton`.
+- **`sleepAfter = 12h`**: apos 12h sem HTTP, o container para; no proximo request ele cold-starta e o worker retoma. O DB e restaurado do R2.
+- **Backup do DB**: a cada `DB_BACKUP_INTERVAL_SECONDS` (padrao 60s). Em parada abrupta, pode haver ate ~1 min de perda.
+- **`BASE_URL`**: pode ser sobrescrito na inicializacao via var do Worker (`wrangler vars set BASE_URL=...`); se vazio, usa o `.env` da imagem.
+- **Containers e beta** na Cloudflare — teste em nao-producao primeiro.
+- O deploy legado em VM (`deploy.sh` + nginx + systemd) continua valido e paralelo.
+
+### Validacao local (sem Docker)
+
+```bash
+npm run typecheck
+npx wrangler deploy --dry-run
 ```
 
 ## Executando
