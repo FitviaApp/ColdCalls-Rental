@@ -42,9 +42,22 @@ describe('voice provider contracts', () => {
     expect(new URL(body.get('StatusCallback')!).pathname).toBe('/api/twilio/calls/11/status');
     expect(new URL(body.get('Url')!).pathname).toBe('/api/twilio/calls/11/answer');
     expect(body.get('MachineDetection')).toBe('Enable');
+    expect(body.get('MachineDetectionTimeout')).toBe('30');
     expect(body.get('Twiml')).toBeNull();
     expect(body.getAll('StatusCallbackEvent')).toEqual(['initiated', 'ringing', 'answered', 'completed']);
     expect(await service.getCallStatus('CA11')).toMatchObject({ status: 'completed', duration: 9, answered_by: 'human' });
+  });
+
+  it('omits Twilio AMD when Press 1 is the human verification gate', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      new Response(JSON.stringify({ sid: 'CA12', status: 'queued' }), { status: 201 }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const service = TwilioService(env, 'AC00000000000000000000000000000000', 'token');
+    await service.makeCall({ ...call, press1ToTalkWithAgent: true });
+    const body = fetchMock.mock.calls[0][1]?.body as URLSearchParams;
+    expect(body.get('MachineDetection')).toBeNull();
+    expect(body.get('MachineDetectionTimeout')).toBeNull();
   });
 
   it('recognizes an owned Twilio caller ID', async () => {

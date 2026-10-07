@@ -73,7 +73,7 @@ describe('Twilio basic call hardening', () => {
   });
 
   it('hangs up on machine detection without playing or transferring', async () => {
-    await seedBasicCall(1, true);
+    await seedBasicCall(1, false);
     const url = await callbackUrl(1, 'answer');
     const response = await exports.default.fetch(signedRequest(url, new URLSearchParams({
       CallSid: 'CA-PARENT', AnsweredBy: 'machine_start',
@@ -84,20 +84,54 @@ describe('Twilio basic call hardening', () => {
     });
   });
 
+  it('preserves an unknown AMD result and its detection duration for diagnosis', async () => {
+    await seedBasicCall(1, false);
+    const url = await callbackUrl(1, 'answer');
+    const response = await exports.default.fetch(signedRequest(url, new URLSearchParams({
+      CallSid: 'CA-PARENT', AnsweredBy: 'unknown', MachineDetectionDuration: '5007',
+    })));
+    expect(await response.text()).toBe('<Response><Hangup/></Response>');
+    expect(await env.DB.prepare('SELECT status,answered_by,outcome_reason,error_message FROM campaign_numbers WHERE id=1').first()).toMatchObject({
+      status: 'failed',
+      answered_by: 'unknown',
+      outcome_reason: 'amd_unknown',
+      error_message: 'Twilio AMD could not classify the answer after 5007 ms',
+    });
+  });
+
   it('records Press 1 timeout as failure and uses actionOnEmptyResult', async () => {
     await seedBasicCall(1, true);
     const answerUrl = await callbackUrl(1, 'answer');
     const answer = await exports.default.fetch(signedRequest(answerUrl, new URLSearchParams({
-      CallSid: 'CA-PARENT', AnsweredBy: 'human',
+      CallSid: 'CA-PARENT',
     })));
     const twiml = await answer.text();
     expect(twiml).toContain('actionOnEmptyResult="true"');
     expect(twiml).toContain('<Play>');
+    expect(await env.DB.prepare('SELECT answered_by,outcome_reason FROM campaign_numbers WHERE id=1').first()).toMatchObject({
+      answered_by: null, outcome_reason: 'awaiting_press_1',
+    });
     const gatherUrl = extractUrl(twiml, 'action');
     const gather = await exports.default.fetch(signedRequest(gatherUrl, new URLSearchParams({ CallSid: 'CA-PARENT' })));
     expect(await gather.text()).toBe('<Response><Hangup/></Response>');
     expect(await env.DB.prepare('SELECT status,outcome_reason FROM campaign_numbers WHERE id=1').first()).toMatchObject({
       status: 'failed', outcome_reason: 'no_input',
+    });
+  });
+
+  it('uses digit 1, not AMD, to verify a human before transfer', async () => {
+    await seedBasicCall(1, true);
+    const answerUrl = await callbackUrl(1, 'answer');
+    const answer = await exports.default.fetch(signedRequest(answerUrl, new URLSearchParams({
+      CallSid: 'CA-PARENT',
+    })));
+    const gatherUrl = extractUrl(await answer.text(), 'action');
+    const gather = await exports.default.fetch(signedRequest(gatherUrl, new URLSearchParams({
+      CallSid: 'CA-PARENT', Digits: '1',
+    })));
+    expect(await gather.text()).toContain('<Dial');
+    expect(await env.DB.prepare('SELECT answered_by,outcome_reason,pressed_1_at FROM campaign_numbers WHERE id=1').first()).toMatchObject({
+      answered_by: 'human', outcome_reason: 'pressed_1',
     });
   });
 

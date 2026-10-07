@@ -164,6 +164,7 @@ export function TwilioService(env: Env, accountSid: string, authToken: string) {
     const timeout = options.timeout ?? 60;
     const answerUrl = options.answerUrl ?? null;
     const enableMachineDetection = options.enableMachineDetection ?? true;
+    const press1ToTalkWithAgent = options.press1ToTalkWithAgent ?? false;
     const dispatchAttemptId = options.dispatchAttemptId ?? String(options.metadata?.dispatch_attempt_id ?? '');
 
     const form = new URLSearchParams();
@@ -208,9 +209,11 @@ export function TwilioService(env: Env, accountSid: string, authToken: string) {
       );
     }
 
-    if (enableMachineDetection && !answerUrl) {
+    if (enableMachineDetection && !press1ToTalkWithAgent && !answerUrl) {
       form.set('MachineDetection', 'Enable');
-      form.set('MachineDetectionTimeout', '5');
+      // Twilio's default 30-second window favors a reliable verdict. A five-second
+      // window frequently returns AnsweredBy=unknown before AMD can classify the call.
+      form.set('MachineDetectionTimeout', '30');
     }
 
     const response = await fetch(`${baseUrl}/Calls.json`, {

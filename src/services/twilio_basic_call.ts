@@ -113,22 +113,30 @@ export async function handleTwilioAnswer(env: Env, request: Request, numberId: n
   if (!(await bindParentCallSid(env, row, callSid))) {
     return Response.json({ detail: 'Stale or mismatched Twilio call attempt' }, { status: 409 });
   }
-  const answeredBy = String(parsed.body.get('AnsweredBy') ?? 'unknown').toLowerCase();
+  const answeredBy = String(parsed.body.get('AnsweredBy') ?? '').trim().toLowerCase() || 'missing';
+  const press1Enabled = Boolean(row.press_1_to_talk_with_agent);
   const now = new Date().toISOString();
-  if (answeredBy !== 'human') {
+  if (!press1Enabled && answeredBy !== 'human') {
     const reason = answeredBy === 'fax' ? 'fax' : answeredBy.startsWith('machine') ? 'machine' : 'amd_unknown';
+    const detectionDuration = String(parsed.body.get('MachineDetectionDuration') ?? '').trim();
+    const diagnostic = answeredBy === 'unknown'
+      ? `Twilio AMD could not classify the answer${detectionDuration ? ` after ${detectionDuration} ms` : ''}`
+      : answeredBy === 'missing'
+        ? 'Twilio answer webhook did not include an AMD result'
+        : `Twilio AMD result: ${answeredBy}`;
     await env.DB.prepare(
       `UPDATE campaign_numbers SET status='failed',dispatch_state='finished',answered_by=?,outcome_reason=?,
        error_message=?,processed_at=COALESCE(processed_at,?),updated_at=?
        WHERE id=? AND dispatch_attempt_id=?`,
-    ).bind(answeredBy, reason, `Twilio AMD result: ${reason}`, now, now, row.id, row.dispatch_attempt_id).run();
+    ).bind(answeredBy, reason, diagnostic, now, now, row.id, row.dispatch_attempt_id).run();
     return xml('<Response><Hangup/></Response>');
   }
 
   await env.DB.prepare(
-    `UPDATE campaign_numbers SET status='calling',dispatch_state='dispatched',answered_by='human',
-     outcome_reason='human_answered',next_action_at=?,updated_at=? WHERE id=? AND dispatch_attempt_id=?`,
-  ).bind(new Date(Date.now() + 30_000).toISOString(), now, row.id, row.dispatch_attempt_id).run();
+    `UPDATE campaign_numbers SET status='calling',dispatch_state='dispatched',answered_by=?,
+     outcome_reason=?,next_action_at=?,updated_at=? WHERE id=? AND dispatch_attempt_id=?`,
+  ).bind(press1Enabled ? null : 'human', press1Enabled ? 'awaiting_press_1' : 'human_answered',
+    new Date(Date.now() + 30_000).toISOString(), now, row.id, row.dispatch_attempt_id).run();
   const play = row.audio_id ? `<Play>${escapeXml(await providerAudioUrl(env, row.audio_id))}</Play>` : '';
   if (!row.press_1_to_talk_with_agent) return xml(await transferTwiml(env, row).then((value) => value.replace('<Response>', `<Response>${play}`)));
 
@@ -154,7 +162,7 @@ export async function handleTwilioGather(env: Env, request: Request, numberId: n
   const now = new Date().toISOString();
   if (digits === '1') {
     await env.DB.prepare(
-      `UPDATE campaign_numbers SET pressed_1_at=?,outcome_reason='pressed_1',updated_at=?
+      `UPDATE campaign_numbers SET pressed_1_at=?,answered_by='human',outcome_reason='pressed_1',updated_at=?
        WHERE id=? AND dispatch_attempt_id=?`,
     ).bind(now, now, row.id, row.dispatch_attempt_id).run();
     return xml(await transferTwiml(env, row));
