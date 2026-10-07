@@ -34,7 +34,7 @@ describe('application persistence and tenant boundaries', () => {
     const token = await seedUser(1, 'one@example.com');
     const response = await exports.default.fetch(request('/dashboard', token));
     expect(response.status).toBe(200);
-    expect(await response.text()).toContain('AI Agent Runtime');
+    expect(await response.text()).toContain('AI Runtime');
   });
 
   it('renders and validates the Cloudflare AI agent workspace', async () => {
