@@ -16,7 +16,7 @@
         <form action="/assets/caller-ids/create" method="POST" class="px-4 py-5 sm:px-6 space-y-4">
             <div>
                 <label for="phone_number" class="block text-sm font-medium text-gray-700">Phone Number</label>
-                <input type="text" name="phone_number" id="phone_number" required pattern="^\+[1-9]\d{1,14}$"
+                <input type="text" name="phone_number" id="phone_number" required pattern="^\+[1-9]\d{1,14}$" inputmode="tel" autocomplete="tel"
                     class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border px-3 py-2"
                     placeholder="+15551234567">
                 <p class="mt-1 text-xs text-gray-500">E.164 format (e.g., +15551234567)</p>
@@ -24,7 +24,7 @@
 
             <div>
                 <label for="country_code" class="block text-sm font-medium text-gray-700">Country Code</label>
-                <input type="text" name="country_code" id="country_code" required maxlength="5"
+                <input type="text" name="country_code" id="country_code" required maxlength="5" autocapitalize="characters" spellcheck="false"
                     class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border px-3 py-2"
                     placeholder="US">
                 <p class="mt-1 text-xs text-gray-500">ISO country code (e.g., US, BR, PT)</p>

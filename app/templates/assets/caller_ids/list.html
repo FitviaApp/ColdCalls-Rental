@@ -67,7 +67,7 @@
                             {% if caller_id.vox_verification_status.value == 'verified' %}
                             <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">Verified</span>
                             {% elif caller_id.vox_verification_status.value == 'pending' %}
-                            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">Pending code</span>
+                            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800" title="A code was sent to this number">Pending code</span>
                             {% elif caller_id.vox_verification_status.value == 'failed' %}
                             <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">Failed</span>
                             {% else %}
@@ -75,13 +75,16 @@
                             {% endif %}
 
                             {% if voximplant_configured and caller_id.vox_verification_status.value != 'verified' %}
+                            {% if caller_id.vox_verification_status.value == 'pending' %}
+                            <form action="/assets/caller-ids/{{ caller_id.id }}/voximplant/activate" method="POST" class="inline-flex items-center gap-2">
+                                <input type="text" name="verification_code" placeholder="Code" inputmode="numeric" autocomplete="one-time-code" class="w-24 rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border px-2 py-1">
+                                <button type="submit" class="text-indigo-600 hover:text-indigo-900">Activate</button>
+                            </form>
+                            {% else %}
                             <form action="/assets/caller-ids/{{ caller_id.id }}/voximplant/verify" method="POST" class="inline">
                                 <button type="submit" class="text-indigo-600 hover:text-indigo-900">Start verification</button>
                             </form>
-                            <form action="/assets/caller-ids/{{ caller_id.id }}/voximplant/activate" method="POST" class="inline-flex items-center gap-2">
-                                <input type="text" name="verification_code" placeholder="Code" class="w-24 rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border px-2 py-1">
-                                <button type="submit" class="text-indigo-600 hover:text-indigo-900">Activate</button>
-                            </form>
+                            {% endif %}
                             {% endif %}
                         </div>
                     </td>
