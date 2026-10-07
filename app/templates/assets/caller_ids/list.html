@@ -7,7 +7,7 @@
     <div class="mb-8 flex justify-between items-center">
         <div>
             <h1 class="text-2xl font-bold text-gray-900">My Caller IDs</h1>
-            <p class="text-gray-500">Manage your source numbers and Voximplant verification</p>
+            <p class="text-gray-500">Manage source numbers and provider verification status</p>
         </div>
         <div class="flex space-x-3">
             <a href="/assets/audios" class="text-sm text-gray-600 hover:text-gray-800">My Audios</a>
@@ -45,6 +45,7 @@
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Description</th>
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Voximplant</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Twilio</th>
                     <th class="relative px-6 py-3"><span class="sr-only">Actions</span></th>
                 </tr>
             </thead>
@@ -83,6 +84,19 @@
                             </form>
                             {% endif %}
                         </div>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm">
+                        {% if caller_id.twilio_status == 'owned' %}
+                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">Owned</span>
+                        {% elif caller_id.twilio_status == 'verified' %}
+                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">Verified</span>
+                        {% elif caller_id.twilio_status == 'invalid' or caller_id.twilio_status == 'error' %}
+                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">{{ caller_id.twilio_status }}</span>
+                        {% elif twilio_configured %}
+                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-700">Checked on campaign start</span>
+                        {% else %}
+                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-700">Not configured</span>
+                        {% endif %}
                     </td>
                     <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                         <a href="/assets/caller-ids/{{ caller_id.id }}/edit" class="text-indigo-600 hover:text-indigo-900">Edit</a>

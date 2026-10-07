@@ -258,6 +258,7 @@
                                       :class="statusBadgeClass(number.status)"
                                       x-text="formatStatus(number.status)"></span>
                                 <span x-show="number.answered_by" class="ml-1 text-xs text-gray-500" x-text="'(' + number.answered_by + ')'"></span>
+                                <div x-show="number.error_message" class="mt-1 text-xs text-red-600" x-text="number.error_message"></div>
                                 <div x-show="number.ai_turn_count || number.ai_handoff_reason || number.ai_runtime_error" class="mt-1 space-y-1">
                                     <div x-show="number.ai_turn_count" class="text-xs text-gray-500" x-text="'AI turns: ' + number.ai_turn_count + (number.ai_no_input_turns ? ' | silent reprompts: ' + number.ai_no_input_turns : '')"></div>
                                     <div x-show="number.ai_handoff_reason" class="text-xs text-violet-700" x-text="'Handoff: ' + number.ai_handoff_reason"></div>

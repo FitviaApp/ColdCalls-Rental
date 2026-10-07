@@ -1,9 +1,16 @@
 node_modules/
 .wrangler/
+.env
+.env.*
+!.env.example
+.dev.vars
+.dev.vars.*
 .venv/
 venv/
 __pycache__/
 **/__pycache__/
 *.pyc
+*.db
 .pytest_cache/
 *.tsbuildinfo
+src/templates_compiled.ts

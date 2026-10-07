@@ -82,7 +82,7 @@
                         <div class="text-xs text-gray-500 mt-1">
                             {{ ai_summary.get('handoffs', 0) }} handoff{% if ai_summary.get('handoffs', 0) != 1 %}s{% endif %}
                             {% if ai_summary.get('last_runtime_error') %}
-                            <span class="text-red-600">• {{ ai_summary.get('last_runtime_error')[:80] }}{% if ai_summary.get('last_runtime_error')|length > 80 %}...{% endif %}</span>
+                            <span class="text-red-600">• {{ ai_summary.get('last_runtime_error')|truncate(80, true, '') }}{% if ai_summary.get('last_runtime_error')|length > 80 %}...{% endif %}</span>
                             {% endif %}
                         </div>
                         {% endif %}

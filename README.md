@@ -1,418 +1,63 @@
-# ColdCalls Platform
+# ColdCalls Rental
 
-Plataforma web para gerenciamento de campanhas de cold calls multiusuario com:
+Aplicação nativa para Cloudflare Workers, escrita em Hono e TypeScript. O Worker mantém os contratos HTTP da aplicação FastAPI anterior e usa serviços gerenciados da Cloudflare:
 
-- FastAPI + Jinja2
-- SQLAlchemy + SQLite
-- Twilio, SignalWire, Telnyx, Vonage e Voximplant
-- Agentes de IA reutilizaveis com Twilio Media Streams + OpenAI Realtime + ElevenLabs
-- Cloudflare R2 (audios)
-- Cobranca de aluguel via USDT (verificacao on-chain)
+- D1 como banco autoritativo;
+- R2 para áudios privados;
+- Durable Objects para coordenação de campanhas e sessões realtime;
+- Workers Static Assets para CSS;
+- Cron Trigger para reconciliação de campanhas.
 
-## Stack
+Não há Container, Redis, Queue, Workflow ou processo Python na arquitetura ativa. O código Python, Docker e systemd permanece temporariamente no repositório apenas como referência de paridade e será retirado depois do checkpoint de aceitação.
 
-- Backend: Python 3.11+ / FastAPI
-- Frontend: Jinja2 templates + TailwindCSS + Alpine.js
-- Banco: SQLite (`coldcalls.db`)
-- Processamento: worker separado (`worker.py`)
-- Cloudflare: Workers Containers (Worker + Docker; ver secao de deploy)
+## Desenvolvimento local
 
-## Estrutura do projeto
+Requisitos: Node.js 20+ e uma sessão autenticada do Wrangler.
 
-```text
-app/
-  main.py                   # App FastAPI e startup
-  config.py                 # Configuracoes via .env
-  database.py               # Engine, sessao e init de schema
-  models.py                 # Modelos SQLAlchemy
-  routers/
-    auth.py                 # Login/logout
-    dashboard.py            # Dashboard e settings do usuario
-    campaigns.py            # CRUD e controle de campanhas
-    assets.py               # Caller IDs e audios por usuario
-    billing.py              # Pagamentos e aluguel
-    admin.py                # Painel admin
-    api.py                  # Endpoints JSON e TwiML
-  services/
-    campaign_worker.py      # Loop do worker
-    twilio_service.py       # Integracao Twilio
-    voximplant_service.py   # Runtime Voximplant
-    voximplant_management_service.py  # Provisionamento Voximplant
-    payment_service.py      # Verificacao da transacao USDT
-    rental_service.py       # Regras de aluguel
-    r2_service.py           # Upload/delete no R2
-    user_twilio_service.py  # Credenciais Twilio por usuario
-    user_voximplant_service.py  # Credenciais Voximplant por usuario
-worker.py                   # Entry point do worker
-scripts/                    # Scripts de migracao/limpeza legado
-requirements.txt
-README.md
-```
-
-## Requisitos
-
-- Python 3.11+
-- Pelo menos um provider de voz configurado por usuario
-- Para campanhas com agente IA: Twilio + Redis + credenciais OpenAI + ElevenLabs por usuario
-- Bucket Cloudflare R2 (para audios)
-- Chave Etherscan (verificacao de pagamento)
-- `BASE_URL` publica para callbacks de providers
-
-## Instalacao
-
-```bash
-git clone <repo-url>
-cd ColdCalls-Rental
-
-python3 -m venv .venv
-source .venv/bin/activate   # Linux/Mac
-# .venv\Scripts\activate   # Windows
-
-pip install -r requirements.txt
-```
-
-## Configuracao (.env)
-
-Crie um arquivo `.env` na raiz do projeto.
-
-```env
-# Aplicacao
-APP_NAME=ColdCalls Platform
-SECRET_KEY=change-me-in-production-min-32-chars
-DEBUG=false
-# URL publica para callbacks Twilio, Telnyx, Voximplant e runtime de IA.
-# Em deploy real, nao use localhost ou IP privado.
-BASE_URL=https://your-public-domain.example.com
-OPENAI_API_BASE=https://api.openai.com/v1
-OPENAI_DEFAULT_MODEL=gpt-4o-mini
-OPENAI_REALTIME_MODEL=gpt-realtime
-OPENAI_REALTIME_URL=wss://api.openai.com/v1/realtime
-REDIS_URL=redis://localhost:6379/0
-AI_MAX_AGENT_TURNS=6
-AI_GATHER_TIMEOUT_SECONDS=3
-AI_GATHER_SPEECH_TIMEOUT_SECONDS=1
-AI_GATHER_POST_PLAY_PAUSE_SECONDS=0
-
-# Banco
-DATABASE_URL=sqlite:///./coldcalls.db
-
-# JWT
-JWT_SECRET=jwt-secret-change-me-min-32-chars
-JWT_ALGORITHM=HS256
-JWT_EXPIRATION_HOURS=24
-
-# Criptografia das credenciais dos providers do usuario (Fernet)
-ENCRYPTION_KEY=<32-byte-urlsafe-base64-key>
-
-# Admin inicial (criado automaticamente no primeiro startup)
-ADMIN_EMAIL=admin@example.com
-ADMIN_PASSWORD=change-me
-
-# Cloudflare R2
-R2_ACCOUNT_ID=
-R2_ACCESS_KEY_ID=
-R2_SECRET_ACCESS_KEY=
-R2_BUCKET_NAME=coldcalls-audios
-R2_PUBLIC_URL=
-
-# Pagamentos (USDT ERC-20)
-ETHERSCAN_API_KEY=
-USDT_CONTRACT=0xdAC17F958D2ee523a2206206994597C13D831ec7
-USDT_WALLET_ADDRESS=
-
-# Limite de usuarios nao-admin
-MAX_USERS=4
-```
-
-Gerar `ENCRYPTION_KEY`:
-
-```bash
-python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-```
-
-## Deploy no Cloudflare (Workers Containers)
-
-O projeto roda no Cloudflare via **Workers Containers**: um Worker encaminha HTTP/WebSocket para um container Docker que executa a app FastAPI + o `worker.py` de campanhas no mesmo processo.
-
-### Requisitos
-
-- Docker rodando localmente
-- Node.js 20+
-- Conta Cloudflare com Containers habilitado (beta)
-- Redis externo acessivel (ex.: Upstash) para campanhas com IA — o container **nao** sobe Redis local
-- Bucket R2 configurado em `.env` (`R2_*`) para audios **e** backup do `coldcalls.db`
-
-### Configurar `.env`
-
-Antes do deploy, ajuste pelo menos:
-
-```env
-# URL publica do Worker (custom domain ou *.workers.dev) para callbacks Twilio/etc.
-BASE_URL=https://coldcalls.<subdomain>.workers.dev
-
-# Redis externo (obrigatorio para campanhas IA)
-REDIS_URL=rediss://<user>:<password>@<host>:6379/0
-
-# R2 (audios + backup do banco — o disco do container e efemero)
-R2_ACCOUNT_ID=...
-R2_ACCESS_KEY_ID=...
-R2_SECRET_ACCESS_KEY=...
-R2_BUCKET_NAME=coldcalls-audios
-```
-
-O `.env` e copiado para a imagem (`Dockerfile`). Nao faça commit de segredos em repositorio publico; prefira `wrangler secret`/CI para producao.
-
-### Deploy
-
-```bash
+```sh
 npm install
-npx wrangler login   # uma vez
-npm run deploy       # = wrangler deploy (constroi imagem + publica Worker)
+cp .env.example .dev.vars
+npm run types:generate
+npx wrangler d1 migrations apply coldcalls --local
+npm run dev
 ```
 
-A primeira execucao pode demorar alguns minutos (build/push da imagem + rollout).
+Use uma URL pública de túnel em `BASE_URL` para exercitar callbacks de providers. `.dev.vars` é ignorado pelo Git. Credenciais reais nunca devem ser colocadas em `.env`, código-fonte, logs ou `vars`.
 
-### Como funciona
+## Validação
 
-| Peca | Papel |
-|------|--------|
-| `src/index.ts` | Worker: singleton `getByName("singleton")`, encaminha HTTP e WebSocket com `container.fetch()` |
-| `wrangler.jsonc` | Container (`standard-2`, `max_instances: 1`), DO binding, migrations |
-| `Dockerfile` | Python 3.11 + deps + app |
-| `cloudflare/entrypoint.sh` | Restaura DB do R2 → sobe `worker.py` + `uvicorn` → backup periodico do DB |
-| `scripts/r2_db_sync.py` | `restore`/`backup` de `coldcalls.db` no R2 (disco do container e efemero) |
-
-Observacoes:
-
-- **Singleton**: SQLite + um unico processo de worker exigem `max_instances: 1` e nome fixo `singleton`.
-- **`sleepAfter = 12h`**: apos 12h sem HTTP, o container para; no proximo request ele cold-starta e o worker retoma. O DB e restaurado do R2.
-- **Backup do DB**: a cada `DB_BACKUP_INTERVAL_SECONDS` (padrao 60s). Em parada abrupta, pode haver ate ~1 min de perda.
-- **`BASE_URL`**: pode ser sobrescrito na inicializacao via var do Worker (`wrangler vars set BASE_URL=...`); se vazio, usa o `.env` da imagem.
-- **Containers e beta** na Cloudflare — teste em nao-producao primeiro.
-- O deploy legado em VM (`deploy.sh` + nginx + systemd) continua valido e paralelo.
-
-### Validacao local (sem Docker)
-
-```bash
-npm run typecheck
-npx wrangler deploy --dry-run
+```sh
+npm run check
 ```
 
-## Executando
+O comando verifica os tipos gerados pelo Wrangler, pré-compila os templates Nunjucks, executa TypeScript, roda Vitest no runtime Cloudflare com D1/R2/Assets/Durable Objects locais, faz o dry-run do bundle e verifica whitespace do diff.
 
-### 1) Aplicacao web
+A suíte cobre o manifesto das 98 rotas legadas, autenticação e compatibilidade Fernet, isolamento entre tenants, R2 privado, bindings e saúde do Worker, callbacks assinados e deduplicados, além de dispatch conhecido/ambíguo, recuperação e alarmes do coordenador.
 
-```bash
-bash deploy/bin/start-app.sh
+## Persistência e deploy
+
+As migrations ficam em `migrations/`. O deploy de produção sempre aplica as migrations e faz readback antes de publicar:
+
+```sh
+npm run deploy:production
 ```
 
-### 2) Worker (em outro terminal)
+O bootstrap inicial exige `ADMIN_EMAIL` e solicita a senha sem eco:
 
-```bash
-bash deploy/bin/start-worker.sh
+```sh
+ADMIN_EMAIL='admin@example.com' node scripts/bootstrap_d1.mjs --local
 ```
 
-O worker verifica campanhas `running` a cada 10 segundos.
-Os wrappers usam `.venv` primeiro e fazem fallback para `venv`.
-Campanhas com agente IA tambem exigem Redis acessivel em `REDIS_URL`.
+Para a recriação remota, rotação de segredos, primeiro deploy em `workers.dev` e configuração do Workers Builds, siga [docs/CLOUDFLARE_RELEASE.md](docs/CLOUDFLARE_RELEASE.md). Essas operações são deliberadamente separadas do desenvolvimento local porque alteram GitHub e recursos persistentes da Cloudflare.
 
-## Publicando com Nginx
+## Campanhas
 
-Se quiser expor a aplicacao pelo IP `http://18.231.196.243`, o repositorio agora inclui um template em `deploy/nginx/coldcalls.conf.template` e o `deploy.sh` publica essa configuracao automaticamente no servidor.
+`CampaignCoordinator` mantém um objeto por campanha, aplica concorrência e intervalo por provider e usa alarmes idempotentes. O claim acontece primeiro no D1. Falhas explicitamente rejeitadas terminam em `failed`; resultado externo ambíguo termina em `dispatch_unknown` e nunca é rediscado automaticamente.
 
-Variaveis relevantes:
+Twilio, SignalWire, Telnyx, Vonage e Voximplant implementam o contrato `VoiceProviderAdapter` para campanhas de áudio. Campanhas de IA permanecem restritas à Twilio.
 
-```bash
-APP_HOST=127.0.0.1
-APP_PORT=8000
-NGINX_SERVER_NAME=18.231.196.243
-NGINX_SITE_NAME=coldcalls
-CONFIGURE_NGINX=1
-```
+## Realtime
 
-Ao executar `./deploy.sh`, ele vai:
+`RealtimeCallSession` mantém um objeto por `campaign_number_id`, autentica o Media Stream da Twilio, conecta ao OpenAI Realtime, sintetiza a transcrição com ElevenLabs, executa handoff pela atualização da chamada Twilio e grava observabilidade no D1. Como existe um WebSocket de saída durante a chamada, a sessão não depende de hibernação.
 
-1. atualizar o codigo
-2. instalar dependencias
-3. garantir que o Redis local esteja ativo quando `REDIS_URL` apontar para `localhost`
-4. gerar `/etc/nginx/sites-available/coldcalls`
-5. criar o link em `/etc/nginx/sites-enabled/coldcalls`
-6. validar com `nginx -t`
-7. recarregar o `nginx`
-
-Exemplo de upstream esperado:
-
-```nginx
-server_name 18.231.196.243;
-proxy_pass http://127.0.0.1:8000;
-```
-
-Se quiser pular essa etapa em algum ambiente, use `CONFIGURE_NGINX=0`.
-
-## Rodando com systemd
-
-O repositorio inclui templates em `deploy/systemd/` e wrappers em `deploy/bin/`:
-
-- `coldcalls.service` para a aplicacao web
-- `coldcalls-worker.service` para o worker
-- `start-app.sh` e `start-worker.sh` para resolver o virtualenv de forma consistente
-
-Os templates tambem declaram dependencia de `redis-server.service` para ambientes Ubuntu com Redis local.
-
-No servidor Ubuntu:
-
-```bash
-sudo cp deploy/systemd/coldcalls.service /etc/systemd/system/coldcalls.service
-sudo cp deploy/systemd/coldcalls-worker.service /etc/systemd/system/coldcalls-worker.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now coldcalls
-sudo systemctl enable --now coldcalls-worker
-```
-
-Para acompanhar logs:
-
-```bash
-sudo journalctl -u coldcalls -f
-sudo journalctl -u coldcalls-worker -f
-```
-
-## Fluxo de uso
-
-1. Acesse `http://localhost:8000`.
-2. Faca login com o admin definido no `.env`.
-3. Em `/admin`, cadastre paises e planos de aluguel.
-4. Crie usuarios em `/admin/users`.
-5. Cada usuario configura:
-   - Numero de transferencia em `/dashboard/settings`
-   - Credenciais de voz em `/dashboard/settings`
-   - Credenciais OpenAI em `/dashboard/settings`
-   - Credenciais ElevenLabs em `/dashboard/settings`
-   - Caller IDs em `/assets/caller-ids`
-   - Audios em `/assets/audios`
-   - Agentes IA reutilizaveis em `/ai-agents`
-   - Se usar Voximplant, verifica cada Caller ID pelo fluxo de codigo em `/assets/caller-ids`
-6. O usuario paga aluguel em `/billing`.
-7. Crie e inicie campanhas em `/campaigns`.
-   - `audio`: usa audio gravado e/ou transferencia direta
-   - `ai_agent`: usa Twilio + `/api/ai-realtime/*` + OpenAI Realtime + ElevenLabs para conversa e transferencia
-
-## Rotas principais
-
-- Auth: `/auth/login`, `/auth/logout`
-- Dashboard: `/dashboard`, `/dashboard/settings`
-- AI Agents: `/ai-agents`, `/ai-agents/create`, `/ai-agents/{id}/edit`
-- Assets: `/assets/caller-ids`, `/assets/audios`
-- Campanhas: `/campaigns`, `/campaigns/create`, `/campaigns/{id}`
-- Billing: `/billing`, `POST /billing/verify`
-- Admin: `/admin`, `/admin/users`, `/admin/countries`, `/admin/rental-plans`
-- API JSON/TwiML:
-  - `/api/stats`
-  - `/api/campaigns/{id}/progress`
-  - `/api/campaigns/{id}/numbers`
-  - `/api/data/countries`
-  - `/api/data/caller-ids`
-  - `/api/data/audios`
-  - `/api/twiml/{campaign_id}` (Twilio/SignalWire)
-  - `/api/telnyx/texml/{campaign_id}`
-  - `/api/ai-realtime/twiml/{campaign_number_id}` (Twilio + IA realtime)
-  - `/api/ai-realtime/ws/{campaign_number_id}/{token}`
-  - `/api/ai-realtime/session/{campaign_number_id}/health`
-  - `/api/ai-runtime/twiml/{campaign_number_id}` (compatibilidade legada)
-  - `/api/ai-runtime/audio/{campaign_number_id}/{audio_token}`
-  - `/api/voximplant/callback`
-
-## Campanhas com Agente IA
-
-Fluxo da v1:
-
-1. O usuario cadastra Twilio, OpenAI e ElevenLabs em `/dashboard/settings`.
-2. O usuario cria um agente reutilizavel em `/ai-agents` com:
-   - nome
-   - prompt do sistema
-   - `voice_id` do ElevenLabs
-   - modelo OpenAI Realtime (ex.: `gpt-realtime`)
-   - regra de handoff
-3. Em `/campaigns/create`, escolhe `Campaign Mode = AI agent`.
-4. A campanha usa Twilio para originar a chamada.
-5. Twilio busca `/api/ai-realtime/twiml/{campaign_number_id}` na sua `BASE_URL` publica.
-6. O backend abre um Media Stream, usa Redis para sessao/eventos, envia audio do lead ao OpenAI Realtime e sintetiza a resposta com ElevenLabs.
-7. Quando o modelo decide transferir, o worker recebe `tool.transfer_call` e atualiza a chamada ativa para o `transfer_number` do usuario.
-
-Observacoes:
-
-- O idioma padrao da v1 e ingles.
-- O modo IA nao usa `audio_id`.
-- O modo IA nao usa o fluxo `Press 1`.
-- O modo IA aceita apenas `voice_provider=twilio`.
-- Redis e obrigatorio para campanhas IA.
-- `BASE_URL` precisa estar acessivel publicamente para os callbacks `/api/ai-realtime/*`.
-- Campanhas IA falham cedo se `BASE_URL` apontar para `localhost`, `.local` ou IP privado.
-- O dashboard e `/health` agora mostram estado do worker, Redis e prontidao do schema de IA.
-
-## Recuperacao rapida no servidor
-
-Se campanhas IA com Twilio estiverem falhando logo no inicio:
-
-```bash
-sudo journalctl -u coldcalls -n 100 --no-pager
-sudo journalctl -u coldcalls-worker -n 100 --no-pager
-curl -s http://127.0.0.1:8000/health
-```
-
-Verifique tambem:
-
-- `/var/www/ColdCalls-Rental/.env` existe
-- `BASE_URL` e publica e alcancavel pelo provider
-- app e worker subiram ao menos uma vez apos o deploy para aplicar `init_db()`
-- o schema contem `campaign_mode`, `ai_agent_id` e as colunas `campaign_numbers.ai_*`
-
-## Voximplant
-
-Para usar a Voximplant por usuario:
-
-1. Gere uma service account na Voximplant.
-2. Copie `account_id`, `service_account_email`, `key_id` e `private_key`.
-3. Configure esses dados em `/dashboard/settings#voximplant`.
-4. O sistema vai tentar provisionar automaticamente:
-   - application
-   - scenario
-   - rule
-5. Verifique cada Caller ID em `/assets/caller-ids` antes de criar campanhas Voximplant.
-
-Observacoes da Voximplant:
-
-- `BASE_URL` precisa ser acessivel publicamente para o callback `/api/voximplant/callback`.
-- O fluxo implementado usa scenario JavaScript na Voximplant para:
-  - originar a chamada PSTN
-  - tocar audio do R2
-  - opcionalmente pedir `Press 1`
-  - transferir para o numero configurado pelo usuario
-
-## Scripts de manutencao legado
-
-Associar assets orfaos a um usuario:
-
-```bash
-python3 scripts/assign_orphan_assets.py --email user@example.com --dry-run
-python3 scripts/assign_orphan_assets.py --email user@example.com
-```
-
-Migrar campanhas legadas para assets corretos:
-
-```bash
-python3 scripts/migrate_campaign_assets_to_owners.py --dry-run
-python3 scripts/migrate_campaign_assets_to_owners.py
-```
-
-Limpar schema legado:
-
-```bash
-python3 scripts/cleanup_legacy_schema.py
-python3 scripts/cleanup_legacy_schema.py --apply
-```
-
-## Observacoes
-
-- O banco e criado automaticamente no startup (`init_db()`), sem Alembic.
-- O endpoint `/health` retorna status da aplicacao, do worker e do schema de IA.
-- Rotas admin antigas de Caller IDs e Audios estao descontinuadas; a gestao e por usuario em `/assets`.
+Testes locais e smoke HTTP não comprovam chamadas telefônicas reais, aceitação dos providers, DTMF, mídia telefônica ou qualidade da voz realtime.

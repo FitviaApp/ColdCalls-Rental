@@ -45,7 +45,7 @@
                     </td>
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                         <a href="{{ audio.r2_url }}" target="_blank" class="text-indigo-600 hover:text-indigo-900">
-                            {{ audio.r2_key[:30] }}...
+                            {{ audio.r2_key|truncate(30, true, '') }}...
                         </a>
                     </td>
                     <td class="px-6 py-4 whitespace-nowrap">

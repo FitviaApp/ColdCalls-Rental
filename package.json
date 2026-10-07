@@ -1,17 +1,38 @@
 {
   "name": "coldcalls-rental",
   "private": true,
+  "type": "module",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "typecheck": "tsc --noEmit"
+    "precompile": "node scripts/precompile_templates.mjs",
+    "types:generate": "wrangler types worker-configuration.d.ts",
+    "types:check": "wrangler types worker-configuration.d.ts --check",
+    "typecheck": "npm run precompile && tsc --noEmit",
+    "test": "npm run precompile && vitest run",
+    "check": "npm run types:check && npm run typecheck && npm test && npm run build:check && git diff --check",
+    "build:check": "npm run precompile && wrangler deploy --dry-run --outdir .wrangler/dry-run",
+    "db:migrate:remote": "wrangler d1 migrations apply coldcalls --remote && npm run db:readback:remote",
+    "db:readback:remote": "node scripts/verify_d1.mjs --remote",
+    "deploy:production": "npm run db:migrate:remote && wrangler deploy --keep-vars"
   },
   "dependencies": {
-    "@cloudflare/containers": "^0.3.7"
+    "bcryptjs": "^3.0.3",
+    "hono": "^4.13.13",
+    "jose": "^6.2.12",
+    "nunjucks": "^3.2.4",
+    "twilio": "^6.1.2"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20260921.1",
+    "@cloudflare/vitest-plugin": "^1.3.6",
+    "@types/bcryptjs": "^2.4.6",
+    "@types/node": "^26.6.4",
+    "@types/nunjucks": "^3.2.6",
     "typescript": "^5.9.2",
-    "wrangler": "^4.138.0"
+    "vitest": "^4.1.0",
+    "wrangler": "^4.147.0"
+  },
+  "overrides": {
+    "sharp": "^0.35.5"
   }
 }

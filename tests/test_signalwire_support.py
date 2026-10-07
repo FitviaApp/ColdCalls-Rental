@@ -92,7 +92,6 @@ class SignalWireSupportTests(unittest.TestCase):
         bridge.campaign_number_id = 123
         bridge._opening_response_sent = False
         bridge._provider_stream_ready = threading.Event()
-        bridge._last_stream_ready_check_at = 0.0
         bridge.sessions = SimpleNamespace(get_session=lambda campaign_number_id: {"status": "created", "stream_sid": ""})
 
         captured = {"count": 0}

@@ -74,7 +74,6 @@ class AIRealtimeBridgeWorker:
         self._awaiting_audio = False
         self._last_response_request_at = 0.0
         self._last_audio_out_at = 0.0
-        self._last_stream_ready_check_at = 0.0
         self._response_retry_count = 0
         self._output_audio_codec = "g711_ulaw"
         self._output_pcm_rate_hz = 24000
@@ -454,10 +453,6 @@ class AIRealtimeBridgeWorker:
     def _has_provider_stream_started(self) -> bool:
         if self._provider_stream_ready.is_set():
             return True
-        now = time.monotonic()
-        if now - self._last_stream_ready_check_at < 0.25:
-            return False
-        self._last_stream_ready_check_at = now
         session = self.sessions.get_session(self.campaign_number_id) or {}
         if str(session.get("stream_sid") or "").strip():
             self._provider_stream_ready.set()

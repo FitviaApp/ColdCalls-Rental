@@ -71,7 +71,7 @@
                 {% for payment in payments %}
                 <li class="px-4 py-3 sm:px-6 text-sm">
                     <div class="flex items-center justify-between">
-                        <span class="font-mono text-gray-600">{{ payment.tx_hash[:16] }}...</span>
+                        <span class="font-mono text-gray-600">{{ payment.tx_hash|truncate(16, true, '') }}...</span>
                         <span class="text-gray-500">{{ payment.created_at.strftime('%Y-%m-%d %H:%M') }}</span>
                     </div>
                     <div class="mt-1 flex items-center justify-between">

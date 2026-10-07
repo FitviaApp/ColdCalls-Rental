@@ -17,7 +17,7 @@
 
     {% if twilio_saved %}
     <div class="mb-6 bg-green-50 border border-green-200 text-green-700 px-4 py-3 rounded">
-        Twilio credentials saved successfully.
+        Twilio credentials verified, saved, and read back successfully.
     </div>
     {% endif %}
     {% if signalwire_saved %}
@@ -386,8 +386,16 @@
         <div class="px-4 py-5 sm:px-6">
             <h3 class="text-lg font-medium text-gray-900">Twilio Credentials</h3>
             <p class="mt-1 text-sm text-gray-500">
-                Configure your own Twilio Account SID and Auth Token. These are encrypted before storing.
+                Configure your own Twilio Account SID and Auth Token. They are validated with Twilio, encrypted, saved, and read back before this account is marked configured.
             </p>
+            {% if twilio_configured %}
+            <p class="mt-2 text-xs font-medium text-green-700">Verified{% if twilio_verified_at %} at {{ twilio_verified_at }}{% endif %}</p>
+            {% elif twilio_verification_status != 'not_configured' %}
+            <p class="mt-2 text-xs font-medium text-yellow-700">Status: {{ twilio_verification_status }}</p>
+            {% endif %}
+            {% if twilio_verification_error %}
+            <p class="mt-2 text-xs font-medium text-red-700">Last validation attempt failed: {{ twilio_verification_error }}</p>
+            {% endif %}
         </div>
         <div class="border-t border-gray-200 px-4 py-5 sm:px-6">
             <form action="/dashboard/settings/twilio" method="POST" class="space-y-4">

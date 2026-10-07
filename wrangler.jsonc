@@ -1,33 +1,58 @@
 {
+  "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "coldcalls",
   "main": "src/index.ts",
-  "compatibility_date": "2026-09-01",
-  "containers": [
+  "workers_dev": true,
+  "preview_urls": false,
+  "compatibility_date": "2026-10-06",
+  "compatibility_flags": ["nodejs_compat"],
+  "build": {
+    "command": "node scripts/precompile_templates.mjs"
+  },
+  "d1_databases": [
     {
-      "class_name": "ColdCallsContainer",
-      "image": "./Dockerfile",
-      "instance_type": "standard-2",
-      "max_instances": 1
+      "binding": "DB",
+      "database_name": "coldcalls",
+      "database_id": "d310a531-6ec7-47f7-a7e4-2d0b9f30826d",
+      "migrations_dir": "migrations"
     }
   ],
+  "r2_buckets": [
+    {
+      "binding": "AUDIO_R2",
+      "bucket_name": "coldcalls-audios"
+    }
+  ],
+  "assets": {
+    "directory": "./app/static",
+    "binding": "ASSETS"
+  },
   "durable_objects": {
     "bindings": [
-      {
-        "name": "COLDCALLS",
-        "class_name": "ColdCallsContainer"
-      }
+      { "name": "CAMPAIGN_COORDINATORS", "class_name": "CampaignCoordinator" },
+      { "name": "REALTIME_CALLS", "class_name": "RealtimeCallSession" }
     ]
   },
-  "migrations": [
-    {
-      "tag": "v1",
-      "new_sqlite_classes": ["ColdCallsContainer"]
-    }
-  ],
+  "exports": {
+    "CampaignCoordinator": { "type": "durable-object", "storage": "sqlite" },
+    "RealtimeCallSession": { "type": "durable-object", "storage": "sqlite" }
+  },
   "vars": {
-    "BASE_URL": ""
+    "BASE_URL": "https://coldcalls.mralnilam.workers.dev",
+    "APP_NAME": "ColdCalls Platform",
+    "MAX_USERS": "4",
+    "OPENAI_API_BASE": "https://api.openai.com/v1",
+    "OPENAI_REALTIME_URL": "wss://api.openai.com/v1/realtime",
+    "OPENAI_REALTIME_MODEL": "gpt-realtime-2.1",
+    "REALTIME_SESSION_MAX_SECONDS": "7200",
+    "ELEVENLABS_API_BASE": "https://api.elevenlabs.io/v1",
+    "ELEVENLABS_TTS_MODEL_ID": "eleven_flash_v2_5",
+    "ELEVENLABS_OUTPUT_FORMAT": "ulaw_8000",
+    "USDT_WALLET_ADDRESS": "",
+    "USDT_CONTRACT": "0xdAC17F958D2ee523a2206206994597C13D831ec7"
   },
   "observability": {
-    "enabled": true
+    "enabled": true,
+    "head_sampling_rate": 1
   }
 }
