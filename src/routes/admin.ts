@@ -1,15 +1,21 @@
 import { Hono } from 'hono';
 import type { Context } from 'hono';
+import { createMiddleware } from 'hono/factory';
 import { hashPassword } from '../auth';
 import { render } from '../render';
-import { requireAdmin } from '../middleware';
+import { requireStaff, isStaff } from '../middleware';
 import type { AppEnv, UserRow } from '../middleware';
 import { addPaidDays, getActiveRental } from '../services/rental';
 import type { RentalPlanRow } from '../services/rental';
 
 export const adminRoutes = new Hono<AppEnv>();
 
-adminRoutes.use('*', requireAdmin);
+adminRoutes.use('*', requireStaff);
+
+const adminOnly = createMiddleware<AppEnv>(async (c, next) => {
+  if (!c.get('user').is_admin) return c.json({ detail: 'Admin access required' }, 403);
+  await next();
+});
 
 type RenderCtx = Parameters<typeof render>[1];
 
@@ -63,7 +69,7 @@ adminRoutes.get('/', async (c) => {
   const db = c.env.DB;
   const [totalUsers, totalCampaigns, totalCountries, pendingRentals, activePlans, orphanCallerIds, orphanAudios] =
     await Promise.all([
-      count(db, 'SELECT COUNT(*) AS c FROM users WHERE is_admin = 0'),
+      count(db, 'SELECT COUNT(*) AS c FROM users WHERE is_admin = 0 AND is_manager = 0'),
       count(db, 'SELECT COUNT(*) AS c FROM campaigns'),
       count(db, 'SELECT COUNT(*) AS c FROM countries WHERE is_active = 1'),
       count(db, "SELECT COUNT(*) AS c FROM rental_payments WHERE status = 'pending'"),
@@ -131,7 +137,7 @@ adminRoutes.get('/countries/create', (c) =>
   ),
 );
 
-adminRoutes.post('/countries/create', async (c) => {
+adminRoutes.post('/countries/create', adminOnly, async (c) => {
   const body = await c.req.parseBody();
   const code = body.code;
   const name = body.name;
@@ -162,7 +168,7 @@ adminRoutes.get('/countries/:id/edit', async (c) => {
   );
 });
 
-adminRoutes.post('/countries/:id/edit', async (c) => {
+adminRoutes.post('/countries/:id/edit', adminOnly, async (c) => {
   const id = pathId(c);
   if (typeof id !== 'number') return id;
   const country = await c.env.DB.prepare('SELECT * FROM countries WHERE id = ?').bind(id).first<CountryRow>();
@@ -185,7 +191,14 @@ adminRoutes.post('/countries/:id/edit', async (c) => {
 
 adminRoutes.get('/users', async (c) => {
   const db = c.env.DB;
-  const result = await db.prepare('SELECT * FROM users ORDER BY created_at DESC').all<UserRow>();
+  const isAdmin = Boolean(c.get('user').is_admin);
+  const result = await db
+    .prepare(
+      isAdmin
+        ? 'SELECT * FROM users ORDER BY created_at DESC'
+        : 'SELECT * FROM users WHERE is_admin = 0 AND is_manager = 0 ORDER BY created_at DESC',
+    )
+    .all<UserRow>();
   const rental_status: Record<number, { expires_at: ReturnType<typeof pyDate> } | null> = {};
   for (const u of result.results) {
     const rental = await getActiveRental(db, u.id);
@@ -211,18 +224,22 @@ adminRoutes.post('/users/create', async (c) => {
   const password = String(body.password ?? '');
   const passwordConfirm = String(body.password_confirm ?? '');
   const maxUsers = Number(c.env.MAX_USERS ?? 4);
+  const operator = c.get('user');
+  const isManager = operator.is_admin === 1 && String(body.role ?? '') === 'manager';
   const err = (msg: string) => c.redirect(noticeUrl('/admin/users', 'error', msg), 302);
 
-  const userCount = await count(c.env.DB, 'SELECT COUNT(*) AS c FROM users WHERE is_admin = 0');
-  if (userCount >= maxUsers) return err('Maximum users reached');
+  const userCount = await count(c.env.DB, 'SELECT COUNT(*) AS c FROM users WHERE is_admin = 0 AND is_manager = 0');
+  if (!isManager && userCount >= maxUsers) return err('Maximum users reached');
   if (password !== passwordConfirm) return err('Passwords do not match');
   if (password.length < 6) return err('Password must be at least 6 characters');
 
   const existing = await c.env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(email).first();
   if (existing) return err('Email already registered');
 
-  await c.env.DB.prepare('INSERT INTO users (email, password_hash, is_admin, is_active) VALUES (?, ?, 0, 1)')
-    .bind(email, hashPassword(password))
+  await c.env.DB.prepare(
+    'INSERT INTO users (email, password_hash, is_admin, is_manager, is_active, created_by) VALUES (?, ?, 0, ?, 1, ?)',
+  )
+    .bind(email, hashPassword(password), isManager ? 1 : 0, operator.id)
     .run();
   return c.redirect('/admin/users?created=true', 302);
 });
@@ -234,13 +251,16 @@ adminRoutes.post('/users/:id/toggle', async (c) => {
   const user = await c.env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(id).first<UserRow>();
   if (!user) return c.json({ detail: 'User not found' }, 404);
   if (user.id === admin.id) return c.json({ detail: 'Cannot disable yourself' }, 400);
+  if (!admin.is_admin && isStaff(user)) {
+    return c.redirect(noticeUrl('/admin/users', 'error', 'Managers can only toggle regular users'), 302);
+  }
   await c.env.DB.prepare('UPDATE users SET is_active = ?, updated_at = ? WHERE id = ?')
     .bind(user.is_active ? 0 : 1, new Date().toISOString(), user.id)
     .run();
   return c.redirect('/admin/users', 302);
 });
 
-adminRoutes.post('/users/:id/assign-orphan-assets', async (c) => {
+adminRoutes.post('/users/:id/assign-orphan-assets', adminOnly, async (c) => {
   const id = pathId(c);
   if (typeof id !== 'number') return id;
   const user = await c.env.DB.prepare('SELECT * FROM users WHERE id = ? AND is_admin = 0')
@@ -265,11 +285,18 @@ adminRoutes.post('/users/:id/add-paid-days', async (c) => {
   if (paidDays <= 0) return err('Paid days must be greater than zero');
 
   const db = c.env.DB;
-  const user = await db.prepare('SELECT * FROM users WHERE id = ? AND is_admin = 0').bind(id).first<UserRow>();
-  if (!user) return c.json({ detail: 'User not found' }, 404);
+  const user = await db.prepare('SELECT * FROM users WHERE id = ?').bind(id).first<UserRow>();
+  if (!user || user.is_admin) return c.json({ detail: 'User not found' }, 404);
+  if (user.is_manager) {
+    return c.redirect(noticeUrl('/admin/users', 'error', 'Cannot add paid days to a manager account'), 302);
+  }
 
   try {
     await addPaidDays(db, user.id, paidDays);
+    await db
+      .prepare('INSERT INTO paid_day_grants (user_id, granted_by, days) VALUES (?, ?, ?)')
+      .bind(user.id, c.get('user').id, paidDays)
+      .run();
   } catch (e) {
     if (!(e instanceof Error) || !e.message.includes('rental plan')) throw e;
     return err('No rental plans available. Create a rental plan first.');
@@ -297,7 +324,7 @@ adminRoutes.get('/rental-plans', async (c) => {
   );
 });
 
-adminRoutes.post('/rental-plans/create', async (c) => {
+adminRoutes.post('/rental-plans/create', adminOnly, async (c) => {
   const body = await c.req.parseBody();
   const code = String(body.code ?? '').trim().toLowerCase();
   const durationDays = Number(body.duration_days);
@@ -319,7 +346,7 @@ adminRoutes.post('/rental-plans/create', async (c) => {
   return c.redirect('/admin/rental-plans', 302);
 });
 
-adminRoutes.post('/rental-plans/:id/edit', async (c) => {
+adminRoutes.post('/rental-plans/:id/edit', adminOnly, async (c) => {
   const id = pathId(c);
   if (typeof id !== 'number') return id;
   const body = await c.req.parseBody();
@@ -350,7 +377,7 @@ adminRoutes.post('/rental-plans/:id/edit', async (c) => {
   return c.redirect('/admin/rental-plans', 302);
 });
 
-adminRoutes.post('/users/:id/delete', async (c) => {
+adminRoutes.post('/users/:id/delete', adminOnly, async (c) => {
   const id = pathId(c);
   if (typeof id !== 'number') return id;
   const admin = c.get('user');
@@ -377,8 +404,100 @@ adminRoutes.post('/users/:id/delete', async (c) => {
     'DELETE FROM user_voximplant_credentials WHERE user_id = ?',
     'DELETE FROM user_openai_credentials WHERE user_id = ?',
     'DELETE FROM user_elevenlabs_credentials WHERE user_id = ?',
+    'DELETE FROM paid_day_grants WHERE user_id = ?',
     'DELETE FROM users WHERE id = ?',
   ];
-  await db.batch(cascade.map((sql) => db.prepare(sql).bind(user.id)));
+  await db.batch([
+    db.prepare('UPDATE paid_day_grants SET granted_by = ? WHERE granted_by = ?').bind(admin.id, user.id),
+    ...cascade.map((sql) => db.prepare(sql).bind(user.id)),
+  ]);
   return c.redirect('/admin/users?deleted=true', 302);
+});
+
+interface GrantRow {
+  id: number;
+  user_id: number;
+  granted_by: number;
+  days: number;
+  created_at: string;
+  user_email: string;
+}
+
+interface CreatedUserRow {
+  id: number;
+  email: string;
+  is_active: number;
+  created_at: string;
+  created_by: number;
+}
+
+interface ActiveCampaignRow {
+  id: number;
+  name: string;
+  status: string;
+  total_numbers: number;
+  processed_numbers: number;
+  successful_calls: number;
+  total_cost: number;
+  started_at: string | null;
+  email: string;
+}
+
+adminRoutes.get('/managers', adminOnly, async (c) => {
+  const db = c.env.DB;
+  const [managers, created, grants, campaigns] = await Promise.all([
+    db
+      .prepare('SELECT * FROM users WHERE is_manager = 1 AND is_admin = 0 ORDER BY created_at DESC')
+      .all<UserRow>(),
+    db
+      .prepare(
+        `SELECT id, email, is_active, created_at, created_by FROM users
+         WHERE created_by IN (SELECT id FROM users WHERE is_manager = 1)
+         ORDER BY created_at DESC`,
+      )
+      .all<CreatedUserRow>(),
+    db
+      .prepare(
+        `SELECT g.id, g.user_id, g.granted_by, g.days, g.created_at, u.email AS user_email
+         FROM paid_day_grants g JOIN users u ON u.id = g.user_id
+         ORDER BY g.created_at DESC LIMIT 200`,
+      )
+      .all<GrantRow>(),
+    db
+      .prepare(
+        `SELECT c.id, c.name, c.status, c.total_numbers, c.processed_numbers, c.successful_calls,
+                c.total_cost, c.started_at, u.email
+         FROM campaigns c JOIN users u ON u.id = c.user_id
+         WHERE c.status IN ('running', 'paused')
+         ORDER BY (c.started_at IS NULL) ASC, c.started_at DESC`,
+      )
+      .all<ActiveCampaignRow>(),
+  ]);
+
+  const rows = managers.results.map((m) => ({
+    id: m.id,
+    email: m.email,
+    is_active: m.is_active,
+    created_at: pyDate(m.created_at),
+    users: created.results
+      .filter((u) => u.created_by === m.id)
+      .map((u) => ({ ...u, created_at: pyDate(u.created_at) })),
+    grants: grants.results
+      .filter((g) => g.granted_by === m.id)
+      .map((g) => ({ ...g, created_at: pyDate(g.created_at) })),
+  }));
+
+  return c.html(
+    render('admin/managers.html', page(c.req.path, {
+      user: c.get('user'),
+      managers: rows.length > 0 ? rows : null,
+      campaigns: campaigns.results.length > 0
+        ? campaigns.results.map((r) => ({
+            ...r,
+            started_at: r.started_at ? pyDate(r.started_at) : null,
+          }))
+        : null,
+      error: c.req.query('error') ?? null,
+    })),
+  );
 });

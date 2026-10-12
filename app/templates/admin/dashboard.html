@@ -126,5 +126,13 @@
             </div>
         </a>
     </div>
+
+    {% if user.is_admin %}
+    <div class="mt-6">
+        <a href="/admin/managers" class="inline-flex items-center text-sm font-medium text-indigo-600 hover:text-indigo-500">
+            Team Audit &mdash; manager activity and running campaigns &rarr;
+        </a>
+    </div>
+    {% endif %}
 </div>
 {% endblock %}
