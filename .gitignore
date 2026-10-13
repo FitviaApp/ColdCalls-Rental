@@ -14,3 +14,4 @@ __pycache__/
 .pytest_cache/
 *.tsbuildinfo
 src/templates_compiled.ts
+.cloudflare/

@@ -1,7 +1,7 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "coldcalls-rental",
-  "account_id": "64736035eaf6689354e04fb06d3116ec",
+  "name": "coldcalls",
+  "account_id": "e71a3d7e041cbcea151c2ad73db6ca73",
   "main": "src/index.ts",
   "workers_dev": true,
   "preview_urls": false,
@@ -14,7 +14,7 @@
     {
       "binding": "DB",
       "database_name": "coldcalls",
-      "database_id": "2a16694b-85a0-41c4-851b-028d3ca464d5",
+      "database_id": "d310a531-6ec7-47f7-a7e4-2d0b9f30826d",
       "migrations_dir": "migrations"
     }
   ],
@@ -39,7 +39,7 @@
     "RealtimeCallSession": { "type": "durable-object", "storage": "sqlite" }
   },
   "vars": {
-    "BASE_URL": "https://coldcalls-rental.alvesathena011.workers.dev",
+    "BASE_URL": "https://coldcalls.mralnilam.workers.dev",
     "APP_NAME": "ColdCalls Platform",
     "MAX_USERS": "4",
     "OPENAI_API_BASE": "https://api.openai.com/v1",

@@ -2,7 +2,7 @@ import { bindings, defineConfig, exports } from "cf/config";
 
 export default defineConfig({
 	worker: {
-		name: "coldcalls-rental",
+		name: "coldcalls",
 		compatibilityDate: "2026-10-06",
 		compatibilityFlags: [
 			"nodejs_compat",
@@ -15,7 +15,7 @@ export default defineConfig({
 			headSamplingRate: 1,
 		},
 		env: {
-			BASE_URL: bindings.text("https://coldcalls-rental.alvesathena011.workers.dev"),
+			BASE_URL: bindings.text("https://coldcalls.mralnilam.workers.dev"),
 			APP_NAME: bindings.text("ColdCalls Platform"),
 			MAX_USERS: bindings.text("4"),
 			OPENAI_API_BASE: bindings.text("https://api.openai.com/v1"),
@@ -34,11 +34,11 @@ export default defineConfig({
 				name: "coldcalls-audios",
 			}),
 			CAMPAIGN_COORDINATORS: bindings.durableObject({
-				worker: "coldcalls-rental",
+				worker: "coldcalls",
 				exportName: "CampaignCoordinator",
 			}),
 			REALTIME_CALLS: bindings.durableObject({
-				worker: "coldcalls-rental",
+				worker: "coldcalls",
 				exportName: "RealtimeCallSession",
 			}),
 			ASSETS: bindings.assets(),
