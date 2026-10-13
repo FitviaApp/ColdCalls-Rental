@@ -3,6 +3,7 @@ import { providerAudioUrl } from './media_token';
 import { createTwilioAttemptToken, verifyTwilioAttemptToken, type TwilioCallbackPurpose } from './provider_callback_token';
 import { getUserTwilioCredentials } from './user_twilio_service';
 import { validateTwilioWebhook, type ParsedTwilioWebhook } from './twilio_webhook';
+import { callStatusFromProvider } from './call_status';
 
 export interface TwilioBasicCallRow {
   id: number;
@@ -198,7 +199,7 @@ export async function handleTwilioParentStatus(env: Env, request: Request, numbe
   const transferConnected = Boolean(fresh.transfer_connected_at) || TRANSFER_CONNECTED.has(fresh.transfer_status ?? '');
   const transferFailed = TRANSFER_FAILED.has(fresh.transfer_status ?? '');
   const preserveFailure = ['machine', 'fax', 'amd_unknown', 'no_input', 'invalid_digit'].includes(fresh.outcome_reason ?? '');
-  const resolvedStatus = transferConnected ? 'completed' : (transferFailed || preserveFailure) ? 'failed' : 'calling';
+  const resolvedStatus = transferConnected ? 'completed' : transferFailed ? callStatusFromProvider(fresh.transfer_status!) : preserveFailure ? 'failed' : 'calling';
   const outcome = terminal && resolvedStatus === 'calling' ? 'awaiting_transfer_status' : fresh.outcome_reason;
   await env.DB.prepare(
     `UPDATE campaign_numbers SET provider_status=?,provider_sequence=?,duration_seconds=?,
@@ -245,7 +246,7 @@ export async function handleTwilioTransferStatus(env: Env, request: Request, num
   await env.DB.prepare(
     `UPDATE campaign_numbers SET transfer_call_sid=COALESCE(transfer_call_sid,?),transfer_status=?,transfer_sequence=?,
      transfer_duration_seconds=?,transfer_connected_at=CASE WHEN ? THEN COALESCE(transfer_connected_at,?) ELSE transfer_connected_at END,
-     status=CASE WHEN ? THEN 'completed' WHEN ? THEN 'failed' ELSE status END,
+     status=CASE WHEN ? THEN 'completed' WHEN ? THEN ? ELSE status END,
      outcome_reason=CASE WHEN ? THEN 'transfer_connected' WHEN ? THEN 'transfer_failed' ELSE outcome_reason END,
      error_message=CASE WHEN ? THEN 'Twilio transfer did not connect' WHEN ? THEN NULL ELSE error_message END,
      dispatch_state=CASE WHEN ? OR ? THEN 'finished' ELSE dispatch_state END,
@@ -254,7 +255,7 @@ export async function handleTwilioTransferStatus(env: Env, request: Request, num
      cost_next_retry_at=CASE WHEN ? OR ? THEN COALESCE(cost_next_retry_at,?) ELSE cost_next_retry_at END,updated_at=?
      WHERE id=? AND dispatch_attempt_id=? AND transfer_sequence<? AND (transfer_call_sid IS NULL OR transfer_call_sid=?)`,
   ).bind(callSid, status, sequence, duration, connected ? 1 : 0, now,
-    connected ? 1 : 0, failed ? 1 : 0, connected ? 1 : 0, failed ? 1 : 0,
+    connected ? 1 : 0, failed ? 1 : 0, callStatusFromProvider(status), connected ? 1 : 0, failed ? 1 : 0,
     failed ? 1 : 0, connected ? 1 : 0, connected ? 1 : 0, failed ? 1 : 0,
     connected ? 1 : 0, failed ? 1 : 0, now, connected ? 1 : 0, failed ? 1 : 0,
     connected ? 1 : 0, failed ? 1 : 0, new Date(Date.now() + 60_000).toISOString(), now,

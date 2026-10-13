@@ -4,6 +4,7 @@ import { providerAudioUrl } from '../services/media_token';
 import { createVoiceProviderAdapter } from '../services/voice_provider_adapter';
 import { TwilioService } from '../services/twilio_service';
 import { getUserTwilioCredentials } from '../services/user_twilio_service';
+import { callStatusFromProvider } from '../services/call_status';
 
 interface CampaignDispatchRow {
   id: number;
@@ -51,7 +52,13 @@ function knownProviderRejection(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   // 429 = transient rate limit (Twilio error 112); keep the row dispatch_unknown for retry.
   if (/status=429\b/.test(message)) return false;
-  return /status=4\d\d\b/.test(message) || /credentials not configured|unsupported voice provider|BASE_URL must be a public http\(s\) URL/i.test(message);
+  return /status=4\d\d\b/.test(message) || /credentials not configured|unsupported voice provider|BASE_URL must be a public http\(s\) URL|rejected the call before dialing/i.test(message);
+}
+
+// IllyVoIP issues playback/transfer through call control after answer, so each live
+// call must be polled sub-minute; every other adapter finishes the flow provider-side.
+function statusPollDelayMs(provider: string): number {
+  return provider === 'illyvoip' ? 5_000 : 30_000;
 }
 
 export class CampaignCoordinator extends DurableObject<Env> {
@@ -152,7 +159,7 @@ export class CampaignCoordinator extends DurableObject<Env> {
         `UPDATE campaigns SET status = 'completed', completed_at = ?,
           processed_numbers = (SELECT COUNT(*) FROM campaign_numbers WHERE campaign_id = ?),
           successful_calls = (SELECT COUNT(*) FROM campaign_numbers WHERE campaign_id = ? AND status = 'completed'),
-          failed_calls = (SELECT COUNT(*) FROM campaign_numbers WHERE campaign_id = ? AND status IN ('failed','dispatch_unknown'))
+          failed_calls = (SELECT COUNT(*) FROM campaign_numbers WHERE campaign_id = ? AND status IN ('failed','dispatch_unknown','busy','no_answer'))
          WHERE id = ? AND status = 'running'`,
       ).bind(new Date().toISOString(), campaignId, campaignId, campaignId, campaignId).run();
       await this.schedulePendingCostReconciliation(campaignId);
@@ -232,7 +239,7 @@ export class CampaignCoordinator extends DurableObject<Env> {
         `UPDATE campaign_numbers SET status = 'calling', dispatch_state = 'dispatched',
          call_sid = COALESCE(call_sid,?), provider_status = COALESCE(provider_status,?), next_action_at = ?, updated_at = ?
          WHERE id = ? AND dispatch_attempt_id=? AND status IN ('claimed','calling') AND (call_sid IS NULL OR call_sid=?)`,
-      ).bind(result.callSid, result.status, new Date(Date.now() + 30_000).toISOString(), now,
+      ).bind(result.callSid, result.status, new Date(Date.now() + statusPollDelayMs(campaign.voice_provider)).toISOString(), now,
         next.id, dispatchAttemptId, result.callSid).run();
     } catch (error) {
       const status = knownProviderRejection(error) ? 'failed' : 'dispatch_unknown';
@@ -274,15 +281,16 @@ export class CampaignCoordinator extends DurableObject<Env> {
         if (!FINAL_PROVIDER_STATES.has(result.status)) {
           await this.env.DB.prepare(
             'UPDATE campaign_numbers SET provider_status = ?, next_action_at = ?, updated_at = ? WHERE id = ?',
-          ).bind(result.status, new Date(Date.now() + 30_000).toISOString(), new Date().toISOString(), row.id).run();
+          ).bind(result.status, new Date(Date.now() + statusPollDelayMs(campaign.voice_provider)).toISOString(), new Date().toISOString(), row.id).run();
           continue;
         }
         if (campaign.voice_provider === 'twilio' && campaign.campaign_mode === 'audio') {
           const connected = Boolean(row.transfer_connected_at) || ['answered', 'in-progress', 'completed'].includes(row.transfer_status ?? '');
-          const transferFailed = ['failed', 'busy', 'no-answer', 'canceled', 'cancelled'].includes(row.transfer_status ?? '');
+          const transferMapped = callStatusFromProvider(row.transfer_status ?? '');
+          const transferFailed = transferMapped !== 'completed' && transferMapped !== 'calling';
           const terminalAt = row.provider_terminal_at ?? new Date().toISOString();
           const missingExpired = Date.now() - new Date(terminalAt).valueOf() >= 120_000;
-          const finalStatus = connected ? 'completed' : transferFailed || missingExpired ? 'failed' : 'calling';
+          const finalStatus = connected ? 'completed' : transferFailed ? transferMapped : missingExpired ? 'failed' : 'calling';
           await this.env.DB.prepare(
             `UPDATE campaign_numbers SET status=?,dispatch_state=CASE WHEN ?='calling' THEN dispatch_state ELSE 'finished' END,
              provider_status=?,duration_seconds=?,answered_by=COALESCE(?,answered_by),
@@ -298,7 +306,7 @@ export class CampaignCoordinator extends DurableObject<Env> {
             new Date().toISOString(), row.id).run();
           continue;
         }
-        const status = SUCCESS_PROVIDER_STATES.has(result.status) ? 'completed' : 'failed';
+        const status = SUCCESS_PROVIDER_STATES.has(result.status) ? 'completed' : callStatusFromProvider(result.status);
         await this.env.DB.prepare(
           `UPDATE campaign_numbers SET status = ?, dispatch_state = 'finished', provider_status = ?,
            duration_seconds = ?, answered_by = ?, error_message = ?, processed_at = ?, updated_at = ?
@@ -316,7 +324,7 @@ export class CampaignCoordinator extends DurableObject<Env> {
       `SELECT id,call_sid,transfer_call_sid,cost_reconcile_attempts,
               COALESCE(provider_terminal_at,processed_at,updated_at) cost_base_at
          FROM campaign_numbers
-        WHERE campaign_id=? AND status IN ('completed','failed') AND call_sid IS NOT NULL
+         WHERE campaign_id=? AND status IN ('completed','failed','busy','no_answer','cancelled') AND call_sid IS NOT NULL
           AND cost_reconcile_status='pending' AND cost_next_retry_at<=? ORDER BY id LIMIT 10`,
     ).bind(campaign.id, new Date().toISOString()).all<{
       id: number; call_sid: string; transfer_call_sid: string | null; cost_reconcile_attempts: number; cost_base_at: string;

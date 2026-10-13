@@ -99,6 +99,36 @@ describe('provider callback authentication', () => {
     expect(row).toMatchObject({ status: 'completed', outcome_reason: null });
   });
 
+  it('reports Twilio busy and no-answer callbacks with their real status', async () => {
+    const authToken = 'twilio-test-token';
+    await env.DB.batch([
+      env.DB.prepare("INSERT INTO users(id,email,password_hash,is_admin,is_active,transfer_number) VALUES(2,'ai2@example.com','x',0,1,'+15550000003')"),
+      env.DB.prepare("INSERT INTO caller_ids(id,user_id,phone_number,country_code,description,is_active) VALUES(2,2,'+15550000001','US','test',1)"),
+      env.DB.prepare("INSERT INTO countries(id,code,name,price_per_minute,is_active) VALUES(2,'US','United States',0.01,1)"),
+      env.DB.prepare('INSERT INTO user_twilio_credentials(user_id,account_sid_encrypted,auth_token_encrypted) VALUES(2,?,?)')
+        .bind(encryptFernet(env.ENCRYPTION_KEY, 'AC00000000000000000000000000000000'), encryptFernet(env.ENCRYPTION_KEY, authToken)),
+      env.DB.prepare("INSERT INTO campaigns(id,user_id,name,caller_id_id,country_id,status,voice_provider,campaign_mode,total_numbers) VALUES(2,2,'ai-busy',2,2,'running','twilio','ai_agent',2)"),
+      env.DB.prepare("INSERT INTO campaign_numbers(id,campaign_id,phone_number,status,call_sid,dispatch_state) VALUES(21,2,'+15550000002','calling','CA-BUSY','dispatched'),(22,2,'+15550000004','calling','CA-NA','dispatched')"),
+    ]);
+    for (const [numberId, sid, callStatus] of [[21, 'CA-BUSY', 'busy'], [22, 'CA-NA', 'no-answer']] as const) {
+      const url = `https://example.test/api/provider/callback/twilio/${numberId}`;
+      const body = new URLSearchParams({ CallSid: sid, CallStatus: callStatus, CallDuration: '0', SequenceNumber: '4' });
+      const signature = await twilioSignature(url, body, authToken);
+      const response = await exports.default.fetch(new Request(url, {
+        method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', 'X-Twilio-Signature': signature }, body: body.toString(),
+      }));
+      expect(response.status).toBe(200);
+    }
+    expect(await env.DB.prepare('SELECT id,status,provider_status,dispatch_state FROM campaign_numbers WHERE id IN (21,22) ORDER BY id').all()).toMatchObject({
+      results: [
+        { id: 21, status: 'busy', provider_status: 'busy', dispatch_state: 'finished' },
+        { id: 22, status: 'no_answer', provider_status: 'no-answer', dispatch_state: 'finished' },
+      ],
+    });
+    expect(await env.DB.prepare('SELECT processed_numbers,failed_calls FROM campaigns WHERE id=2').first())
+      .toMatchObject({ processed_numbers: 2, failed_calls: 2 });
+  });
+
   it('accepts a number-scoped SignalWire status token and returns empty LaML', async () => {
     await env.DB.batch([
       env.DB.prepare("INSERT INTO users(id,email,password_hash,is_admin,is_active,transfer_number) VALUES(1,'owner@example.com','x',0,1,'+15550000003')"),

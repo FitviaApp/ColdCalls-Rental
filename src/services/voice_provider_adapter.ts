@@ -1,7 +1,9 @@
 import type { Env } from '../middleware';
+import { IllyvoipService } from './illyvoip_service';
 import { SignalWireService } from './signalwire_service';
 import { TelnyxService } from './telnyx_service';
 import { TwilioService } from './twilio_service';
+import { getUserIllyvoipCredentials } from './user_illyvoip_service';
 import { getUserSignalwireCredentials } from './user_signalwire_service';
 import { getUserTelnyxCredentials } from './user_telnyx_service';
 import { getUserTwilioCredentials } from './user_twilio_service';
@@ -48,6 +50,9 @@ const intervals: Record<string, number> = {
   telnyx: 250,
   vonage: 1000,
   voximplant: 1000,
+  // Alarm cadence stays tight so pending numbers fill freed slots; live status polls
+  // are paced separately by the coordinator (statusPollDelayMs).
+  illyvoip: 1000,
 };
 
 export async function createVoiceProviderAdapter(
@@ -83,6 +88,9 @@ export async function createVoiceProviderAdapter(
     const credentials = await getUserVoximplantCredentials(env, env.DB, userId);
     if (!credentials) throw new Error('Voximplant credentials not configured');
     service = VoximplantService(env, env.DB, credentials);
+  } else if (provider === 'illyvoip') {
+    const apiKey = await getUserIllyvoipCredentials(env, env.DB, userId);
+    service = IllyvoipService(env, apiKey);
   } else {
     throw new Error(`Unsupported voice provider: ${provider}`);
   }

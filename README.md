@@ -54,7 +54,7 @@ Para a recriação remota, rotação de segredos, primeiro deploy em `workers.de
 
 `CampaignCoordinator` mantém um objeto por campanha, aplica concorrência e intervalo por provider e usa alarmes idempotentes. O claim acontece primeiro no D1. Falhas explicitamente rejeitadas terminam em `failed`; resultado externo ambíguo termina em `dispatch_unknown` e nunca é rediscado automaticamente.
 
-Twilio, SignalWire, Telnyx, Vonage e Voximplant implementam o contrato `VoiceProviderAdapter` para campanhas de áudio. Campanhas de IA permanecem restritas à Twilio.
+Twilio, SignalWire, Telnyx, Vonage, Voximplant e IllyVoIP implementam o contrato `VoiceProviderAdapter` para campanhas de áudio. Campanhas de IA permanecem restritas à Twilio.
 
 ## Realtime
 

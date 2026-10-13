@@ -1,4 +1,5 @@
 import type { Env } from '../middleware';
+import { hasUserIllyvoipCredentials } from './user_illyvoip_service';
 import { hasUserSignalwireCredentials } from './user_signalwire_service';
 import { hasUserTelnyxCredentials } from './user_telnyx_service';
 import { hasUserTwilioCredentials } from './user_twilio_service';
@@ -13,6 +14,7 @@ export const PROVIDER_LABELS: Record<string, string> = {
   telnyx: 'Telnyx',
   vonage: 'Vonage',
   voximplant: 'Voximplant',
+  illyvoip: 'IllyVoIP',
 };
 
 export interface VoiceProviderStatus {
@@ -23,7 +25,7 @@ export interface VoiceProviderStatus {
 }
 
 export function supportedVoiceProviders(): string[] {
-  return ['twilio', 'signalwire', 'telnyx', 'vonage', 'voximplant'];
+  return ['twilio', 'signalwire', 'telnyx', 'vonage', 'voximplant', 'illyvoip'];
 }
 
 function titleCase(value: string): string {
@@ -35,7 +37,7 @@ function titleCase(value: string): string {
 
 export function providerSupportsPress1(provider: string): boolean {
   const normalized = String(provider ?? '').trim().toLowerCase();
-  return ['twilio', 'signalwire', 'voximplant'].includes(normalized);
+  return ['twilio', 'signalwire', 'voximplant', 'illyvoip'].includes(normalized);
 }
 
 export async function hasUserVoiceProviderCredentials(
@@ -50,6 +52,7 @@ export async function hasUserVoiceProviderCredentials(
   if (normalized === 'telnyx') return hasUserTelnyxCredentials(env, db, userId);
   if (normalized === 'vonage') return hasUserVonageCredentials(env, db, userId);
   if (normalized === 'voximplant') return hasUserVoximplantCredentials(env, db, userId);
+  if (normalized === 'illyvoip') return hasUserIllyvoipCredentials(env, db, userId);
   return false;
 }
 

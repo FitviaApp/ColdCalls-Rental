@@ -5,6 +5,7 @@ import { SignalWireService } from '../src/services/signalwire_service';
 import { TelnyxService } from '../src/services/telnyx_service';
 import { VonageService } from '../src/services/vonage_service';
 import { VoximplantService } from '../src/services/voximplant_service';
+import { IllyvoipService } from '../src/services/illyvoip_service';
 import { isPublicCallbackUrl } from '../src/services/callback_url_service';
 
 const call = {
@@ -224,6 +225,84 @@ describe('voice provider contracts', () => {
     expect(customData.callback_token).toBeTruthy();
     expect(await service.getCallStatus('VOX11', 11)).toMatchObject({ status: 'completed', duration: 5 });
   });
+
+  it('creates and reads an IllyVoip call through call control', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        status: 'success', call_control_id: 'vapi_11', sip_user_id: '1051', to: call.toNumber, state: 'accepted',
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        status: 'success', call_control_id: 'vapi_11', state: 'completed', call_status: 'completed', terminal: true,
+        to: call.toNumber, from: call.fromNumber, created_at: '2026-10-13T12:00:00+00:00',
+        answered_at: '2026-10-13T12:00:05+00:00', ended_at: '2026-10-13T12:00:35+00:00', failure_reason: null,
+      }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const service = IllyvoipService(env, 'illy-key');
+    expect(await service.makeCall(call)).toEqual({ call_sid: 'vapi_11', status: 'queued' });
+    const options = fetchMock.mock.calls[0][1];
+    expect(String(fetchMock.mock.calls[0][0])).toBe('https://api.illyvoip.com/api/v1/voice/call-control/calls');
+    expect(new Headers(options?.headers).get('x-api-key')).toBe('illy-key');
+    expect(new Headers(options?.headers).get('idempotency-key')).toBe('attempt-11');
+    expect(JSON.parse(String(options?.body))).toMatchObject({
+      to: call.toNumber, from: call.fromNumber, timeout_seconds: 60,
+    });
+    expect(await service.getCallStatus('vapi_11')).toMatchObject({ status: 'completed', duration: 30 });
+  });
+
+  it('plays the prompt and transfers the IllyVoip call once the destination answers', async () => {
+    await seedIllyvoipCampaign(11, { callSid: 'vapi_11', press1: false, audio: true });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(illyvoipStatus('vapi_11', 'active')), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        status: 'success', call_control_id: 'vapi_11', media: 'vcm2.opaque',
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        status: 'success', call_control_id: 'vapi_11', transfer_id: 'xfer_11',
+        transfer: { state: 'connecting', message: 'Connecting transfer destination…', target_type: 'pstn', target_value: call.transferNumber, can_cancel: true },
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(illyvoipStatus('vapi_11', 'completed')), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const service = IllyvoipService(env, 'illy-key');
+    expect(await service.getCallStatus('vapi_11', 11)).toMatchObject({ status: 'calling' });
+    const playback = fetchMock.mock.calls[1];
+    expect(String(playback[0])).toBe('https://api.illyvoip.com/api/v1/voice/call-control/playback');
+    expect(JSON.parse(String(playback[1]?.body)).audio_url).toContain('/api/media/audio/1?token=');
+    const transfer = fetchMock.mock.calls[2];
+    expect(String(transfer[0])).toBe('https://api.illyvoip.com/api/v1/voice/call-control/transfer');
+    expect(JSON.parse(String(transfer[1]?.body))).toMatchObject({
+      call_control_id: 'vapi_11', target: { type: 'pstn', value: call.transferNumber },
+    });
+    expect(await env.DB.prepare('SELECT provider_sequence,transfer_status,transfer_call_sid FROM campaign_numbers WHERE id=11').first())
+      .toMatchObject({ provider_sequence: 2, transfer_status: 'connecting', transfer_call_sid: 'xfer_11' });
+
+    expect(await service.getCallStatus('vapi_11', 11)).toMatchObject({ status: 'completed', duration: 30 });
+    // The second live poll must not replay playback or transfer.
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
+  it('hangs up an IllyVoip press-1 call when the callee does not press 1', async () => {
+    await seedIllyvoipCampaign(12, { callSid: 'vapi_12', press1: true, audio: false });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(illyvoipStatus('vapi_12', 'active')), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        status: 'success', call_control_id: 'vapi_12', input: 'dtmf', digits: '', tts_charge: null,
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        status: 'success', call_control_id: 'vapi_12', message: 'Call terminated.', terminated_channels: 1,
+      }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const service = IllyvoipService(env, 'illy-key');
+    expect(await service.getCallStatus('vapi_12', 12)).toMatchObject({ status: 'calling' });
+    const gather = fetchMock.mock.calls[1];
+    expect(String(gather[0])).toBe('https://api.illyvoip.com/api/v1/voice/call-control/gather');
+    expect(JSON.parse(String(gather[1]?.body))).toMatchObject({ call_control_id: 'vapi_12', input: 'dtmf' });
+    const hangup = fetchMock.mock.calls[2];
+    expect(String(hangup[0])).toBe('https://api.illyvoip.com/api/v1/voice/call-control/hangup');
+    expect(await env.DB.prepare('SELECT provider_sequence,transfer_status FROM campaign_numbers WHERE id=12').first())
+      .toMatchObject({ provider_sequence: 2, transfer_status: 'not_pressed' });
+  });
 });
 
 async function rsaPrivateKey(): Promise<string> {
@@ -237,4 +316,39 @@ async function rsaPrivateKey(): Promise<string> {
   for (const byte of der) binary += String.fromCharCode(byte);
   const encoded = btoa(binary).replace(/(.{64})/g, '$1\n').trim();
   return `-----BEGIN PRIVATE KEY-----\n${encoded}\n-----END PRIVATE KEY-----`;
+}
+
+function illyvoipStatus(callControlId: string, callStatus: string): Record<string, unknown> {
+  const terminal = callStatus === 'completed';
+  return {
+    status: 'success',
+    call_control_id: callControlId,
+    state: callStatus,
+    call_status: callStatus,
+    terminal,
+    to: '+15550000002',
+    from: '+15550000001',
+    created_at: '2026-10-13T12:00:00+00:00',
+    answered_at: '2026-10-13T12:00:00+00:00',
+    ended_at: terminal ? '2026-10-13T12:00:30+00:00' : null,
+    failure_reason: null,
+  };
+}
+
+async function seedIllyvoipCampaign(
+  campaignNumberId: number,
+  options: { callSid: string; press1: boolean; audio: boolean },
+): Promise<void> {
+  await env.DB.batch([
+    env.DB.prepare("INSERT INTO users(id,email,password_hash,is_admin,is_active,transfer_number) VALUES(1,'owner@example.com','x',0,1,'+15550000003')"),
+    env.DB.prepare("INSERT INTO caller_ids(id,user_id,phone_number,country_code,description,is_active) VALUES(1,1,'+15550000001','US','test',1)"),
+    env.DB.prepare("INSERT INTO countries(id,code,name,price_per_minute,is_active) VALUES(1,'US','United States',0.01,1)"),
+    env.DB.prepare("INSERT INTO audios(id,user_id,name,r2_key,r2_url,is_active) VALUES(1,1,'prompt','audio-key','',1)"),
+    env.DB.prepare(
+      "INSERT INTO campaigns(id,user_id,name,caller_id_id,country_id,audio_id,status,voice_provider,press_1_to_talk_with_agent,total_numbers) VALUES(7,1,'illy',1,1,?,'running','illyvoip',?,1)",
+    ).bind(options.audio ? 1 : null, options.press1 ? 1 : 0),
+    env.DB.prepare(
+      "INSERT INTO campaign_numbers(id,campaign_id,phone_number,status,call_sid,dispatch_attempt_id) VALUES(?,7,'+15550000002','calling',?,'attempt-11')",
+    ).bind(campaignNumberId, options.callSid),
+  ]);
 }

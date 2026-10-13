@@ -2,14 +2,14 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { hashPassword } from '../auth';
 import { render } from '../render';
-import { requireAdmin } from '../middleware';
+import { requireStaff, isStaff } from '../middleware';
 import type { AppEnv, UserRow } from '../middleware';
 import { addPaidDays, getActiveRental } from '../services/rental';
 import type { RentalPlanRow } from '../services/rental';
 
 export const adminRoutes = new Hono<AppEnv>();
 
-adminRoutes.use('*', requireAdmin);
+adminRoutes.use('*', requireStaff);
 
 type RenderCtx = Parameters<typeof render>[1];
 
@@ -39,6 +39,17 @@ function truthy(v: unknown): boolean {
   return s === 'true' || s === '1' || s === 'yes';
 }
 
+// Customer accounts (staff excluded) are what MAX_USERS and the dashboard count.
+const CUSTOMER_COUNT = 'SELECT COUNT(*) AS c FROM users WHERE is_admin = 0 AND is_manager = 0';
+
+// Managers run operations on customers; staff accounts stay with admins.
+function guardStaffTarget(c: Context<AppEnv>, target: UserRow): Response | null {
+  if (!c.get('user').is_admin && isStaff(target)) {
+    return c.json({ detail: 'Admin access required for staff accounts' }, 403);
+  }
+  return null;
+}
+
 function pyDate(iso: string) {
   const d = new Date(iso);
   const p = (n: number) => String(n).padStart(2, '0');
@@ -63,7 +74,7 @@ adminRoutes.get('/', async (c) => {
   const db = c.env.DB;
   const [totalUsers, totalCampaigns, totalCountries, pendingRentals, activePlans, orphanCallerIds, orphanAudios] =
     await Promise.all([
-      count(db, 'SELECT COUNT(*) AS c FROM users WHERE is_admin = 0'),
+      count(db, CUSTOMER_COUNT),
       count(db, 'SELECT COUNT(*) AS c FROM campaigns'),
       count(db, 'SELECT COUNT(*) AS c FROM countries WHERE is_active = 1'),
       count(db, "SELECT COUNT(*) AS c FROM rental_payments WHERE status = 'pending'"),
@@ -213,7 +224,7 @@ adminRoutes.post('/users/create', async (c) => {
   const maxUsers = Number(c.env.MAX_USERS ?? 4);
   const err = (msg: string) => c.redirect(noticeUrl('/admin/users', 'error', msg), 302);
 
-  const userCount = await count(c.env.DB, 'SELECT COUNT(*) AS c FROM users WHERE is_admin = 0');
+  const userCount = await count(c.env.DB, CUSTOMER_COUNT);
   if (userCount >= maxUsers) return err('Maximum users reached');
   if (password !== passwordConfirm) return err('Passwords do not match');
   if (password.length < 6) return err('Password must be at least 6 characters');
@@ -221,8 +232,10 @@ adminRoutes.post('/users/create', async (c) => {
   const existing = await c.env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(email).first();
   if (existing) return err('Email already registered');
 
-  await c.env.DB.prepare('INSERT INTO users (email, password_hash, is_admin, is_active) VALUES (?, ?, 0, 1)')
-    .bind(email, hashPassword(password))
+  // Only admins can mint managers.
+  const asManager = c.get('user').is_admin && truthy(body.is_manager) ? 1 : 0;
+  await c.env.DB.prepare('INSERT INTO users (email, password_hash, is_admin, is_manager, is_active) VALUES (?, ?, 0, ?, 1)')
+    .bind(email, hashPassword(password), asManager)
     .run();
   return c.redirect('/admin/users?created=true', 302);
 });
@@ -230,12 +243,26 @@ adminRoutes.post('/users/create', async (c) => {
 adminRoutes.post('/users/:id/toggle', async (c) => {
   const id = pathId(c);
   if (typeof id !== 'number') return id;
-  const admin = c.get('user');
+  const actor = c.get('user');
   const user = await c.env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(id).first<UserRow>();
   if (!user) return c.json({ detail: 'User not found' }, 404);
-  if (user.id === admin.id) return c.json({ detail: 'Cannot disable yourself' }, 400);
+  const blocked = guardStaffTarget(c, user);
+  if (blocked) return blocked;
+  if (user.id === actor.id) return c.json({ detail: 'Cannot disable yourself' }, 400);
   await c.env.DB.prepare('UPDATE users SET is_active = ?, updated_at = ? WHERE id = ?')
     .bind(user.is_active ? 0 : 1, new Date().toISOString(), user.id)
+    .run();
+  return c.redirect('/admin/users', 302);
+});
+
+adminRoutes.post('/users/:id/toggle-manager', async (c) => {
+  const id = pathId(c);
+  if (typeof id !== 'number') return id;
+  if (!c.get('user').is_admin) return c.json({ detail: 'Admin access required' }, 403);
+  const user = await c.env.DB.prepare('SELECT * FROM users WHERE id = ? AND is_admin = 0').bind(id).first<UserRow>();
+  if (!user) return c.json({ detail: 'User not found' }, 404);
+  await c.env.DB.prepare('UPDATE users SET is_manager = ?, updated_at = ? WHERE id = ?')
+    .bind(user.is_manager ? 0 : 1, new Date().toISOString(), user.id)
     .run();
   return c.redirect('/admin/users', 302);
 });
@@ -247,6 +274,8 @@ adminRoutes.post('/users/:id/assign-orphan-assets', async (c) => {
     .bind(id)
     .first<UserRow>();
   if (!user) return c.json({ detail: 'User not found' }, 404);
+  const blocked = guardStaffTarget(c, user);
+  if (blocked) return blocked;
   await c.env.DB.batch([
     c.env.DB.prepare('UPDATE caller_ids SET user_id = ? WHERE user_id IS NULL AND phone_number NOT IN (SELECT phone_number FROM caller_ids WHERE user_id = ?)')
       .bind(user.id, user.id),
@@ -267,6 +296,8 @@ adminRoutes.post('/users/:id/add-paid-days', async (c) => {
   const db = c.env.DB;
   const user = await db.prepare('SELECT * FROM users WHERE id = ? AND is_admin = 0').bind(id).first<UserRow>();
   if (!user) return c.json({ detail: 'User not found' }, 404);
+  const blocked = guardStaffTarget(c, user);
+  if (blocked) return blocked;
 
   try {
     await addPaidDays(db, user.id, paidDays);
@@ -359,6 +390,8 @@ adminRoutes.post('/users/:id/delete', async (c) => {
   if (!user) return c.json({ detail: 'User not found' }, 404);
   if (user.id === admin.id) return c.redirect(noticeUrl('/admin/users', 'error', 'Cannot delete yourself'), 302);
   if (user.is_admin) return c.redirect(noticeUrl('/admin/users', 'error', 'Cannot delete admin users'), 302);
+  const blocked = guardStaffTarget(c, user);
+  if (blocked) return blocked;
 
   const cascade = [
     'DELETE FROM provider_events WHERE campaign_number_id IN (SELECT cn.id FROM campaign_numbers cn JOIN campaigns c ON c.id=cn.campaign_id WHERE c.user_id = ?)',
@@ -375,6 +408,7 @@ adminRoutes.post('/users/:id/delete', async (c) => {
     'DELETE FROM user_telnyx_credentials WHERE user_id = ?',
     'DELETE FROM user_vonage_credentials WHERE user_id = ?',
     'DELETE FROM user_voximplant_credentials WHERE user_id = ?',
+    'DELETE FROM user_illyvoip_credentials WHERE user_id = ?',
     'DELETE FROM user_openai_credentials WHERE user_id = ?',
     'DELETE FROM user_elevenlabs_credentials WHERE user_id = ?',
     'DELETE FROM users WHERE id = ?',

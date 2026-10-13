@@ -11,7 +11,7 @@ beforeEach(async () => {
   for (const table of [
     'provider_events', 'campaign_numbers', 'campaigns', 'ai_agents', 'audios', 'caller_id_provider_status', 'caller_ids',
     'user_twilio_credentials', 'user_signalwire_credentials', 'user_telnyx_credentials',
-    'user_vonage_credentials', 'user_voximplant_credentials', 'user_openai_credentials',
+    'user_vonage_credentials', 'user_voximplant_credentials', 'user_illyvoip_credentials', 'user_openai_credentials',
     'user_elevenlabs_credentials', 'rental_payments', 'user_rentals', 'rental_plans', 'countries', 'users',
   ]) {
     await env.DB.prepare(`DELETE FROM ${table}`).run();

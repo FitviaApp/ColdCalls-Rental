@@ -243,4 +243,31 @@ describe('application persistence and tenant boundaries', () => {
     expect((await exports.default.fetch(form(`/admin/users/${managed!.id}/delete`, adminToken, {}))).status).toBe(302);
     expect(await env.DB.prepare('SELECT 1 FROM users WHERE id=?').bind(managed!.id).first()).toBeNull();
   });
+
+  it('grants managers the operational CRUD but keeps staff accounts admin-only', async () => {
+    await env.DB.prepare('INSERT INTO users(id,email,password_hash,is_admin,is_active) VALUES(1,?,?,1,1)')
+      .bind('admin@example.com', hashPassword('admin-test-password')).run();
+    const adminToken = await signToken(env.JWT_SECRET, 1);
+    await env.DB.prepare('INSERT INTO users(id,email,password_hash,is_admin,is_manager,is_active) VALUES(2,?,?,0,1,1)')
+      .bind('manager@example.com', hashPassword('test-password')).run();
+    const managerToken = await signToken(env.JWT_SECRET, 2);
+    await seedUser(3, 'customer@example.com');
+
+    expect((await exports.default.fetch(request('/admin/users', managerToken))).status).toBe(200);
+    expect((await exports.default.fetch(form('/admin/countries/create', managerToken, {
+      code: 'PT', name: 'Portugal', price_per_minute: '0.03',
+    }))).status).toBe(302);
+    expect((await exports.default.fetch(form('/admin/users/3/add-paid-days', managerToken, { paid_days: '2' }))).status).toBe(302);
+    expect((await exports.default.fetch(form('/admin/users/create', managerToken, {
+      email: 'created@example.com', password: 'test-password', password_confirm: 'test-password', is_manager: 'true',
+    }))).status).toBe(302);
+    const created = await env.DB.prepare("SELECT * FROM users WHERE email='created@example.com'").first<Record<string, any>>();
+    expect(created?.is_manager).toBe(0);
+
+    // Managers cannot touch staff accounts or promote anyone.
+    expect((await exports.default.fetch(form('/admin/users/2/toggle', managerToken, {}))).status).toBe(403);
+    expect((await exports.default.fetch(form('/admin/users/3/toggle-manager', managerToken, {}))).status).toBe(403);
+    expect((await exports.default.fetch(form('/admin/users/2/toggle-manager', adminToken, {}))).status).toBe(302);
+    expect((await env.DB.prepare('SELECT is_manager FROM users WHERE id=2').first<{ is_manager: number }>())?.is_manager).toBe(0);
+  });
 });

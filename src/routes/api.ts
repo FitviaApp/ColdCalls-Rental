@@ -9,6 +9,7 @@ import { providerAudioUrl, verifyAudioToken } from '../services/media_token';
 import { createProviderCallbackToken, verifyProviderCallbackToken } from '../services/provider_callback_token';
 import { createVoiceProviderAdapter } from '../services/voice_provider_adapter';
 import { validateTwilioWebhook } from '../services/twilio_webhook';
+import { callStatusFromProvider } from '../services/call_status';
 import {
   handleTwilioAnswer,
   handleTwilioGather,
@@ -41,7 +42,7 @@ async function refreshCampaignAfterProviderCallback(
     `SELECT COUNT(*) total,
       SUM(CASE WHEN status NOT IN ('pending','claimed','calling') THEN 1 ELSE 0 END) processed,
       SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) successful,
-      SUM(CASE WHEN status IN ('failed','dispatch_unknown') THEN 1 ELSE 0 END) failed,
+      SUM(CASE WHEN status IN ('failed','dispatch_unknown','busy','no_answer') THEN 1 ELSE 0 END) failed,
       SUM(CASE WHEN status IN ('pending','claimed','calling') THEN 1 ELSE 0 END) remaining
      FROM campaign_numbers WHERE campaign_id=?`,
   ).bind(campaignId).first<{
@@ -191,10 +192,10 @@ apiRoutes.post('/voximplant/callback', async (c) => {
   const inserted = await c.env.DB.prepare("INSERT OR IGNORE INTO provider_events(id,provider,campaign_number_id) VALUES(?,'voximplant',?)").bind(eventId, numberId).run();
   if (!inserted.meta.changes) return c.json({ ok: true, duplicate: true });
   const providerStatus = String(body.status ?? 'unknown').toLowerCase();
-  const terminal = ['completed', 'failed', 'busy', 'no_answer', 'cancelled', 'canceled'].includes(providerStatus);
-  const status = providerStatus === 'completed' ? 'completed' : terminal ? 'failed' : 'calling';
+  const status = callStatusFromProvider(providerStatus);
+  const terminal = status !== 'calling';
   await c.env.DB.prepare(
-    `UPDATE campaign_numbers SET status=CASE WHEN status IN ('completed','failed','dispatch_unknown','cancelled') THEN status ELSE ? END,
+    `UPDATE campaign_numbers SET status=CASE WHEN status IN ('completed','failed','busy','no_answer','dispatch_unknown','cancelled') THEN status ELSE ? END,
      provider_status=?,duration_seconds=?,answered_by=?,processed_at=CASE WHEN ? AND processed_at IS NULL THEN ? ELSE processed_at END,updated_at=? WHERE id=?`,
   ).bind(status, providerStatus, Number(body.duration ?? 0), body.answered_by ?? null, terminal ? 1 : 0,
     new Date().toISOString(), new Date().toISOString(), numberId).run();
@@ -231,11 +232,10 @@ apiRoutes.post('/provider/callback/:provider/:numberId', async (c) => {
   const inserted = await c.env.DB.prepare('INSERT OR IGNORE INTO provider_events(id,provider,campaign_number_id) VALUES(?,?,?)')
     .bind(eventId, provider, numberId).run();
   if (!inserted.meta.changes) return provider === 'signalwire' ? xml('<Response/>') : c.json({ ok: true, duplicate: true });
-  const terminal = ['completed', 'failed', 'busy', 'no-answer', 'canceled', 'cancelled'].includes(rawStatus);
+  const mapped = callStatusFromProvider(rawStatus);
+  const terminal = mapped !== 'calling';
   const legacyUnverified = provider === 'twilio' && campaign.campaign_mode !== 'ai_agent';
-  const status = legacyUnverified
-    ? (terminal ? 'failed' : 'calling')
-    : rawStatus === 'completed' ? 'completed' : terminal ? 'failed' : 'calling';
+  const status = legacyUnverified && mapped === 'completed' ? 'failed' : mapped;
   const duration = Number(body.CallDuration ?? body.duration ?? 0);
   const reconcilesAmbiguousSignalWire = provider === 'signalwire'
     && Boolean(callSid)
@@ -248,7 +248,7 @@ apiRoutes.post('/provider/callback/:provider/:numberId', async (c) => {
     `UPDATE campaign_numbers SET status=CASE
         WHEN status='cancelled' THEN status
         WHEN ? THEN ?
-        WHEN status IN ('completed','failed','dispatch_unknown') THEN status
+        WHEN status IN ('completed','failed','busy','no_answer','dispatch_unknown') THEN status
         ELSE ?
       END,
       provider_status=?,call_sid=COALESCE(NULLIF(?,''),call_sid),duration_seconds=?,
@@ -358,7 +358,7 @@ protectedApi.get('/campaigns/:id/progress', async (c) => {
   if (!row) return c.json({ detail: 'Campaign not found' }, 404);
   const counts = await c.env.DB.prepare(
     `SELECT COUNT(*) processed, SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) successful,
-      SUM(CASE WHEN status IN ('failed','dispatch_unknown') THEN 1 ELSE 0 END) failed FROM campaign_numbers WHERE campaign_id=? AND status NOT IN ('pending','claimed','calling')`,
+      SUM(CASE WHEN status IN ('failed','dispatch_unknown','busy','no_answer') THEN 1 ELSE 0 END) failed FROM campaign_numbers WHERE campaign_id=? AND status NOT IN ('pending','claimed','calling')`,
   ).bind(Number(c.req.param('id'))).first<Record<string, any>>();
   const processed = Number(counts?.processed ?? 0);
   return c.json({ ...row, processed_numbers: processed, successful_calls: Number(counts?.successful ?? 0), failed_calls: Number(counts?.failed ?? 0), progress_percent: row.total_numbers ? processed / Number(row.total_numbers) * 100 : 0 });

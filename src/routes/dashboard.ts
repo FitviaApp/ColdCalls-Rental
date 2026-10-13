@@ -8,6 +8,7 @@ import { getUserVoiceProviderStatus, hasAnyUserVoiceProviderCredentials, hasUser
 import { getUserTwilioCredentials, getUserTwilioVerification, hasUserTwilioCredentials, recordUserTwilioVerificationError, upsertUserTwilioCredentials } from '../services/user_twilio_service';
 import { hasUserSignalwireCredentials, upsertUserSignalwireCredentials } from '../services/user_signalwire_service';
 import { hasUserTelnyxCredentials, upsertUserTelnyxCredentials } from '../services/user_telnyx_service';
+import { hasUserIllyvoipCredentials, upsertUserIllyvoipCredentials } from '../services/user_illyvoip_service';
 import { hasUserVonageCredentials, upsertUserVonageCredentials } from '../services/user_vonage_service';
 import { getUserVoximplantCredentials, hasUserVoximplantCredentials, upsertUserVoximplantCredentials, type UserVoximplantCredentialRow } from '../services/user_voximplant_service';
 import { hasUserOpenaiCredentials, upsertUserOpenaiCredentials } from '../services/user_openai_service';
@@ -32,6 +33,7 @@ async function settingsContext(c: Context<AppEnv>, error: string | null = null) 
     twilio_saved: truthy(c.req.query('twilio_saved')),
     signalwire_saved: truthy(c.req.query('signalwire_saved')),
     telnyx_saved: truthy(c.req.query('telnyx_saved')),
+    illyvoip_saved: truthy(c.req.query('illyvoip_saved')),
     vonage_saved: truthy(c.req.query('vonage_saved')),
     voximplant_saved: truthy(c.req.query('voximplant_saved')),
     voximplant_provisioned: truthy(c.req.query('voximplant_provisioned')),
@@ -44,6 +46,7 @@ async function settingsContext(c: Context<AppEnv>, error: string | null = null) 
     twilio_verification_error: twilioVerification?.verification_error ?? null,
     signalwire_configured: await hasUserSignalwireCredentials(c.env, c.env.DB, user.id),
     telnyx_configured: await hasUserTelnyxCredentials(c.env, c.env.DB, user.id),
+    illyvoip_configured: await hasUserIllyvoipCredentials(c.env, c.env.DB, user.id),
     vonage_configured: await hasUserVonageCredentials(c.env, c.env.DB, user.id),
     voximplant_configured: await hasUserVoximplantCredentials(c.env, c.env.DB, user.id),
     openai_configured: await hasUserOpenaiCredentials(c.env, c.env.DB, user.id),
@@ -165,6 +168,7 @@ dashboardRoutes.post('/settings/twilio', async (c) => {
 });
 dashboardRoutes.post('/settings/signalwire', async (c) => { const b=await c.req.parseBody(); const project=String(b.project_id??'').trim(),token=String(b.api_token??'').trim(),space=String(b.space_url??'').trim(); if(!project||!token||!space) return settingsError(c,'SignalWire Project ID, API Token, and Space URL are required.'); await upsertUserSignalwireCredentials(c.env,c.env.DB,c.get('user').id,project,token,space); return c.redirect(redirectNotice('signalwire_saved'),302); });
 dashboardRoutes.post('/settings/telnyx', async (c) => { const b=await c.req.parseBody(); const key=String(b.api_key??'').trim(),sid=String(b.account_sid??'').trim(); if(!key||!sid) return settingsError(c,'Telnyx API Key and Account SID are required.'); await upsertUserTelnyxCredentials(c.env,c.env.DB,c.get('user').id,key,sid); return c.redirect(redirectNotice('telnyx_saved'),302); });
+dashboardRoutes.post('/settings/illyvoip', async (c) => { const key=String((await c.req.parseBody()).api_key??'').trim(); if(!key) return settingsError(c,'IllyVoIP API key cannot be empty.'); await upsertUserIllyvoipCredentials(c.env,c.env.DB,c.get('user').id,key); return c.redirect(redirectNotice('illyvoip_saved'),302); });
 dashboardRoutes.post('/settings/vonage', async (c) => { const b=await c.req.parseBody(); const app=String(b.application_id??'').trim(),key=String(b.private_key??'').trim(); if(!app) return settingsError(c,'Vonage Application ID cannot be empty.'); if(!key.includes('BEGIN')) return settingsError(c,'Vonage private key must be in PEM format.'); await upsertUserVonageCredentials(c.env,c.env.DB,c.get('user').id,app,key); return c.redirect(redirectNotice('vonage_saved'),302); });
 dashboardRoutes.post('/settings/openai', async (c) => { const b=await c.req.parseBody(); const key=String(b.api_key??'').trim(); if(!key.startsWith('sk-')) return settingsError(c,'OpenAI API key must start with sk-.'); await upsertUserOpenaiCredentials(c.env,c.env.DB,c.get('user').id,key,String(b.organization_id??'')); return c.redirect(redirectNotice('openai_saved'),302); });
 dashboardRoutes.post('/settings/elevenlabs', async (c) => { const key=String((await c.req.parseBody()).api_key??'').trim(); if(!key) return settingsError(c,'ElevenLabs API key cannot be empty.'); await upsertUserElevenlabsCredentials(c.env,c.env.DB,c.get('user').id,key); return c.redirect(redirectNotice('elevenlabs_saved'),302); });

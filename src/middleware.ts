@@ -10,6 +10,7 @@ export interface UserRow {
   email: string;
   password_hash: string;
   is_admin: number;
+  is_manager: number;
   is_active: number;
   transfer_number: string | null;
   created_at: string;
@@ -102,13 +103,15 @@ export const requireUser = createMiddleware<AppEnv>(async (c, next) => {
   await next();
 });
 
-export const requireAdmin = createMiddleware<AppEnv>(async (c, next) => {
+export const isStaff = (user: UserRow): boolean => Boolean(user.is_admin || user.is_manager);
+
+export const requireStaff = createMiddleware<AppEnv>(async (c, next) => {
   const user = await getUser(c);
   if (!user) {
     if (wantsHtml(c)) return c.redirect('/auth/login', 302);
     return c.json({ detail: 'Not authenticated' }, 401);
   }
-  if (!user.is_admin) return c.json({ detail: 'Admin access required' }, 403);
+  if (!isStaff(user)) return c.json({ detail: 'Staff access required' }, 403);
   c.set('user', user);
   await next();
 });
@@ -120,7 +123,7 @@ export const requireRental = createMiddleware<AppEnv>(async (c, next) => {
     if (wantsHtml(c)) return c.redirect('/auth/login', 302);
     return c.json({ detail: 'Not authenticated' }, 401);
   }
-  if (!user.is_admin) {
+  if (!isStaff(user)) {
     const now = new Date().toISOString();
     const active = await c.env.DB.prepare(
       "SELECT 1 FROM user_rentals WHERE user_id = ? AND status = 'active' AND expires_at > ? LIMIT 1",
