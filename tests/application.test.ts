@@ -244,30 +244,61 @@ describe('application persistence and tenant boundaries', () => {
     expect(await env.DB.prepare('SELECT 1 FROM users WHERE id=?').bind(managed!.id).first()).toBeNull();
   });
 
-  it('grants managers the operational CRUD but keeps staff accounts admin-only', async () => {
+  it('grants managers staff access while keeping admin-only powers away', async () => {
     await env.DB.prepare('INSERT INTO users(id,email,password_hash,is_admin,is_active) VALUES(1,?,?,1,1)')
       .bind('admin@example.com', hashPassword('admin-test-password')).run();
-    const adminToken = await signToken(env.JWT_SECRET, 1);
     await env.DB.prepare('INSERT INTO users(id,email,password_hash,is_admin,is_manager,is_active) VALUES(2,?,?,0,1,1)')
-      .bind('manager@example.com', hashPassword('test-password')).run();
+      .bind('manager@example.com', hashPassword('manager-test-password')).run();
+    await env.DB.prepare('INSERT INTO users(id,email,password_hash,is_admin,is_active) VALUES(3,?,?,0,1)')
+      .bind('customer@example.com', hashPassword('test-password')).run();
+    await env.DB.prepare("INSERT INTO rental_plans(code,name,duration_days,price_usdt,is_active) VALUES('daily','Daily',1,15,1)").run();
+    const adminToken = await signToken(env.JWT_SECRET, 1);
     const managerToken = await signToken(env.JWT_SECRET, 2);
-    await seedUser(3, 'customer@example.com');
 
-    expect((await exports.default.fetch(request('/admin/users', managerToken))).status).toBe(200);
-    expect((await exports.default.fetch(form('/admin/countries/create', managerToken, {
-      code: 'PT', name: 'Portugal', price_per_minute: '0.03',
-    }))).status).toBe(302);
-    expect((await exports.default.fetch(form('/admin/users/3/add-paid-days', managerToken, { paid_days: '2' }))).status).toBe(302);
+    expect((await exports.default.fetch(request('/admin', managerToken))).status).toBe(200);
+    // staff accounts do not need a rental to browse or run campaigns
+    expect((await exports.default.fetch(request('/dashboard', managerToken))).status).toBe(200);
+
+    const usersPage = await exports.default.fetch(request('/admin/users', managerToken));
+    expect(usersPage.status).toBe(200);
+    const usersHtml = await usersPage.text();
+    expect(usersHtml).toContain('customer@example.com');
+    expect(usersHtml).not.toContain('admin@example.com');
+    expect(usersHtml).not.toContain('/admin/users/2/');
+
     expect((await exports.default.fetch(form('/admin/users/create', managerToken, {
-      email: 'created@example.com', password: 'test-password', password_confirm: 'test-password', is_manager: 'true',
+      email: 'by-manager@example.com', password: 'long-password', password_confirm: 'long-password', role: 'manager',
     }))).status).toBe(302);
-    const created = await env.DB.prepare("SELECT * FROM users WHERE email='created@example.com'").first<Record<string, any>>();
+    const created = await env.DB.prepare("SELECT * FROM users WHERE email='by-manager@example.com'").first<Record<string, any>>();
     expect(created?.is_manager).toBe(0);
+    expect(created?.created_by).toBe(2);
 
-    // Managers cannot touch staff accounts or promote anyone.
-    expect((await exports.default.fetch(form('/admin/users/2/toggle', managerToken, {}))).status).toBe(403);
-    expect((await exports.default.fetch(form('/admin/users/3/toggle-manager', managerToken, {}))).status).toBe(403);
-    expect((await exports.default.fetch(form('/admin/users/2/toggle-manager', adminToken, {}))).status).toBe(302);
-    expect((await env.DB.prepare('SELECT is_manager FROM users WHERE id=2').first<{ is_manager: number }>())?.is_manager).toBe(0);
+    expect((await exports.default.fetch(form('/admin/countries/create', managerToken, {
+      code: 'BR', name: 'Brazil', price_per_minute: '0.05',
+    }))).status).toBe(403);
+    expect((await exports.default.fetch(form('/admin/rental-plans/create', managerToken, {
+      code: 'monthly', name: 'Monthly', duration_days: '30', price_usdt: '200',
+    }))).status).toBe(403);
+    expect((await exports.default.fetch(form(`/admin/users/3/delete`, managerToken, {}))).status).toBe(403);
+    expect((await exports.default.fetch(form(`/admin/users/3/assign-orphan-assets`, managerToken, {}))).status).toBe(403);
+    expect((await exports.default.fetch(request('/admin/managers', managerToken))).status).toBe(403);
+
+    expect((await exports.default.fetch(form('/admin/users/3/add-paid-days', managerToken, { paid_days: '2' }))).status).toBe(302);
+    const grant = await env.DB.prepare('SELECT * FROM paid_day_grants WHERE user_id=3').first<Record<string, any>>();
+    expect(grant?.granted_by).toBe(2);
+    expect(grant?.days).toBe(2);
+
+    expect((await exports.default.fetch(form('/admin/users/2/add-paid-days', managerToken, { paid_days: '5' }))).status).toBe(302);
+    expect(await env.DB.prepare('SELECT 1 FROM paid_day_grants WHERE user_id=2').first()).toBeNull();
+    expect((await exports.default.fetch(form('/admin/users/1/toggle', managerToken, {}))).status).toBe(302);
+    expect((await env.DB.prepare('SELECT is_active FROM users WHERE id=1').first<{ is_active: number }>())?.is_active).toBe(1);
+    expect((await env.DB.prepare('SELECT is_active FROM users WHERE id=2').first<{ is_active: number }>())?.is_active).toBe(1);
+
+    const audit = await exports.default.fetch(request('/admin/managers', adminToken));
+    expect(audit.status).toBe(200);
+    const auditHtml = await audit.text();
+    expect(auditHtml).toContain('manager@example.com');
+    expect(auditHtml).toContain('by-manager@example.com');
+    expect(auditHtml).toContain('customer@example.com');
   });
 });

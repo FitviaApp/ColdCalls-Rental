@@ -10,11 +10,16 @@ export interface UserRow {
   email: string;
   password_hash: string;
   is_admin: number;
-  is_manager: number;
   is_active: number;
   transfer_number: string | null;
   created_at: string;
   updated_at: string;
+  is_manager?: number;
+  created_by?: number | null;
+}
+
+export function isStaff(user: Pick<UserRow, 'is_admin' | 'is_manager'>): boolean {
+  return Boolean(user.is_admin || user.is_manager);
 }
 
 export type AppEnv = { Bindings: Env; Variables: { user: UserRow } };
@@ -103,20 +108,31 @@ export const requireUser = createMiddleware<AppEnv>(async (c, next) => {
   await next();
 });
 
-export const isStaff = (user: UserRow): boolean => Boolean(user.is_admin || user.is_manager);
+export const requireAdmin = createMiddleware<AppEnv>(async (c, next) => {
+  const user = await getUser(c);
+  if (!user) {
+    if (wantsHtml(c)) return c.redirect('/auth/login', 302);
+    return c.json({ detail: 'Not authenticated' }, 401);
+  }
+  if (!user.is_admin) return c.json({ detail: 'Admin access required' }, 403);
+  c.set('user', user);
+  await next();
+});
 
+// Staff = admin or manager. Managers get the admin area except admin-only mutations.
 export const requireStaff = createMiddleware<AppEnv>(async (c, next) => {
   const user = await getUser(c);
   if (!user) {
     if (wantsHtml(c)) return c.redirect('/auth/login', 302);
     return c.json({ detail: 'Not authenticated' }, 401);
   }
-  if (!isStaff(user)) return c.json({ detail: 'Staff access required' }, 403);
+  if (!isStaff(user)) return c.json({ detail: 'Admin access required' }, 403);
   c.set('user', user);
   await next();
 });
 
 // Python: require_active_rental — non-admins need an active rental, 402 -> /billing for browsers.
+// Staff (admins and managers) are exempt.
 export const requireRental = createMiddleware<AppEnv>(async (c, next) => {
   const user = await getUser(c);
   if (!user) {

@@ -1,6 +1,7 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "coldcalls",
+  "name": "coldcalls-rental",
+  "account_id": "64736035eaf6689354e04fb06d3116ec",
   "main": "src/index.ts",
   "workers_dev": true,
   "preview_urls": false,
@@ -13,7 +14,7 @@
     {
       "binding": "DB",
       "database_name": "coldcalls",
-      "database_id": "d310a531-6ec7-47f7-a7e4-2d0b9f30826d",
+      "database_id": "2a16694b-85a0-41c4-851b-028d3ca464d5",
       "migrations_dir": "migrations"
     }
   ],
@@ -38,7 +39,7 @@
     "RealtimeCallSession": { "type": "durable-object", "storage": "sqlite" }
   },
   "vars": {
-    "BASE_URL": "https://coldcalls.mralnilam.workers.dev",
+    "BASE_URL": "https://coldcalls-rental.alvesathena011.workers.dev",
     "APP_NAME": "ColdCalls Platform",
     "MAX_USERS": "4",
     "OPENAI_API_BASE": "https://api.openai.com/v1",
@@ -49,6 +50,7 @@
     "ELEVENLABS_TTS_MODEL_ID": "eleven_flash_v2_5",
     "ELEVENLABS_OUTPUT_FORMAT": "ulaw_8000",
     "USDT_WALLET_ADDRESS": "",
+    "ETHERSCAN_API_KEY": "",
     "USDT_CONTRACT": "0xdAC17F958D2ee523a2206206994597C13D831ec7"
   },
   "observability": {
