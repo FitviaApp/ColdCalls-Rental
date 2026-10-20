@@ -76,6 +76,7 @@ export function IllyvoipService(env: Env, apiKey: string) {
     path: string,
     body: Record<string, unknown>,
     idempotencyKey?: string,
+    timeoutMs = 30000,
   ): Promise<Record<string, any>> {
     const headers: Record<string, string> = {
       'X-Api-Key': key,
@@ -89,7 +90,7 @@ export function IllyvoipService(env: Env, apiKey: string) {
         method: 'POST',
         headers,
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(30000),
+        signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (error) {
       throw new Error(`Illyvoip ${path} failed: ${error}`);
@@ -124,8 +125,6 @@ export function IllyvoipService(env: Env, apiKey: string) {
     const raw = String(data.call_status ?? data.state ?? '').toLowerCase();
     const answeredAt = data.answered_at ?? null;
 
-    console.log(`[IllyVoIP] getCallStatus: callSid=${callSid}, campaignNumberId=${campaignNumberId}, raw=${raw}, answeredAt=${answeredAt}, terminal=${data.terminal}`);
-
     if (data.terminal === true) {
       return {
         status: terminalStatus(raw),
@@ -137,7 +136,6 @@ export function IllyvoipService(env: Env, apiKey: string) {
     }
 
     if (campaignNumberId && (answeredAt || ANSWERED_STATES.has(raw))) {
-      console.log(`[IllyVoIP] Call answered, calling driveAnsweredCall for campaignNumberId=${campaignNumberId}`);
       try {
         await driveAnsweredCall(campaignNumberId, callSid);
       } catch (error) {
@@ -162,10 +160,12 @@ export function IllyvoipService(env: Env, apiKey: string) {
     };
   }
 
-  // IllyVoIP has no per-call TwiML/callback document: audio and transfer are issued
-  // through call control after the destination answers. provider_sequence tracks the
-  // per-answer progress (-1 = answered/pending, 0 = audio sent, 2 = transfer/hangup sent)
-  // so repeated status polls never replay an action.
+  // IllyVoIP has no per-call TwiML/callback document: audio, keypad input and transfer
+  // are issued through call control after the destination answers. The /execute action
+  // chain runs them in order (playback → gather/transfer), because separate requests
+  // race the playback and the DTMF window closes before the prompt is heard.
+  // provider_sequence 0 = answer actions issued, 2 = transfer/hangup issued, so a
+  // repeated status poll never replays an action.
   async function driveAnsweredCall(campaignNumberId: number, callControlId: string): Promise<void> {
     const row = await env.DB.prepare(
       `SELECT cn.status, cn.provider_sequence, cn.dispatch_attempt_id, c.audio_id,
@@ -174,94 +174,105 @@ export function IllyvoipService(env: Env, apiKey: string) {
          JOIN users u ON u.id = c.user_id
         WHERE cn.id = ?`,
     ).bind(campaignNumberId).first<CallControlRow>();
-    
-    console.log(`[IllyVoIP] driveAnsweredCall query result: row=${row ? 'found' : 'null'}, status=${row?.status}, provider_sequence=${row?.provider_sequence}, transfer_number=${row?.transfer_number}`);
-    
-    if (!row || row.status !== 'calling') {
-      console.log(`[IllyVoIP] Skipping: row is null or status is not 'calling'`);
-      return;
-    }
+    if (!row || row.status !== 'calling') return;
 
     const step = Number(row.provider_sequence ?? -1);
-    if (step > 0) {
-      console.log(`[IllyVoIP] Skipping: provider_sequence=${step} > 0`);
-      return;
-    }
+    if (step > 0) return;
     const attempt = String(row.dispatch_attempt_id ?? `number-${campaignNumberId}`);
+    const transferNumber = row.transfer_number;
     const now = () => new Date().toISOString();
+    const audioUrl = row.audio_id ? await providerAudioUrl(env, row.audio_id) : null;
+    const playback: Record<string, unknown>[] = audioUrl
+      ? [{ type: 'playback', audio_url: audioUrl }]
+      : [];
 
-    console.log(`[IllyVoIP] driveAnsweredCall: campaignNumberId=${campaignNumberId}, callControlId=${callControlId}, step=${step}, transfer_number=${row.transfer_number}`);
-
-    if (step < 0) {
-      const audioUrl = row.audio_id ? await providerAudioUrl(env, row.audio_id) : null;
-      if (audioUrl) {
-        console.log(`[IllyVoIP] Playing audio: ${audioUrl}`);
-        await request(
-          '/voice/call-control/playback',
-          { call_control_id: callControlId, audio_url: audioUrl },
-          `${attempt}:playback`,
-        );
+    async function execute(actions: Record<string, unknown>[], key: string): Promise<Record<string, any>[]> {
+      const chain = await request(
+        '/voice/call-control/execute',
+        { call_control_id: callControlId, actions },
+        key,
+        180_000,
+      );
+      const results = (chain.results ?? []) as Record<string, any>[];
+      const failed = results.find((result) => result.ok === false);
+      if (chain.status !== 'success' || failed) {
+        throw new Error(`Illyvoip action chain failed: ${JSON.stringify(failed ?? chain.error ?? chain.status)}`);
       }
-      await env.DB.prepare('UPDATE campaign_numbers SET provider_sequence = 0, updated_at = ? WHERE id = ?')
-        .bind(now(), campaignNumberId).run();
+      return results;
     }
 
-    if (!row.transfer_number) {
-      console.log(`[IllyVoIP] No transfer_number configured for campaignNumberId=${campaignNumberId}`);
-      return;
+    async function transfer(key: string): Promise<void> {
+      if (!transferNumber) return;
+      let response: Record<string, any>;
+      try {
+        response = await request(
+          '/voice/call-control/transfer',
+          { call_control_id: callControlId, target: { type: 'pstn', value: transferNumber } },
+          key,
+        );
+      } catch (error) {
+        console.error(`[IllyVoIP] Transfer request failed: ${error}`);
+        await env.DB.prepare(
+          "UPDATE campaign_numbers SET provider_sequence = 2, transfer_status = 'failed', error_message = ?, updated_at = ? WHERE id = ?",
+        ).bind(String(error), now(), campaignNumberId).run();
+        return;
+      }
+      console.log(`[IllyVoIP] Transfer response: ${JSON.stringify(response)}`);
+      await env.DB.prepare(
+        'UPDATE campaign_numbers SET provider_sequence = 2, transfer_status = ?, transfer_call_sid = ?, updated_at = ? WHERE id = ?',
+      ).bind(
+        String(response.transfer?.state ?? 'connecting'),
+        String(response.transfer_id ?? ''),
+        now(),
+        campaignNumberId,
+      ).run();
     }
 
     if (row.press_1_to_talk_with_agent) {
-      console.log(`[IllyVoIP] Press-1 enabled, sending gather`);
-      const gather = await request(
-        '/voice/call-control/gather',
-        {
-          call_control_id: callControlId,
-          input: 'dtmf',
-          timeout_ms: 8000,
-        },
-        `${attempt}:gather`,
-      );
-      console.log(`[IllyVoIP] Gather response: digits=${gather.digits}`);
-      if (!String(gather.digits ?? '').includes('1')) {
-        console.log(`[IllyVoIP] Press-1 not received, hanging up`);
-        await request(
-          '/voice/call-control/hangup',
-          { call_control_id: callControlId },
-          `${attempt}:hangup`,
-        );
+      // Gather must start after the prompt finishes, so chain it with playback.
+      // Without audio the gather speaks the prompt itself (TTS).
+      const gather = audioUrl
+        ? { type: 'gather', input: 'dtmf', timeout_ms: 10_000 }
+        : {
+            type: 'gather',
+            input: 'dtmf',
+            prompt_text: 'Press 1 to talk with an agent.',
+            timeout_ms: 10_000,
+          };
+      const results = await execute([...playback, gather], `${attempt}:gather`);
+      const digits = String(results.find((result) => result.type === 'gather')?.digits ?? '');
+      console.log(`[IllyVoIP] Gather digits=${JSON.stringify(digits)} campaignNumberId=${campaignNumberId}`);
+      if (!digits.includes('1')) {
+        await request('/voice/call-control/hangup', { call_control_id: callControlId }, `${attempt}:hangup`);
         await env.DB.prepare(
           "UPDATE campaign_numbers SET provider_sequence = 2, transfer_status = 'not_pressed', updated_at = ? WHERE id = ?",
         ).bind(now(), campaignNumberId).run();
         return;
       }
-    }
-
-    console.log(`[IllyVoIP] Initiating transfer to ${row.transfer_number} for campaignNumberId=${campaignNumberId}`);
-    let transfer: Record<string, any>;
-    try {
-      transfer = await request(
-        '/voice/call-control/transfer',
-        { call_control_id: callControlId, target: { type: 'pstn', value: row.transfer_number } },
-        `${attempt}:transfer`,
-      );
-    } catch (error) {
-      console.error(`[IllyVoIP] Transfer request failed: ${error}`);
-      await env.DB.prepare(
-        "UPDATE campaign_numbers SET provider_sequence = 2, transfer_status = 'failed', error_message = ?, updated_at = ? WHERE id = ?",
-      ).bind(String(error), now(), campaignNumberId).run();
+      await transfer(`${attempt}:transfer`);
       return;
     }
-    console.log(`[IllyVoIP] Transfer response: ${JSON.stringify(transfer)}`);
+
+    if (!transferNumber) {
+      if (playback.length) await execute(playback, `${attempt}:playback`);
+      await env.DB.prepare('UPDATE campaign_numbers SET provider_sequence = 2, updated_at = ? WHERE id = ?')
+        .bind(now(), campaignNumberId).run();
+      return;
+    }
+
+    const results = await execute(
+      [...playback, { type: 'transfer', target: { type: 'pstn', value: transferNumber } }],
+      `${attempt}:transfer`,
+    );
+    const response = results.find((result) => result.type === 'transfer') ?? {};
     await env.DB.prepare(
       'UPDATE campaign_numbers SET provider_sequence = 2, transfer_status = ?, transfer_call_sid = ?, updated_at = ? WHERE id = ?',
     ).bind(
-      String(transfer.transfer?.state ?? 'connecting'),
-      String(transfer.transfer_id ?? ''),
+      String(response.transfer?.state ?? 'connecting'),
+      String(response.transfer_id ?? ''),
       now(),
       campaignNumberId,
     ).run();
-    console.log(`[IllyVoIP] Transfer initiated successfully`);
   }
 
   async function pollCallStatus(
