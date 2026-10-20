@@ -124,6 +124,8 @@ export function IllyvoipService(env: Env, apiKey: string) {
     const raw = String(data.call_status ?? data.state ?? '').toLowerCase();
     const answeredAt = data.answered_at ?? null;
 
+    console.log(`[IllyVoIP] getCallStatus: callSid=${callSid}, campaignNumberId=${campaignNumberId}, raw=${raw}, answeredAt=${answeredAt}, terminal=${data.terminal}`);
+
     if (data.terminal === true) {
       return {
         status: terminalStatus(raw),
@@ -135,9 +137,11 @@ export function IllyvoipService(env: Env, apiKey: string) {
     }
 
     if (campaignNumberId && (answeredAt || ANSWERED_STATES.has(raw))) {
+      console.log(`[IllyVoIP] Call answered, calling driveAnsweredCall for campaignNumberId=${campaignNumberId}`);
       try {
         await driveAnsweredCall(campaignNumberId, callSid);
-      } catch {
+      } catch (error) {
+        console.error(`[IllyVoIP] driveAnsweredCall error: ${error}`);
         // Control actions reuse the dispatch idempotency key; the next poll retries them.
       }
       return {
@@ -170,10 +174,19 @@ export function IllyvoipService(env: Env, apiKey: string) {
          JOIN users u ON u.id = c.user_id
         WHERE cn.id = ?`,
     ).bind(campaignNumberId).first<CallControlRow>();
-    if (!row || row.status !== 'calling') return;
+    
+    console.log(`[IllyVoIP] driveAnsweredCall query result: row=${row ? 'found' : 'null'}, status=${row?.status}, provider_sequence=${row?.provider_sequence}, transfer_number=${row?.transfer_number}`);
+    
+    if (!row || row.status !== 'calling') {
+      console.log(`[IllyVoIP] Skipping: row is null or status is not 'calling'`);
+      return;
+    }
 
     const step = Number(row.provider_sequence ?? -1);
-    if (step > 0) return;
+    if (step > 0) {
+      console.log(`[IllyVoIP] Skipping: provider_sequence=${step} > 0`);
+      return;
+    }
     const attempt = String(row.dispatch_attempt_id ?? `number-${campaignNumberId}`);
     const now = () => new Date().toISOString();
 
@@ -182,6 +195,7 @@ export function IllyvoipService(env: Env, apiKey: string) {
     if (step < 0) {
       const audioUrl = row.audio_id ? await providerAudioUrl(env, row.audio_id) : null;
       if (audioUrl) {
+        console.log(`[IllyVoIP] Playing audio: ${audioUrl}`);
         await request(
           '/voice/call-control/playback',
           { call_control_id: callControlId, audio_url: audioUrl },
@@ -198,6 +212,7 @@ export function IllyvoipService(env: Env, apiKey: string) {
     }
 
     if (row.press_1_to_talk_with_agent) {
+      console.log(`[IllyVoIP] Press-1 enabled, sending gather`);
       const gather = await request(
         '/voice/call-control/gather',
         {
@@ -207,7 +222,9 @@ export function IllyvoipService(env: Env, apiKey: string) {
         },
         `${attempt}:gather`,
       );
+      console.log(`[IllyVoIP] Gather response: digits=${gather.digits}`);
       if (!String(gather.digits ?? '').includes('1')) {
+        console.log(`[IllyVoIP] Press-1 not received, hanging up`);
         await request(
           '/voice/call-control/hangup',
           { call_control_id: callControlId },
@@ -244,6 +261,7 @@ export function IllyvoipService(env: Env, apiKey: string) {
       now(),
       campaignNumberId,
     ).run();
+    console.log(`[IllyVoIP] Transfer initiated successfully`);
   }
 
   async function pollCallStatus(
