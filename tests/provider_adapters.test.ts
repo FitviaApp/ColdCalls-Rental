@@ -262,7 +262,11 @@ describe('voice provider contracts', () => {
           },
         ], vars: {},
       }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify(illyvoipStatus('vapi_11', 'completed')), { status: 200 }));
+      .mockResolvedValueOnce(new Response(JSON.stringify(illyvoipStatus('vapi_11', 'completed')), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        status: 'success', transfer_id: 'xfer_11',
+        transfer: { state: 'completed', message: 'Transfer completed.', terminal: true },
+      }), { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
 
     const service = IllyvoipService(env, 'illy-key');
@@ -279,8 +283,12 @@ describe('voice provider contracts', () => {
       .toMatchObject({ provider_sequence: 2, transfer_status: 'connecting', transfer_call_sid: 'xfer_11' });
 
     expect(await service.getCallStatus('vapi_11', 11)).toMatchObject({ status: 'completed', duration: 30 });
-    // The second live poll must not replay playback or transfer.
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    // The second live poll must not replay playback or transfer; it follows the transfer id.
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(String(fetchMock.mock.calls[3][0])).toBe('https://api.illyvoip.com/api/v1/voice/call-control/transfer-status');
+    expect(JSON.parse(String(fetchMock.mock.calls[3][1]?.body))).toEqual({ transfer_id: 'xfer_11' });
+    expect(await env.DB.prepare('SELECT transfer_status,transfer_connected_at FROM campaign_numbers WHERE id=11').first())
+      .toMatchObject({ transfer_status: 'completed', transfer_connected_at: expect.any(String) });
   });
 
   it('hangs up an IllyVoip press-1 call when the callee does not press 1', async () => {
@@ -323,6 +331,11 @@ describe('voice provider contracts', () => {
       .mockResolvedValueOnce(new Response(JSON.stringify({
         status: 'success', call_control_id: 'vapi_13', transfer_id: 'xfer_13',
         transfer: { state: 'connecting', message: 'Connecting transfer destination…', target_type: 'pstn', target_value: call.transferNumber, can_cancel: true },
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(illyvoipStatus('vapi_13', 'active')), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        status: 'success', transfer_id: 'xfer_13',
+        transfer: { state: 'failed', message: 'Destination unavailable.', terminal: true },
       }), { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
 
@@ -339,6 +352,11 @@ describe('voice provider contracts', () => {
     });
     expect(await env.DB.prepare('SELECT provider_sequence,transfer_status,transfer_call_sid FROM campaign_numbers WHERE id=13').first())
       .toMatchObject({ provider_sequence: 2, transfer_status: 'connecting', transfer_call_sid: 'xfer_13' });
+
+    expect(await service.getCallStatus('vapi_13', 13)).toMatchObject({ status: 'calling' });
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+    expect(await env.DB.prepare('SELECT transfer_status,transfer_connected_at,error_message FROM campaign_numbers WHERE id=13').first())
+      .toMatchObject({ transfer_status: 'failed', transfer_connected_at: null, error_message: 'Destination unavailable.' });
   });
 });
 

@@ -43,6 +43,7 @@ export interface PollCallStatusOptions {
 
 const API_BASE = 'https://api.illyvoip.com/api/v1';
 const ANSWERED_STATES = new Set(['active', 'answered', 'in-progress', 'in_progress']);
+const TRANSFER_TERMINAL = new Set(['completed', 'failed', 'canceled', 'cancelled']);
 
 interface CallControlRow {
   status: string;
@@ -120,10 +121,45 @@ export function IllyvoipService(env: Env, apiKey: string) {
     return { call_sid: callControlId, status: 'queued' };
   }
 
+  // A transfer POST only starts the leg; "connecting" is not an answer. Follow the
+  // transfer id so a failed handoff is recorded instead of staying stuck at connecting.
+  async function refreshTransferStatus(campaignNumberId: number): Promise<void> {
+    const row = await env.DB.prepare(
+      'SELECT transfer_call_sid, transfer_status FROM campaign_numbers WHERE id = ?',
+    ).bind(campaignNumberId).first<{ transfer_call_sid: string | null; transfer_status: string | null }>();
+    if (!row?.transfer_call_sid || TRANSFER_TERMINAL.has(String(row.transfer_status ?? ''))) return;
+
+    let data: Record<string, any>;
+    try {
+      data = await request('/voice/call-control/transfer-status', { transfer_id: row.transfer_call_sid }, undefined, 10_000);
+    } catch (error) {
+      console.error(`[IllyVoIP] transfer-status failed: ${error}`);
+      return;
+    }
+    const transfer = data.transfer ?? {};
+    const state = String(transfer.state ?? '').toLowerCase();
+    if (!state) return;
+    const message = String(transfer.message ?? '');
+    const connected = Boolean(transfer.completed_at) || state === 'completed';
+    const failed = Boolean(transfer.failed_at || transfer.canceled_at)
+      || state === 'failed' || state === 'canceled' || state === 'cancelled';
+    console.log(`[IllyVoIP] Transfer state=${state} message=${JSON.stringify(message)}`);
+    const ts = new Date().toISOString();
+    await env.DB.prepare(
+      `UPDATE campaign_numbers
+          SET transfer_status = ?,
+              transfer_connected_at = CASE WHEN ? THEN COALESCE(transfer_connected_at, ?) ELSE transfer_connected_at END,
+              error_message = CASE WHEN ? THEN ? ELSE error_message END,
+              updated_at = ?
+        WHERE id = ?`,
+    ).bind(state, connected ? 1 : 0, ts, failed ? 1 : 0, message, ts, campaignNumberId).run();
+  }
+
   async function getCallStatus(callSid: string, campaignNumberId?: number): Promise<PollResult> {
     const data = await request('/voice/call-control/status', { call_control_id: callSid });
     const raw = String(data.call_status ?? data.state ?? '').toLowerCase();
     const answeredAt = data.answered_at ?? null;
+    if (campaignNumberId) await refreshTransferStatus(campaignNumberId);
 
     if (data.terminal === true) {
       return {
