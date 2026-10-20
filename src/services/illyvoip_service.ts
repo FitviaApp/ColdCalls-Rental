@@ -266,15 +266,14 @@ export function IllyvoipService(env: Env, apiKey: string) {
 
     if (row.press_1_to_talk_with_agent) {
       // Gather must start after the prompt finishes, so chain it with playback.
-      // Without audio the gather speaks the prompt itself (TTS).
-      const gather = audioUrl
-        ? { type: 'gather', input: 'dtmf', timeout_ms: 10_000 }
-        : {
-            type: 'gather',
-            input: 'dtmf',
-            prompt_text: 'Press 1 to talk with an agent.',
-            timeout_ms: 10_000,
-          };
+      // The campaign audio is short (~10s): re-prompt with TTS and listen longer,
+      // otherwise a "1" pressed during playback falls outside the gather window.
+      const gather = {
+        type: 'gather',
+        input: 'dtmf',
+        prompt_text: 'Press 1 to talk with an agent.',
+        timeout_ms: 20_000,
+      };
       const results = await execute([...playback, gather], `${attempt}:gather`);
       const digits = String(results.find((result) => result.type === 'gather')?.digits ?? '');
       console.log(`[IllyVoIP] Gather digits=${JSON.stringify(digits)} campaignNumberId=${campaignNumberId}`);

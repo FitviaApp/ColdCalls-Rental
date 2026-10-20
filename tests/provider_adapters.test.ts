@@ -343,7 +343,8 @@ describe('voice provider contracts', () => {
     expect(await service.getCallStatus('vapi_13', 13)).toMatchObject({ status: 'calling' });
     const chain = fetchMock.mock.calls[1];
     expect(JSON.parse(String(chain[1]?.body)).actions).toMatchObject([
-      { type: 'playback' }, { type: 'gather', input: 'dtmf' },
+      { type: 'playback' },
+      { type: 'gather', input: 'dtmf', prompt_text: 'Press 1 to talk with an agent.', timeout_ms: 20_000 },
     ]);
     const transfer = fetchMock.mock.calls[2];
     expect(String(transfer[0])).toBe('https://api.illyvoip.com/api/v1/voice/call-control/transfer');
