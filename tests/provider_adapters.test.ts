@@ -271,7 +271,7 @@ describe('voice provider contracts', () => {
     const transfer = fetchMock.mock.calls[2];
     expect(String(transfer[0])).toBe('https://api.illyvoip.com/api/v1/voice/call-control/transfer');
     expect(JSON.parse(String(transfer[1]?.body))).toMatchObject({
-      call_control_id: 'vapi_11', target: { type: 'pstn', value: call.transferNumber },
+      call_control_id: 'vapi_11', target_type: 'pstn', target_value: call.transferNumber,
     });
     expect(await env.DB.prepare('SELECT provider_sequence,transfer_status,transfer_call_sid FROM campaign_numbers WHERE id=11').first())
       .toMatchObject({ provider_sequence: 2, transfer_status: 'connecting', transfer_call_sid: 'xfer_11' });

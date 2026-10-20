@@ -198,8 +198,6 @@ export function IllyvoipService(env: Env, apiKey: string) {
         {
           call_control_id: callControlId,
           input: 'dtmf',
-          prompt_text: 'Press 1 to talk with an agent.',
-          prompt_language: 'en-US',
           timeout_ms: 8000,
         },
         `${attempt}:gather`,
@@ -219,7 +217,7 @@ export function IllyvoipService(env: Env, apiKey: string) {
 
     const transfer = await request(
       '/voice/call-control/transfer',
-      { call_control_id: callControlId, target: { type: 'pstn', value: row.transfer_number } },
+      { call_control_id: callControlId, target_type: 'pstn', target_value: row.transfer_number },
       `${attempt}:transfer`,
     );
     await env.DB.prepare(
