@@ -3,7 +3,7 @@ import { env, exports } from 'cloudflare:workers';
 import { encryptFernet } from '../src/auth';
 import { verifyIllyvoipWebhook, IllyvoipWebhookError } from '../src/services/illyvoip_webhook';
 
-const WEBHOOK_SECRET = 'illyvoip-webhook-secret';
+const WEBHOOK_SECRET = env.ILLYVOIP_WEBHOOK_SECRET || 'illyvoip-webhook-secret';
 
 async function signPayload(payload: Record<string, unknown>, timestamp = Math.floor(Date.now() / 1000)): Promise<{ signature: string; raw: string }> {
   const raw = JSON.stringify(payload);
