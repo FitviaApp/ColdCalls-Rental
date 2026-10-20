@@ -4,6 +4,14 @@ import { type AppEnv, getUser, requireRental } from '../middleware';
 import { getUserSignalwireCredentials } from '../services/user_signalwire_service';
 import { getUserTwilioCredentials } from '../services/user_twilio_service';
 import { decodeVoximplantCallbackToken } from '../services/voximplant_service';
+import { IllyvoipService } from '../services/illyvoip_service';
+import { getUserIllyvoipCredentials } from '../services/user_illyvoip_service';
+import {
+  verifyIllyvoipWebhook,
+  IllyvoipWebhookError,
+  illyvoipEventType,
+  illyvoipCallControlId,
+} from '../services/illyvoip_webhook';
 import { createRealtimeToken } from '../services/realtime_token';
 import { providerAudioUrl, verifyAudioToken } from '../services/media_token';
 import { createProviderCallbackToken, verifyProviderCallbackToken } from '../services/provider_callback_token';
@@ -202,6 +210,84 @@ apiRoutes.post('/voximplant/callback', async (c) => {
   const row = await c.env.DB.prepare('SELECT campaign_id FROM campaign_numbers WHERE id=?').bind(numberId).first<{ campaign_id: number }>();
   if (row) await coordinator(c.env, row.campaign_id).reconcile(row.campaign_id);
   return c.json({ ok: true });
+});
+
+apiRoutes.post('/illyvoip/webhook', async (c) => {
+  const secret = c.env.ILLYVOIP_WEBHOOK_SECRET ?? '';
+  const signature = c.req.header('Illyvoip-Signature');
+  const raw = await c.req.text();
+  let event: import('../services/illyvoip_webhook').IllyvoipWebhookEvent;
+  try {
+    event = await verifyIllyvoipWebhook(raw, signature, secret, Math.floor(Date.now() / 1000));
+  } catch (error) {
+    const status = error instanceof IllyvoipWebhookError ? error.status : 401;
+    return c.json({ detail: error instanceof Error ? error.message : 'Invalid webhook' }, status as 401 | 503);
+  }
+  const eventType = illyvoipEventType(event);
+  const eventId = String(event.id ?? '');
+  const callControlId = illyvoipCallControlId(event);
+  if (!eventId || !callControlId) return c.json({ detail: 'Invalid event payload' }, 400);
+
+  const row = await c.env.DB.prepare(
+    `SELECT cn.id number_id, cn.status, cn.campaign_id, c.user_id
+       FROM campaign_numbers cn JOIN campaigns c ON c.id = cn.campaign_id
+      WHERE cn.call_sid = ? AND c.voice_provider = 'illyvoip'`,
+  ).bind(callControlId).first<{ number_id: number; status: string; campaign_id: number; user_id: number }>();
+  if (!row) return c.json({ ok: true, ignored: true });
+
+  const inserted = await c.env.DB.prepare(
+    'INSERT OR IGNORE INTO provider_events(id, provider, campaign_number_id) VALUES (?, ?, ?)',
+  ).bind(eventId, 'illyvoip', row.number_id).run();
+  if (!inserted.meta.changes) return c.json({ ok: true, duplicate: true });
+
+  if (eventType === 'call_answered') {
+    if (row.status === 'calling') {
+      try {
+        const apiKey = await getUserIllyvoipCredentials(c.env, c.env.DB, row.user_id);
+        const service = IllyvoipService(c.env, apiKey);
+        await service.driveAnsweredCall(row.number_id, callControlId).catch((err) => {
+          console.error(`[IllyVoIP] webhook driveAnsweredCall error: ${err}`);
+        });
+      } catch (error) {
+        console.error(`[IllyVoIP] webhook answer handler error: ${error}`);
+      }
+    }
+    return c.json({ ok: true });
+  }
+
+  if (eventType === 'call_completed') {
+    const callBlock = (event.data?.call ?? event.data?.payload ?? {}) as Record<string, unknown>;
+    const rawStatus = String(callBlock.state ?? callBlock.call_status ?? callBlock.status ?? 'completed').toLowerCase();
+    const duration = Number(
+      callBlock.duration ?? callBlock.duration_seconds ?? callBlock.call_duration ?? callBlock.duration_total ?? 0,
+    );
+    const mapped = rawStatus === 'completed' || rawStatus === 'answered' ? 'completed' : callStatusFromProvider(rawStatus);
+    const now = new Date().toISOString();
+    await c.env.DB.prepare(
+      `UPDATE campaign_numbers
+          SET status = CASE
+                WHEN status IN ('completed','failed','busy','no_answer','dispatch_unknown','cancelled') THEN status
+                ELSE ?
+              END,
+              provider_status = ?,
+              duration_seconds = ?,
+              processed_at = COALESCE(processed_at, ?),
+              updated_at = ?
+        WHERE id = ?`,
+    ).bind(
+      mapped,
+      rawStatus,
+      Number.isFinite(duration) ? Math.trunc(duration) : 0,
+      now,
+      now,
+      row.number_id,
+    ).run();
+    await refreshCampaignAfterProviderCallback(c.env, row.campaign_id, false);
+    await coordinator(c.env, row.campaign_id).reconcile(row.campaign_id);
+    return c.json({ ok: true });
+  }
+
+  return c.json({ ok: true, ignored: true });
 });
 
 apiRoutes.post('/provider/callback/:provider/:numberId', async (c) => {

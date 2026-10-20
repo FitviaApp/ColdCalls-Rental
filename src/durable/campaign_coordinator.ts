@@ -58,7 +58,9 @@ function knownProviderRejection(error: unknown): boolean {
 // IllyVoIP issues playback/transfer through call control after answer, so each live
 // call must be polled sub-minute; every other adapter finishes the flow provider-side.
 function statusPollDelayMs(provider: string): number {
-  return provider === 'illyvoip' ? 5_000 : 30_000;
+  // IllyVoIP has no answer webhook, so playback/transfer only starts on the next poll.
+  // Keep this short so the caller isn't waiting several seconds after answering.
+  return provider === 'illyvoip' ? 1_500 : 30_000;
 }
 
 export class CampaignCoordinator extends DurableObject<Env> {

@@ -319,7 +319,7 @@ export function IllyvoipService(env: Env, apiKey: string) {
     return result;
   }
 
-  return { makeCall, getCallStatus, pollCallStatus };
+  return { makeCall, getCallStatus, pollCallStatus, driveAnsweredCall };
 }
 
 export type IllyvoipServiceInstance = ReturnType<typeof IllyvoipService>;
