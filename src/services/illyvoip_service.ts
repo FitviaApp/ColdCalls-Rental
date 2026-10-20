@@ -177,6 +177,8 @@ export function IllyvoipService(env: Env, apiKey: string) {
     const attempt = String(row.dispatch_attempt_id ?? `number-${campaignNumberId}`);
     const now = () => new Date().toISOString();
 
+    console.log(`[IllyVoIP] driveAnsweredCall: campaignNumberId=${campaignNumberId}, callControlId=${callControlId}, step=${step}, transfer_number=${row.transfer_number}`);
+
     if (step < 0) {
       const audioUrl = row.audio_id ? await providerAudioUrl(env, row.audio_id) : null;
       if (audioUrl) {
@@ -190,7 +192,10 @@ export function IllyvoipService(env: Env, apiKey: string) {
         .bind(now(), campaignNumberId).run();
     }
 
-    if (!row.transfer_number) return;
+    if (!row.transfer_number) {
+      console.log(`[IllyVoIP] No transfer_number configured for campaignNumberId=${campaignNumberId}`);
+      return;
+    }
 
     if (row.press_1_to_talk_with_agent) {
       const gather = await request(
@@ -215,11 +220,22 @@ export function IllyvoipService(env: Env, apiKey: string) {
       }
     }
 
-    const transfer = await request(
-      '/voice/call-control/transfer',
-      { call_control_id: callControlId, target_type: 'pstn', target_value: row.transfer_number },
-      `${attempt}:transfer`,
-    );
+    console.log(`[IllyVoIP] Initiating transfer to ${row.transfer_number} for campaignNumberId=${campaignNumberId}`);
+    let transfer: Record<string, any>;
+    try {
+      transfer = await request(
+        '/voice/call-control/transfer',
+        { call_control_id: callControlId, target: { type: 'pstn', value: row.transfer_number } },
+        `${attempt}:transfer`,
+      );
+    } catch (error) {
+      console.error(`[IllyVoIP] Transfer request failed: ${error}`);
+      await env.DB.prepare(
+        "UPDATE campaign_numbers SET provider_sequence = 2, transfer_status = 'failed', error_message = ?, updated_at = ? WHERE id = ?",
+      ).bind(String(error), now(), campaignNumberId).run();
+      return;
+    }
+    console.log(`[IllyVoIP] Transfer response: ${JSON.stringify(transfer)}`);
     await env.DB.prepare(
       'UPDATE campaign_numbers SET provider_sequence = 2, transfer_status = ?, transfer_call_sid = ?, updated_at = ? WHERE id = ?',
     ).bind(
