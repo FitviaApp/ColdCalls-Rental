@@ -60,7 +60,7 @@ function knownProviderRejection(error: unknown): boolean {
 function statusPollDelayMs(provider: string): number {
   // IllyVoIP call webhooks record the real destination answer; the poll starts
   // playback/transfer. Keep it short so the caller isn't waiting after answering.
-  return provider === 'illyvoip' ? 1_500 : 30_000;
+  return provider === 'illyvoip' ? 750 : 30_000;
 }
 
 export class CampaignCoordinator extends DurableObject<Env> {
@@ -311,7 +311,8 @@ export class CampaignCoordinator extends DurableObject<Env> {
         const status = SUCCESS_PROVIDER_STATES.has(result.status) ? 'completed' : callStatusFromProvider(result.status);
         await this.env.DB.prepare(
           `UPDATE campaign_numbers SET status = ?, dispatch_state = 'finished', provider_status = ?,
-           duration_seconds = ?, answered_by = ?, error_message = ?, processed_at = ?, updated_at = ?
+           duration_seconds = ?, answered_by = ?, error_message = COALESCE(NULLIF(?, ''), error_message),
+           processed_at = ?, updated_at = ?
            WHERE id = ? AND status = 'calling'`,
         ).bind(status, result.status, result.duration, result.answeredBy, result.errorMessage,
           new Date().toISOString(), new Date().toISOString(), row.id).run();

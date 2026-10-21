@@ -282,8 +282,6 @@ apiRoutes.post('/illyvoip/webhook', async (c) => {
            next_action_at = ?, updated_at = ? WHERE id = ? AND status = 'calling'`,
       ).bind(answeredAt, now, now, row.number_id).run();
       console.log(`[IllyVoIP webhook] destination answered number_id=${row.number_id} at=${answeredAt}`);
-      // Wake the campaign coordinator now instead of waiting for its next alarm.
-      await coordinator(c.env, row.campaign_id).reconcile(row.campaign_id);
     }
     return c.json({ ok: true });
   }

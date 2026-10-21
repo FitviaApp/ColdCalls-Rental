@@ -26,7 +26,9 @@ export default defineConfig({
 			ELEVENLABS_TTS_MODEL_ID: bindings.text("eleven_flash_v2_5"),
 			ELEVENLABS_OUTPUT_FORMAT: bindings.text("ulaw_8000"),
 			USDT_WALLET_ADDRESS: bindings.text(""),
+			ETHERSCAN_API_KEY: bindings.text(""),
 			USDT_CONTRACT: bindings.text("0xdAC17F958D2ee523a2206206994597C13D831ec7"),
+			AUDIO_PUBLIC_URL: bindings.text("https://pub-d8cd3961afef49509b1f68c5ee2c30bf.r2.dev"),
 			DB: bindings.d1({
 				name: "coldcalls",
 			}),
