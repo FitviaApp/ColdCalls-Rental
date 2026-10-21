@@ -328,7 +328,6 @@ describe('voice provider contracts', () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(illyvoipStatus('vapi_13', 'active')), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({
         status: 'success', call_control_id: 'vapi_13', results: [
-          { type: 'playback', ok: true, status: 'success', call_control_id: 'vapi_13', media: 'vcm2.opaque' },
           { type: 'gather', ok: true, status: 'success', call_control_id: 'vapi_13', input: 'dtmf', digits: '1', tts_charge: null },
         ], vars: {},
       }), { status: 200 }))
@@ -347,8 +346,7 @@ describe('voice provider contracts', () => {
     expect(await service.getCallStatus('vapi_13', 13)).toMatchObject({ status: 'calling' });
     const chain = fetchMock.mock.calls[1];
     expect(JSON.parse(String(chain[1]?.body)).actions).toMatchObject([
-      { type: 'playback' },
-      { type: 'gather', input: 'dtmf', timeout_ms: 20_000 },
+      { type: 'gather', input: 'dtmf', timeout_ms: 20_000, prompt_audio_url: 'https://pub-example.r2.dev/audio-key' },
     ]);
     const transfer = fetchMock.mock.calls[2];
     expect(String(transfer[0])).toBe('https://api.illyvoip.com/api/v1/voice/call-control/transfer');
@@ -425,6 +423,34 @@ describe('voice provider contracts', () => {
     expect(await service.getCallStatus('vapi_15', 15)).toMatchObject({ status: 'calling' });
     expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/execute'))).toHaveLength(1);
     expect(await service.getCallStatus('vapi_15', 15)).toMatchObject({ status: 'completed' });
+  });
+
+  it('retries a transient IllyVoIP transfer failure with the same key', async () => {
+    await seedIllyvoipCampaign(19, { callSid: 'vapi_19', press1: true, audio: true });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(illyvoipStatus('vapi_19', 'active')), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        status: 'success', call_control_id: 'vapi_19', results: [
+          { type: 'gather', ok: true, status: 'success', call_control_id: 'vapi_19', input: 'dtmf', digits: '1', tts_charge: null },
+        ], vars: {},
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        status: 'error', message: 'Unable to transfer the call right now.',
+      }), { status: 503 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        status: 'success', call_control_id: 'vapi_19', transfer_id: 'xfer_19',
+        transfer: { state: 'connecting', message: 'Connecting transfer destination…', target_type: 'pstn', target_value: call.transferNumber, can_cancel: true },
+      }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const service = IllyvoipService(env, 'illy-key');
+    expect(await service.getCallStatus('vapi_19', 19)).toMatchObject({ status: 'calling' });
+    const transfers = fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/transfer'));
+    expect(transfers).toHaveLength(2);
+    expect(new Headers(transfers[0][1]?.headers).get('idempotency-key'))
+      .toBe(new Headers(transfers[1][1]?.headers).get('idempotency-key'));
+    expect(await env.DB.prepare('SELECT provider_sequence,transfer_status,transfer_call_sid FROM campaign_numbers WHERE id=19').first())
+      .toMatchObject({ provider_sequence: 2, transfer_status: 'connecting', transfer_call_sid: 'xfer_19' });
   });
 
   it('records the press-1 outcome even when the IllyVoIP hangup fails', async () => {

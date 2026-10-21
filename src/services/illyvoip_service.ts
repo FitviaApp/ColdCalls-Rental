@@ -384,7 +384,7 @@ export function IllyvoipService(env: Env, apiKey: string) {
     const transferNumber = row.transfer_number;
     const now = () => new Date().toISOString();
     const audioUrl = row.audio_id ? await providerAudioUrl(env, row.audio_id) : null;
-    if (audioUrl) console.log(`[IllyVoIP] playback audio_url=${audioUrl}`);
+    if (audioUrl) console.log(`[IllyVoIP] audio_url=${audioUrl}`);
     const playback: Record<string, unknown>[] = audioUrl
       ? [{ type: 'playback', audio_url: audioUrl }]
       : [];
@@ -406,18 +406,34 @@ export function IllyvoipService(env: Env, apiKey: string) {
 
     async function transfer(idempotencyKey: string): Promise<void> {
       if (!transferNumber) return;
-      let response: Record<string, any>;
-      try {
-        response = await request(
-          '/voice/call-control/transfer',
-          { call_control_id: callControlId, target: { type: 'pstn', value: transferNumber } },
-          idempotencyKey,
-        );
-      } catch (error) {
-        console.error(`[IllyVoIP] Transfer request failed: ${error}`);
+      let response: Record<string, any> | null = null;
+      let lastError: unknown;
+      // The transfer service can return 503 while the gather request is still settling
+      // on the provider side. Retry the identical request with the same key: the
+      // idempotency key makes it safe if the first attempt was actually accepted.
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
+        try {
+          response = await request(
+            '/voice/call-control/transfer',
+            { call_control_id: callControlId, target: { type: 'pstn', value: transferNumber } },
+            idempotencyKey,
+          );
+          break;
+        } catch (error) {
+          lastError = error;
+          const httpError = error as IllyvoipHttpError;
+          if (attempt < 3 && (httpError.status === 503 || httpError.status === 409)) {
+            await new Promise((resolve) => setTimeout(resolve, 1_000 * attempt));
+            continue;
+          }
+          break;
+        }
+      }
+      if (!response) {
+        console.error(`[IllyVoIP] Transfer request failed: ${lastError}`);
         await env.DB.prepare(
           'UPDATE campaign_numbers SET provider_sequence = 2, transfer_status = ?, error_message = ?, updated_at = ? WHERE id = ?',
-        ).bind('failed', redact(String(error)).slice(0, 500), now(), campaignNumberId).run();
+        ).bind('failed', redact(String(lastError)).slice(0, 500), now(), campaignNumberId).run();
         return;
       }
       console.log(`[IllyVoIP] Transfer response: ${JSON.stringify(response)}`);
@@ -464,15 +480,16 @@ export function IllyvoipService(env: Env, apiKey: string) {
 
     try {
       if (row.press_1_to_talk_with_agent) {
-        // Gather must start after the prompt finishes, so chain it with playback.
-        // The campaign audio is short (~10s), so listen longer after it ends;
-        // no TTS prompt, the callee just presses 1 once the audio finishes.
-        const gather = {
+        // The gather's own prompt audio keeps the input window open while the
+        // campaign audio plays, so a "1" pressed mid-audio is captured instead
+        // of waiting for a separate playback to finish. No TTS prompt.
+        const gather: Record<string, unknown> = {
           type: 'gather',
           input: 'dtmf',
           timeout_ms: 20_000,
         };
-        const results = await execute([...playback, gather], key('gather'));
+        if (audioUrl) gather.prompt_audio_url = audioUrl;
+        const results = await execute([gather], key('gather'));
         const digits = String(results.find((result) => result.type === 'gather')?.digits ?? '');
         console.log(`[IllyVoIP] Gather digits=${JSON.stringify(digits)} campaignNumberId=${campaignNumberId}`);
         if (!digits.includes('1')) {
