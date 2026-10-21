@@ -363,6 +363,89 @@ describe('voice provider contracts', () => {
     expect(await env.DB.prepare('SELECT transfer_status,transfer_connected_at,error_message FROM campaign_numbers WHERE id=13').first())
       .toMatchObject({ transfer_status: 'failed', transfer_connected_at: null, error_message: 'Destination unavailable.' });
   });
+
+  it('retries failed IllyVoIP answer actions with fresh keys, then hangs up instead of looping', async () => {
+    await seedIllyvoipCampaign(14, { callSid: 'vapi_14', press1: false, audio: true });
+    const failure = () => new Response(
+      JSON.stringify({ status: 'error', message: 'Upstream media gateway unavailable for +15550000002' }),
+      { status: 503 },
+    );
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(illyvoipStatus('vapi_14', 'active')), { status: 200 }))
+      .mockResolvedValueOnce(failure())
+      .mockResolvedValueOnce(new Response(JSON.stringify(illyvoipStatus('vapi_14', 'active')), { status: 200 }))
+      .mockResolvedValueOnce(failure())
+      .mockResolvedValueOnce(new Response(JSON.stringify(illyvoipStatus('vapi_14', 'active')), { status: 200 }))
+      .mockResolvedValueOnce(failure())
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        status: 'success', call_control_id: 'vapi_14', message: 'Call terminated.', terminated_channels: 1,
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(illyvoipStatus('vapi_14', 'active')), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(illyvoipStatus('vapi_14', 'completed')), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const service = IllyvoipService(env, 'illy-key');
+    const executes = () => fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/execute'));
+
+    expect(await service.getCallStatus('vapi_14', 14)).toMatchObject({ status: 'calling', retry_delay_ms: 5_000 });
+    expect(await service.getCallStatus('vapi_14', 14)).toMatchObject({ status: 'calling', retry_delay_ms: 10_000 });
+    expect(await service.getCallStatus('vapi_14', 14)).toMatchObject({ status: 'calling', retry_delay_ms: null });
+    // Each retry must use a fresh Idempotency-Key: a repeated key only replays the cached failure.
+    expect(executes()).toHaveLength(3);
+    expect(executes().map(([, options]) => new Headers(options?.headers).get('idempotency-key')))
+      .toEqual(['attempt-11:transfer:1', 'attempt-11:transfer:2', 'attempt-11:transfer:3']);
+    const giveUp = fetchMock.mock.calls.find(([url]) => String(url).endsWith('/hangup'));
+    expect(new Headers(giveUp?.[1]?.headers).get('idempotency-key')).toBe('attempt-11:giveup');
+
+    // Further polls must not re-fire the exhausted chain; the call then ends naturally.
+    expect(await service.getCallStatus('vapi_14', 14)).toMatchObject({ status: 'calling' });
+    expect(await service.getCallStatus('vapi_14', 14)).toMatchObject({ status: 'completed' });
+    expect(executes()).toHaveLength(3);
+    const row = (await env.DB.prepare('SELECT provider_sequence,error_message,outcome_reason FROM campaign_numbers WHERE id=14').first())!;
+    expect(row).toMatchObject({ provider_sequence: -4, outcome_reason: 'answer_actions_failed' });
+    expect(String(row.error_message)).toContain('[redacted-number]');
+    expect(String(row.error_message)).not.toContain('+15550000002');
+  });
+
+  it('marks an IllyVoIP chain as in flight on a pending conflict instead of re-firing it', async () => {
+    await seedIllyvoipCampaign(15, { callSid: 'vapi_15', press1: false, audio: true });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(illyvoipStatus('vapi_15', 'active')), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        status: 'error', message: 'Another voice request is pending for this call.', error_code: 'voice_request_pending',
+      }), { status: 409 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(illyvoipStatus('vapi_15', 'active')), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(illyvoipStatus('vapi_15', 'completed')), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const service = IllyvoipService(env, 'illy-key');
+
+    expect(await service.getCallStatus('vapi_15', 15)).toMatchObject({ status: 'calling', retry_delay_ms: 2_000 });
+    expect(await env.DB.prepare('SELECT provider_sequence FROM campaign_numbers WHERE id=15').first())
+      .toMatchObject({ provider_sequence: 1 });
+    // Second poll: the chain still runs provider-side and must not be re-fired.
+    expect(await service.getCallStatus('vapi_15', 15)).toMatchObject({ status: 'calling' });
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/execute'))).toHaveLength(1);
+    expect(await service.getCallStatus('vapi_15', 15)).toMatchObject({ status: 'completed' });
+  });
+
+  it('records the press-1 outcome even when the IllyVoIP hangup fails', async () => {
+    await seedIllyvoipCampaign(16, { callSid: 'vapi_16', press1: true, audio: false });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(illyvoipStatus('vapi_16', 'active')), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        status: 'success', call_control_id: 'vapi_16', results: [
+          { type: 'gather', ok: true, status: 'success', call_control_id: 'vapi_16', input: 'dtmf', digits: '', tts_charge: null },
+        ], vars: {},
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        status: 'error', message: 'Service temporarily unavailable',
+      }), { status: 503 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const service = IllyvoipService(env, 'illy-key');
+
+    expect(await service.getCallStatus('vapi_16', 16)).toMatchObject({ status: 'calling' });
+    expect(await env.DB.prepare('SELECT provider_sequence,transfer_status FROM campaign_numbers WHERE id=16').first())
+      .toMatchObject({ provider_sequence: 2, transfer_status: 'not_pressed' });
+  });
 });
 
 async function rsaPrivateKey(): Promise<string> {

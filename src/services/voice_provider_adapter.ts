@@ -35,6 +35,7 @@ export interface ProviderStatusResult {
   duration: number;
   answeredBy: string | null;
   errorMessage: string;
+  retryDelayMs?: number | null;
 }
 
 export interface VoiceProviderAdapter {
@@ -69,6 +70,7 @@ export async function createVoiceProviderAdapter(
     }>;
     getCallStatus(callSid: string, campaignNumberId?: number): Promise<{
       status: string; duration: number; answered_by: string | null; error_message: string;
+      retry_delay_ms?: number | null;
     }>;
   };
 
@@ -127,6 +129,7 @@ export async function createVoiceProviderAdapter(
         duration: result.duration,
         answeredBy: result.answered_by,
         errorMessage: result.error_message,
+        retryDelayMs: result.retry_delay_ms ?? null,
       };
     },
   };

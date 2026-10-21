@@ -14,6 +14,9 @@ export default defineConfig({
 			enabled: true,
 			headSamplingRate: 1,
 		},
+		triggers: {
+			crons: ["*/5 * * * *"],
+		},
 		env: {
 			BASE_URL: bindings.text("https://coldcalls.mralnilam.workers.dev"),
 			APP_NAME: bindings.text("ColdCalls Platform"),

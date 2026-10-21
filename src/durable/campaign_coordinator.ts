@@ -58,7 +58,7 @@ function knownProviderRejection(error: unknown): boolean {
 // IllyVoIP issues playback/transfer through call control after answer, so each live
 // call must be polled sub-minute; every other adapter finishes the flow provider-side.
 function statusPollDelayMs(provider: string): number {
-  // IllyVoIP call webhooks record the real destination answer; the poll starts
+  // IllyVoIP has no per-call callback: the poll detects the answer and starts
   // playback/transfer. Keep it short so the caller isn't waiting after answering.
   return provider === 'illyvoip' ? 750 : 30_000;
 }
@@ -104,6 +104,18 @@ export class CampaignCoordinator extends DurableObject<Env> {
   }
 
   async alarm(): Promise<void> {
+    try {
+      await this.runAlarm();
+    } catch (error) {
+      // The runtime drops an alarm after a handful of failed retries; a transient
+      // D1/provider error must not strand a running campaign with live calls
+      // unpollable. Always reschedule and log instead of rethrowing.
+      console.error(`[coordinator] alarm failed, rescheduling: ${error}`);
+      await this.ctx.storage.setAlarm(Date.now() + 15_000).catch(() => {});
+    }
+  }
+
+  private async runAlarm(): Promise<void> {
     const campaignId = await this.ctx.storage.get<number>('campaignId');
     if (!campaignId) return;
 
@@ -281,9 +293,11 @@ export class CampaignCoordinator extends DurableObject<Env> {
       try {
         const result = await adapter.getCallStatus(row.call_sid!, row.id);
         if (!FINAL_PROVIDER_STATES.has(result.status)) {
+          // Provider-driven backoff (e.g. IllyVoIP answer-action retry) wins over the cadence.
+          const delay = result.retryDelayMs ?? statusPollDelayMs(campaign.voice_provider);
           await this.env.DB.prepare(
             'UPDATE campaign_numbers SET provider_status = ?, next_action_at = ?, updated_at = ? WHERE id = ?',
-          ).bind(result.status, new Date(Date.now() + statusPollDelayMs(campaign.voice_provider)).toISOString(), new Date().toISOString(), row.id).run();
+          ).bind(result.status, new Date(Date.now() + delay).toISOString(), new Date().toISOString(), row.id).run();
           continue;
         }
         if (campaign.voice_provider === 'twilio' && campaign.campaign_mode === 'audio') {
@@ -316,8 +330,13 @@ export class CampaignCoordinator extends DurableObject<Env> {
            WHERE id = ? AND status = 'calling'`,
         ).bind(status, result.status, result.duration, result.answeredBy, result.errorMessage,
           new Date().toISOString(), new Date().toISOString(), row.id).run();
-      } catch {
+      } catch (error) {
         // A failed status read is safe to retry; it never creates another call.
+        // Log and back off so an outage or rate limit isn't hammered every alarm tick.
+        console.error(`[coordinator] status poll failed number_id=${row.id}: ${error}`);
+        await this.env.DB.prepare(
+          'UPDATE campaign_numbers SET next_action_at = ?, updated_at = ? WHERE id = ?',
+        ).bind(new Date(Date.now() + 3_000).toISOString(), new Date().toISOString(), row.id).run().catch(() => {});
       }
     }
   }

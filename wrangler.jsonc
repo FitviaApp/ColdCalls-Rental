@@ -54,8 +54,11 @@
     "USDT_CONTRACT": "0xdAC17F958D2ee523a2206206994597C13D831ec7",
     "AUDIO_PUBLIC_URL": "https://pub-d8cd3961afef49509b1f68c5ee2c30bf.r2.dev"
   },
-  "observability": {
-    "enabled": true,
-    "head_sampling_rate": 1
-  }
+	"observability": {
+		"enabled": true,
+		"head_sampling_rate": 1
+	},
+	"triggers": {
+		"crons": ["*/5 * * * *"]
+	}
 }
