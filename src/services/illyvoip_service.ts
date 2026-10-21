@@ -218,6 +218,7 @@ export function IllyvoipService(env: Env, apiKey: string) {
     const transferNumber = row.transfer_number;
     const now = () => new Date().toISOString();
     const audioUrl = row.audio_id ? await providerAudioUrl(env, row.audio_id) : null;
+    if (audioUrl) console.log(`[IllyVoIP] playback audio_url=${audioUrl}`);
     const playback: Record<string, unknown>[] = audioUrl
       ? [{ type: 'playback', audio_url: audioUrl }]
       : [];
