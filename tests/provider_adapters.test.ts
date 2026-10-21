@@ -253,16 +253,26 @@ describe('voice provider contracts', () => {
     expect(await service.getCallStatus('vapi_11')).toMatchObject({ status: 'completed', duration: 30 });
   });
 
-  it('does not play the IllyVoip prompt before the destination answer is reported', async () => {
+  it('plays the IllyVoip prompt when the API reports answered even without webhook', async () => {
     await seedIllyvoipCampaign(14, { callSid: 'vapi_14', press1: false, audio: true });
     await env.DB.prepare('UPDATE campaign_numbers SET destination_answered_at = NULL WHERE id = 14').run();
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify(illyvoipStatus('vapi_14', 'active')), { status: 200 }));
+      .mockResolvedValueOnce(new Response(JSON.stringify(illyvoipStatus('vapi_14', 'active')), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        status: 'success', call_control_id: 'vapi_14', results: [
+          { type: 'playback', ok: true, status: 'success', call_control_id: 'vapi_14', media: 'vcm14.opaque' },
+          {
+            type: 'transfer', ok: true, status: 'success', call_control_id: 'vapi_14', transfer_id: 'xfer_14',
+            transfer: { state: 'connecting', message: 'Connecting transfer destination…', target_type: 'pstn', target_value: call.transferNumber, can_cancel: true },
+          },
+        ], vars: {},
+      }), { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
 
     const service = IllyvoipService(env, 'illy-key');
     expect(await service.getCallStatus('vapi_14', 14)).toMatchObject({ status: 'calling' });
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    // Should call status API + execute API (drive triggered from poll fallback)
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it('plays the prompt and transfers the IllyVoip call in one action chain once the destination answers', async () => {

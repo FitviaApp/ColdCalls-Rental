@@ -180,6 +180,17 @@ export function IllyvoipService(env: Env, apiKey: string) {
     }
 
     if (campaignNumberId && (answeredAt || ANSWERED_STATES.has(raw))) {
+      // Fallback: if the webhook didn't set destination_answered_at, set it from the API poll
+      // This ensures playback triggers even if the webhook fails
+      if (campaignNumberId) {
+        const now = new Date().toISOString();
+        await env.DB.prepare(`
+          UPDATE campaign_numbers
+          SET destination_answered_at = COALESCE(destination_answered_at, ?), updated_at = ?
+          WHERE id = ? AND destination_answered_at IS NULL
+        `).bind(answeredAt ?? now, now, campaignNumberId).run();
+      }
+      
       try {
         await driveAnsweredCall(campaignNumberId, callSid);
       } catch (error) {
