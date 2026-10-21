@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { beforeAll, afterAll, describe, expect, it } from 'vitest';
 import { env, exports } from 'cloudflare:workers';
 import { encryptFernet } from '../src/auth';
 import { createProviderCallbackToken } from '../src/services/provider_callback_token';
@@ -14,6 +14,10 @@ async function twilioSignature(url: string, body: URLSearchParams, token: string
   for (const byte of digest) binary += String.fromCharCode(byte);
   return btoa(binary);
 }
+
+const originalAudioPublicUrl = env.AUDIO_PUBLIC_URL;
+beforeAll(() => { env.AUDIO_PUBLIC_URL = ''; });
+afterAll(() => { env.AUDIO_PUBLIC_URL = originalAudioPublicUrl; });
 
 describe('provider callback authentication', () => {
   it('serves press-1 LaML and private R2 audio through scoped signed URLs', async () => {

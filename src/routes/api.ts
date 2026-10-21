@@ -373,7 +373,14 @@ apiRoutes.get('/media/audio/:audioId', async (c) => {
   if (!audio) return c.json({ detail: 'Audio not found' }, 404);
   const object = await c.env.AUDIO_R2.get(audio.r2_key);
   if (!object) return c.json({ detail: 'Audio object not found' }, 404);
-  return new Response(object.body, { headers: { 'content-type': object.httpMetadata?.contentType ?? 'application/octet-stream', 'cache-control': 'public, max-age=86400' } });
+  return new Response(object.body, {
+    headers: {
+      'content-type': object.httpMetadata?.contentType ?? 'application/octet-stream',
+      'content-length': String(object.size),
+      'accept-ranges': 'bytes',
+      'cache-control': 'public, max-age=86400',
+    },
+  });
 });
 
 apiRoutes.on(['GET', 'POST'], '/ai-runtime/twiml/:numberId', (c) => c.redirect(`/api/ai-realtime/twiml/${c.req.param('numberId')}`, 307));

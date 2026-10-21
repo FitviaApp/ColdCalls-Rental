@@ -1,5 +1,9 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
 import { env } from 'cloudflare:workers';
+
+const originalAudioPublicUrl = env.AUDIO_PUBLIC_URL;
+beforeAll(() => { env.AUDIO_PUBLIC_URL = ''; });
+afterAll(() => { env.AUDIO_PUBLIC_URL = originalAudioPublicUrl; });
 import { TwilioService } from '../src/services/twilio_service';
 import { SignalWireService } from '../src/services/signalwire_service';
 import { TelnyxService } from '../src/services/telnyx_service';
