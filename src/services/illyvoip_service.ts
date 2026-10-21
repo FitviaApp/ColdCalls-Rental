@@ -49,6 +49,8 @@ interface CallControlRow {
   status: string;
   provider_sequence: number;
   dispatch_attempt_id: string | null;
+  destination_answered_at: string | null;
+  error_message: string | null;
   audio_id: number | null;
   press_1_to_talk_with_agent: number;
   transfer_number: string | null;
@@ -94,9 +96,14 @@ export function IllyvoipService(env: Env, apiKey: string) {
         signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (error) {
+      console.error(`[IllyVoIP] ${path} request error: ${error}`);
       throw new Error(`Illyvoip ${path} failed: ${error}`);
     }
-    if (!response.ok) throw new Error(`Illyvoip ${path} failed: status=${response.status}`);
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      console.error(`[IllyVoIP] ${path} HTTP error status=${response.status} body=${text}`);
+      throw new Error(`Illyvoip ${path} failed: status=${response.status}`);
+    }
     return (await response.json()) as Record<string, any>;
   }
 
@@ -111,6 +118,7 @@ export function IllyvoipService(env: Env, apiKey: string) {
       },
       attemptId,
     );
+    console.log(`[IllyVoIP] makeCall response=${JSON.stringify(data)}`);
     const callControlId = String(data.call_control_id ?? '');
     if (!callControlId) {
       throw new Error(`Illyvoip create call returned no call control id: ${JSON.stringify(data)}`);
@@ -176,7 +184,11 @@ export function IllyvoipService(env: Env, apiKey: string) {
         await driveAnsweredCall(campaignNumberId, callSid);
       } catch (error) {
         console.error(`[IllyVoIP] driveAnsweredCall error: ${error}`);
-        // Control actions reuse the dispatch idempotency key; the next poll retries them.
+        // Keep provider failures visible instead of completing the row silently.
+        await env.DB.prepare(
+          `UPDATE campaign_numbers SET error_message = COALESCE(NULLIF(error_message,''), ?),
+             outcome_reason = COALESCE(outcome_reason,'answer_actions_failed'), updated_at = ? WHERE id = ?`,
+        ).bind(String(error).slice(0, 500), new Date().toISOString(), campaignNumberId).run().catch(() => {});
       }
       return {
         status: 'calling',
@@ -200,23 +212,30 @@ export function IllyvoipService(env: Env, apiKey: string) {
   // are issued through call control after the destination answers. The /execute action
   // chain runs them in order (playback → gather/transfer), because separate requests
   // race the playback and the DTMF window closes before the prompt is heard.
-  // provider_sequence 0 = answer actions issued, 2 = transfer/hangup issued, so a
-  // repeated status poll never replays an action.
+  // provider_sequence < 1 = not started, 2 = transfer/hangup issued, so a repeated
+  // status poll never replays an action.
   async function driveAnsweredCall(campaignNumberId: number, callControlId: string): Promise<void> {
     const row = await env.DB.prepare(
-      `SELECT cn.status, cn.provider_sequence, cn.dispatch_attempt_id, c.audio_id,
-              c.press_1_to_talk_with_agent, u.transfer_number
+      `SELECT cn.status, cn.provider_sequence, cn.dispatch_attempt_id, cn.destination_answered_at,
+              cn.error_message, c.audio_id, c.press_1_to_talk_with_agent, u.transfer_number
          FROM campaign_numbers cn JOIN campaigns c ON c.id = cn.campaign_id
          JOIN users u ON u.id = c.user_id
         WHERE cn.id = ?`,
     ).bind(campaignNumberId).first<CallControlRow>();
-    if (!row || row.status !== 'calling') return;
+    // The control session can answer before the PSTN destination; only the call
+    // report webhook records the real answer, so never play into ringing.
+    if (!row || row.status !== 'calling' || !row.destination_answered_at) return;
 
     const step = Number(row.provider_sequence ?? -1);
     if (step > 0) return;
     const attempt = String(row.dispatch_attempt_id ?? `number-${campaignNumberId}`);
     const transferNumber = row.transfer_number;
     const now = () => new Date().toISOString();
+    if (row.error_message) {
+      await env.DB.prepare(
+        'UPDATE campaign_numbers SET error_message = NULL, outcome_reason = NULL, updated_at = ? WHERE id = ?',
+      ).bind(now(), campaignNumberId).run();
+    }
     const audioUrl = row.audio_id ? await providerAudioUrl(env, row.audio_id) : null;
     if (audioUrl) console.log(`[IllyVoIP] playback audio_url=${audioUrl}`);
     const playback: Record<string, unknown>[] = audioUrl

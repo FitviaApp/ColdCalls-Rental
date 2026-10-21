@@ -19,11 +19,15 @@ export async function verifyAudioToken(env: Env, token: string, audioId: number)
   }
 }
 
+function isValidAudioUrl(url: string): boolean {
+  return /^https?:\/\//i.test(url);
+}
+
 export async function providerAudioUrl(env: Env, audioId: number): Promise<string> {
   const audio = await env.DB.prepare('SELECT r2_key, r2_url FROM audios WHERE id=? AND is_active=1')
     .bind(audioId).first<{ r2_key: string; r2_url: string }>();
   const publicBase = (env.AUDIO_PUBLIC_URL ?? '').replace(/\/+$/, '');
-  if (audio?.r2_url) return audio.r2_url;
+  if (audio?.r2_url && isValidAudioUrl(audio.r2_url)) return audio.r2_url;
   if (publicBase && audio?.r2_key) return `${publicBase}/${audio.r2_key}`;
   const token = await createAudioToken(env, audioId);
   return `${(env.BASE_URL ?? '').replace(/\/+$/, '')}/api/media/audio/${audioId}?token=${encodeURIComponent(token)}`;

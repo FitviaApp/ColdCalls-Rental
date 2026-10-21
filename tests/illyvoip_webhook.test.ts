@@ -58,7 +58,7 @@ describe('illyvoip webhook signature verification', () => {
 });
 
 describe('illyvoip webhook route', () => {
-  it('drives the answered flow from a call_answered webhook', async () => {
+  it('records the destination answer from a call_answered webhook', async () => {
     await env.DB.batch([
       env.DB.prepare("INSERT INTO users(id,email,password_hash,is_admin,is_active,transfer_number) VALUES(1,'owner@example.com','x',0,1,NULL)"),
       env.DB.prepare("INSERT INTO caller_ids(id,user_id,phone_number,country_code,description,is_active) VALUES(1,1,'+15550000001','US','test',1)"),
@@ -68,7 +68,11 @@ describe('illyvoip webhook route', () => {
       env.DB.prepare('INSERT INTO user_illyvoip_credentials(user_id,api_key_encrypted) VALUES(1,?)').bind(encryptFernet(env.ENCRYPTION_KEY, 'illy-key')),
     ]);
 
-    const payload = { id: 'evt_answer_11', type: 'call_answered', data: { call: { call_control_id: 'vapi_11' } } };
+    const payload = {
+      id: 'evt_answer_11',
+      type: 'call_answered',
+      data: { call: { call_id: 'vapi_11', voice_api_control: false, answered_at: '2026-10-21T12:37:24+00:00' } },
+    };
     const { signature, raw } = await signPayload(payload);
     const response = await exports.default.fetch(new Request('https://example.test/api/illyvoip/webhook', {
       method: 'POST',
@@ -76,8 +80,32 @@ describe('illyvoip webhook route', () => {
       body: raw,
     }));
     expect(response.status).toBe(200);
-    const row = await env.DB.prepare('SELECT provider_sequence FROM campaign_numbers WHERE id=11').first();
-    expect(row).toMatchObject({ provider_sequence: 2 });
+    const row = await env.DB.prepare('SELECT provider_sequence,destination_answered_at FROM campaign_numbers WHERE id=11').first();
+    expect(row).toMatchObject({ provider_sequence: -1, destination_answered_at: expect.any(String) });
+  });
+
+  it('matches a call report answer to the in-flight call by phone numbers', async () => {
+    await seedIllyvoipCall('vapi_13');
+    const payload = {
+      id: 'evt_report_13',
+      type: 'call_answered',
+      data: {
+        call: {
+          call_id: '1792586210.287877', direction: 'outgoing',
+          from: '15550000001', to: '15550000002', dialed: '15550000002',
+          answered_at: '2026-10-21T12:37:24+00:00', voice_api_control: false,
+        },
+      },
+    };
+    const { signature, raw } = await signPayload(payload);
+    const response = await exports.default.fetch(new Request('https://example.test/api/illyvoip/webhook', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'Illyvoip-Signature': signature },
+      body: raw,
+    }));
+    expect(response.status).toBe(200);
+    const row = await env.DB.prepare('SELECT status,destination_answered_at FROM campaign_numbers WHERE id=11').first();
+    expect(row).toMatchObject({ status: 'calling', destination_answered_at: '2026-10-21T12:37:24+00:00' });
   });
 
   it('finalizes the call on call_completed and ignores duplicates', async () => {

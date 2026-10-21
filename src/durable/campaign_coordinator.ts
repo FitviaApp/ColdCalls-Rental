@@ -58,8 +58,8 @@ function knownProviderRejection(error: unknown): boolean {
 // IllyVoIP issues playback/transfer through call control after answer, so each live
 // call must be polled sub-minute; every other adapter finishes the flow provider-side.
 function statusPollDelayMs(provider: string): number {
-  // IllyVoIP has no answer webhook, so playback/transfer only starts on the next poll.
-  // Keep this short so the caller isn't waiting several seconds after answering.
+  // IllyVoIP call webhooks record the real destination answer; the poll starts
+  // playback/transfer. Keep it short so the caller isn't waiting after answering.
   return provider === 'illyvoip' ? 1_500 : 30_000;
 }
 

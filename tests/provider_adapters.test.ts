@@ -253,6 +253,18 @@ describe('voice provider contracts', () => {
     expect(await service.getCallStatus('vapi_11')).toMatchObject({ status: 'completed', duration: 30 });
   });
 
+  it('does not play the IllyVoip prompt before the destination answer is reported', async () => {
+    await seedIllyvoipCampaign(14, { callSid: 'vapi_14', press1: false, audio: true });
+    await env.DB.prepare('UPDATE campaign_numbers SET destination_answered_at = NULL WHERE id = 14').run();
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(illyvoipStatus('vapi_14', 'active')), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const service = IllyvoipService(env, 'illy-key');
+    expect(await service.getCallStatus('vapi_14', 14)).toMatchObject({ status: 'calling' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('plays the prompt and transfers the IllyVoip call in one action chain once the destination answers', async () => {
     await seedIllyvoipCampaign(11, { callSid: 'vapi_11', press1: false, audio: true });
     const fetchMock = vi.fn()
@@ -408,7 +420,7 @@ async function seedIllyvoipCampaign(
       "INSERT INTO campaigns(id,user_id,name,caller_id_id,country_id,audio_id,status,voice_provider,press_1_to_talk_with_agent,total_numbers) VALUES(7,1,'illy',1,1,?,'running','illyvoip',?,1)",
     ).bind(options.audio ? 1 : null, options.press1 ? 1 : 0),
     env.DB.prepare(
-      "INSERT INTO campaign_numbers(id,campaign_id,phone_number,status,call_sid,dispatch_attempt_id) VALUES(?,7,'+15550000002','calling',?,'attempt-11')",
-    ).bind(campaignNumberId, options.callSid),
+      "INSERT INTO campaign_numbers(id,campaign_id,phone_number,status,call_sid,dispatch_attempt_id,destination_answered_at) VALUES(?,7,'+15550000002','calling',?,'attempt-11',?)",
+    ).bind(campaignNumberId, options.callSid, new Date().toISOString()),
   ]);
 }

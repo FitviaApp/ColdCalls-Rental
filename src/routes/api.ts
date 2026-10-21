@@ -4,8 +4,6 @@ import { type AppEnv, getUser, requireRental } from '../middleware';
 import { getUserSignalwireCredentials } from '../services/user_signalwire_service';
 import { getUserTwilioCredentials } from '../services/user_twilio_service';
 import { decodeVoximplantCallbackToken } from '../services/voximplant_service';
-import { IllyvoipService } from '../services/illyvoip_service';
-import { getUserIllyvoipCredentials } from '../services/user_illyvoip_service';
 import {
   verifyIllyvoipWebhook,
   IllyvoipWebhookError,
@@ -28,6 +26,7 @@ import {
 export const apiRoutes = new Hono<AppEnv>();
 const xml = (body: string) => new Response(body, { headers: { 'content-type': 'application/xml; charset=utf-8', 'cache-control': 'no-store' } });
 const escapeXml = (value: unknown) => String(value ?? '').replace(/[<>&"']/g, (char) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' })[char]!);
+const digitsOnly = (value: unknown) => String(value ?? '').replace(/\D/g, '');
 
 interface CampaignXmlRow {
   id: number; user_id: number; voice_provider: string; transfer_number: string | null;
@@ -220,19 +219,49 @@ apiRoutes.post('/illyvoip/webhook', async (c) => {
   try {
     event = await verifyIllyvoipWebhook(raw, signature, secret, Math.floor(Date.now() / 1000));
   } catch (error) {
+    console.error(`[IllyVoIP webhook] verification failed: ${error}`);
     const status = error instanceof IllyvoipWebhookError ? error.status : 401;
     return c.json({ detail: error instanceof Error ? error.message : 'Invalid webhook' }, status as 401 | 503);
   }
+  console.log(`[IllyVoIP webhook] event id=${event.id} type=${event.type} call_control_id=${illyvoipCallControlId(event)}`);
   const eventType = illyvoipEventType(event);
   const eventId = String(event.id ?? '');
   const callControlId = illyvoipCallControlId(event);
   if (!eventId || !callControlId) return c.json({ detail: 'Invalid event payload' }, 400);
 
-  const row = await c.env.DB.prepare(
+  const callBlock = (event.data?.call ?? event.data?.payload ?? {}) as Record<string, unknown>;
+  type WebhookNumberRow = {
+    number_id: number; status: string; campaign_id: number; user_id: number;
+    phone_number?: string; caller_number?: string;
+  };
+  let row = await c.env.DB.prepare(
     `SELECT cn.id number_id, cn.status, cn.campaign_id, c.user_id
        FROM campaign_numbers cn JOIN campaigns c ON c.id = cn.campaign_id
       WHERE cn.call_sid = ? AND c.voice_provider = 'illyvoip'`,
-  ).bind(callControlId).first<{ number_id: number; status: string; campaign_id: number; user_id: number }>();
+  ).bind(callControlId).first<WebhookNumberRow>();
+
+  // Call reports use a public call_id, not the control session id. Match the
+  // answered report to the in-flight IllyVoIP row by destination and caller.
+  if (!row && eventType === 'call_answered') {
+    const to = digitsOnly(callBlock.to ?? callBlock.dialed);
+    const from = digitsOnly(callBlock.from);
+    if (String(callBlock.direction ?? '').toLowerCase() === 'outgoing' && to && from) {
+      const cutoff = new Date(Date.now() - 10 * 60_000).toISOString();
+      const candidates = await c.env.DB.prepare(
+        `SELECT cn.id number_id, cn.status, cn.campaign_id, c.user_id,
+                cn.phone_number, ci.phone_number caller_number
+           FROM campaign_numbers cn
+           JOIN campaigns c ON c.id = cn.campaign_id
+           JOIN caller_ids ci ON ci.id = c.caller_id_id
+          WHERE c.voice_provider = 'illyvoip' AND cn.status = 'calling' AND cn.updated_at >= ?
+          ORDER BY cn.id DESC LIMIT 50`,
+      ).bind(cutoff).all<WebhookNumberRow>();
+      row = candidates.results.find((candidate) =>
+        digitsOnly(candidate.phone_number) === to && digitsOnly(candidate.caller_number) === from,
+      ) ?? null;
+      if (row) console.log(`[IllyVoIP webhook] matched call report to number_id=${row.number_id}`);
+    }
+  }
   if (!row) return c.json({ ok: true, ignored: true });
 
   const inserted = await c.env.DB.prepare(
@@ -241,22 +270,23 @@ apiRoutes.post('/illyvoip/webhook', async (c) => {
   if (!inserted.meta.changes) return c.json({ ok: true, duplicate: true });
 
   if (eventType === 'call_answered') {
-    if (row.status === 'calling') {
-      try {
-        const apiKey = await getUserIllyvoipCredentials(c.env, c.env.DB, row.user_id);
-        const service = IllyvoipService(c.env, apiKey);
-        await service.driveAnsweredCall(row.number_id, callControlId).catch((err) => {
-          console.error(`[IllyVoIP] webhook driveAnsweredCall error: ${err}`);
-        });
-      } catch (error) {
-        console.error(`[IllyVoIP] webhook answer handler error: ${error}`);
-      }
+    // Only call reports describe the PSTN leg. A control-session answer is the
+    // SIP leg and can arrive while the destination is still ringing.
+    if (row.status === 'calling' && callBlock.voice_api_control === false) {
+      // The status poll owns the playback workflow; record the real destination
+      // answer and let the next poll start it.
+      const now = new Date().toISOString();
+      const answeredAt = String(callBlock.answered_at ?? now);
+      await c.env.DB.prepare(
+        `UPDATE campaign_numbers SET destination_answered_at = COALESCE(destination_answered_at, ?),
+           next_action_at = ?, updated_at = ? WHERE id = ? AND status = 'calling'`,
+      ).bind(answeredAt, now, now, row.number_id).run();
+      console.log(`[IllyVoIP webhook] destination answered number_id=${row.number_id} at=${answeredAt}`);
     }
     return c.json({ ok: true });
   }
 
   if (eventType === 'call_completed') {
-    const callBlock = (event.data?.call ?? event.data?.payload ?? {}) as Record<string, unknown>;
     const rawStatus = String(callBlock.state ?? callBlock.call_status ?? callBlock.status ?? 'completed').toLowerCase();
     const duration = Number(
       callBlock.duration ?? callBlock.duration_seconds ?? callBlock.call_duration ?? callBlock.duration_total ?? 0,
