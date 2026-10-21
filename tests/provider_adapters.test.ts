@@ -446,6 +446,72 @@ describe('voice provider contracts', () => {
     expect(await env.DB.prepare('SELECT provider_sequence,transfer_status FROM campaign_numbers WHERE id=16').first())
       .toMatchObject({ provider_sequence: 2, transfer_status: 'not_pressed' });
   });
+
+  it('reports an IllyVoIP no-answer from the CDR instead of a generic failure', async () => {
+    await seedIllyvoipCampaign(17, { callSid: 'vapi_17', press1: false, audio: true });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        status: 'success', call_control_id: 'vapi_17', state: 'failed', call_status: 'failed', terminal: true,
+        to: '+15550000002', from: '+15550000001', created_at: null, answered_at: null, ended_at: null,
+        failure_reason: 'The call could not be completed.',
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        status: 'success',
+        calls: [{
+          call_id: 'CALL-71B25F2E91BB028B', sip_user_id: '1051', from: '+15550000001', to: '+15550000002',
+          direction: 'outgoing', status: 'failed', number: '+15550000002',
+          started_at: new Date().toISOString(), starttime: '', duration_seconds: 0,
+          hangup_cause: 'Q850_19', failure_reason_code: 'no_answer',
+          failure_reason: 'No answer', contact_id: null, contact_name: null,
+        }],
+        pagination: { limit: 500, has_more: false, next_cursor: null },
+      }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const service = IllyvoipService(env, 'illy-key');
+
+    expect(await service.getCallStatus('vapi_17', 17))
+      .toMatchObject({ status: 'no_answer', error_message: 'no_answer (Q850_19)' });
+    const cdrRequest = fetchMock.mock.calls[1];
+    expect(String(cdrRequest[0])).toContain('https://api.illyvoip.com/api/v1/calls?');
+    expect(new Headers(cdrRequest[1]?.headers).get('x-api-key')).toBe('illy-key');
+  });
+
+  it('waits once for a lagging IllyVoIP CDR row, then records the real failure code', async () => {
+    await seedIllyvoipCampaign(18, { callSid: 'vapi_18', press1: false, audio: true });
+    const terminal = () => new Response(JSON.stringify({
+      status: 'success', call_control_id: 'vapi_18', state: 'failed', call_status: 'failed', terminal: true,
+      to: '+15550000002', from: '+15550000001', created_at: null, answered_at: null, ended_at: null,
+      failure_reason: 'The call could not be completed.',
+    }), { status: 200 });
+    const emptyCdr = () => new Response(JSON.stringify({
+      status: 'success', calls: [], pagination: { limit: 500, has_more: false, next_cursor: null },
+    }), { status: 200 });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(terminal())
+      .mockResolvedValueOnce(emptyCdr())
+      .mockResolvedValueOnce(terminal())
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        status: 'success',
+        calls: [{
+          call_id: 'CALL-71B25F2E91BB028C', sip_user_id: '1051', from: '+15550000001', to: '+15550000002',
+          direction: 'outgoing', status: 'failed', number: '+15550000002',
+          started_at: new Date().toISOString(), starttime: '', duration_seconds: 0,
+          hangup_cause: 'CALL_REJECTED', failure_reason_code: 'callerid_blocked',
+          failure_reason: 'Caller ID blocked', contact_id: null, contact_name: null,
+        }],
+        pagination: { limit: 500, has_more: false, next_cursor: null },
+      }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const service = IllyvoipService(env, 'illy-key');
+
+    expect(await service.getCallStatus('vapi_18', 18)).toMatchObject({ status: 'calling', retry_delay_ms: 4_000 });
+    expect(await env.DB.prepare('SELECT outcome_reason FROM campaign_numbers WHERE id=18').first())
+      .toMatchObject({ outcome_reason: 'cdr_pending' });
+    expect(await service.getCallStatus('vapi_18', 18))
+      .toMatchObject({ status: 'failed', error_message: 'callerid_blocked (CALL_REJECTED)' });
+    expect(await env.DB.prepare('SELECT outcome_reason FROM campaign_numbers WHERE id=18').first())
+      .toMatchObject({ outcome_reason: null });
+  });
 });
 
 async function rsaPrivateKey(): Promise<string> {

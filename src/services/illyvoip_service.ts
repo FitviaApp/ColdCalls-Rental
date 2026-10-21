@@ -85,6 +85,14 @@ function terminalStatus(raw: string): string {
   return 'failed';
 }
 
+function digits(value: unknown): string {
+  return String(value ?? '').replace(/\D/g, '');
+}
+
+const CDR_NO_ANSWER = new Set(['NO_ANSWER', 'Q850_18', 'Q850_19']);
+const CDR_BUSY = new Set(['BUSY', 'USER_BUSY', 'Q850_17']);
+const CDR_CONNECTED = new Set(['NORMAL_CLEARING', 'ANSWER', 'ANSWERED']);
+
 export function IllyvoipService(env: Env, apiKey: string) {
   if (!apiKey) throw new Error('Illyvoip credentials not configured');
   const key = apiKey.trim();
@@ -191,6 +199,108 @@ export function IllyvoipService(env: Env, apiKey: string) {
     ).bind(state, connected ? 1 : 0, ts, failed ? 1 : 0, redact(message).slice(0, 500), ts, campaignNumberId).run();
   }
 
+  // /status only reports a generic "failed"; the CDR (GET /calls) carries the real
+  // hangup_cause (e.g. Q850_19 = destination rang, nobody answered) and
+  // failure_reason_code (e.g. callerid_blocked), so campaigns can tell a no-answer
+  // apart from a provider/account problem. CDR rows can lag call end by a few
+  // seconds: hold the row once (outcome_reason='cdr_pending') before finalizing generic.
+  async function cdrOutcome(row: { phone_number: string; claimed_at: string | null }): Promise<Record<string, any> | null> {
+    const target = digits(row.phone_number).slice(-9);
+    if (target.length < 7) return null;
+    const parsedClaimedAt = Date.parse(String(row.claimed_at ?? ''));
+    const anchor = Number.isFinite(parsedClaimedAt) ? parsedClaimedAt : Date.now();
+    try {
+      let cursor = '';
+      for (let page = 0; page < 3; page++) {
+        const url = new URL(`${API_BASE}/calls`);
+        url.searchParams.set('days', '2');
+        url.searchParams.set('limit', '500');
+        if (cursor) url.searchParams.set('cursor', cursor);
+        const response = await fetch(url, {
+          headers: { 'X-Api-Key': key },
+          signal: AbortSignal.timeout(10_000),
+        });
+        if (!response.ok) return null;
+        const data = (await response.json()) as Record<string, any>;
+        const calls = (data.calls ?? []) as Record<string, any>[];
+        let best: Record<string, any> | null = null;
+        let bestDiff = Number.POSITIVE_INFINITY;
+        let sawRecent = false;
+        for (const call of calls) {
+          const started = Date.parse(String(call.started_at ?? ''));
+          if (!Number.isFinite(started)) continue;
+          if (started > anchor - 300_000) sawRecent = true;
+          const diff = Math.abs(started - anchor);
+          if (diff > 300_000 || diff >= bestDiff) continue;
+          if (call.direction && call.direction !== 'outgoing') continue;
+          if (digits(call.to).slice(-9) !== target) continue;
+          best = call;
+          bestDiff = diff;
+        }
+        if (best) return best;
+        // CDR pages come newest-first: a whole page older than the window means no match.
+        if (!sawRecent || !data.pagination?.has_more) return null;
+        cursor = String(data.pagination?.next_cursor ?? '');
+        if (!cursor) return null;
+      }
+    } catch (error) {
+      console.error(`[IllyVoIP] CDR lookup failed: ${error}`);
+    }
+    return null;
+  }
+
+  async function terminalWithCdrCause(
+    campaignNumberId: number,
+    duration: number,
+    fallbackReason: string,
+  ): Promise<PollResult> {
+    const finalize = (status: string, reason: string, finalDuration: number): PollResult => ({
+      status,
+      duration: finalDuration,
+      answered_by: null,
+      error_code: null,
+      error_message: reason,
+    });
+    let row: { phone_number: string; claimed_at: string | null; outcome_reason: string | null } | null = null;
+    try {
+      row = await env.DB.prepare(
+        'SELECT phone_number, claimed_at, outcome_reason FROM campaign_numbers WHERE id = ?',
+      ).bind(campaignNumberId).first<{ phone_number: string; claimed_at: string | null; outcome_reason: string | null }>();
+    } catch (error) {
+      console.error(`[IllyVoIP] CDR row lookup failed: ${error}`);
+    }
+    const existingReason = row?.outcome_reason ?? null;
+    const alreadyWaited = existingReason === 'cdr_pending';
+    const clearPending = async () => {
+      if (alreadyWaited) {
+        await env.DB.prepare(
+          "UPDATE campaign_numbers SET outcome_reason = NULL, updated_at = ? WHERE id = ? AND outcome_reason = 'cdr_pending'",
+        ).bind(new Date().toISOString(), campaignNumberId).run().catch(() => {});
+      }
+    };
+    const cdr = row ? await cdrOutcome(row) : null;
+    if (!cdr) {
+      if (row && !existingReason) {
+        await env.DB.prepare(
+          "UPDATE campaign_numbers SET outcome_reason = 'cdr_pending', updated_at = ? WHERE id = ? AND outcome_reason IS NULL",
+        ).bind(new Date().toISOString(), campaignNumberId).run().catch(() => {});
+        return { ...finalize('calling', '', 0), retry_delay_ms: 4_000 };
+      }
+      await clearPending();
+      return finalize('failed', fallbackReason, duration);
+    }
+    await clearPending();
+    const code = cdr.failure_reason_code != null ? String(cdr.failure_reason_code) : '';
+    const cause = cdr.hangup_cause != null ? String(cdr.hangup_cause) : '';
+    const reason = (code || cause) && `${code || cause}${code && cause ? ` (${cause})` : ''}` || fallbackReason;
+    let status = 'failed';
+    if (code === 'no_answer' || CDR_NO_ANSWER.has(cause)) status = 'no_answer';
+    else if (code === 'busy' || CDR_BUSY.has(cause)) status = 'busy';
+    else if (cdr.status === 'completed' || CDR_CONNECTED.has(cause)) status = 'completed';
+    const finalDuration = status === 'completed' && !duration ? Number(cdr.duration_seconds ?? 0) : duration;
+    return finalize(status, reason, finalDuration);
+  }
+
   async function getCallStatus(callSid: string, campaignNumberId?: number): Promise<PollResult> {
     const data = await request('/voice/call-control/status', { call_control_id: callSid });
     const raw = String(data.call_status ?? data.state ?? '').toLowerCase();
@@ -198,12 +308,18 @@ export function IllyvoipService(env: Env, apiKey: string) {
     if (campaignNumberId) await refreshTransferStatus(campaignNumberId);
 
     if (data.terminal === true) {
+      const base = terminalStatus(raw);
+      const duration = secondsBetween(answeredAt, data.ended_at);
+      const failureReason = String(data.failure_reason ?? '');
+      if (campaignNumberId && base === 'failed') {
+        return terminalWithCdrCause(campaignNumberId, duration, failureReason);
+      }
       return {
-        status: terminalStatus(raw),
-        duration: secondsBetween(answeredAt, data.ended_at),
+        status: base,
+        duration,
         answered_by: null,
         error_code: null,
-        error_message: String(data.failure_reason ?? ''),
+        error_message: failureReason,
       };
     }
 
