@@ -282,6 +282,8 @@ apiRoutes.post('/illyvoip/webhook', async (c) => {
            next_action_at = ?, updated_at = ? WHERE id = ? AND status = 'calling'`,
       ).bind(answeredAt, now, now, row.number_id).run();
       console.log(`[IllyVoIP webhook] destination answered number_id=${row.number_id} at=${answeredAt}`);
+      // Wake the campaign coordinator now instead of waiting for its next alarm.
+      await coordinator(c.env, row.campaign_id).reconcile(row.campaign_id);
     }
     return c.json({ ok: true });
   }
@@ -401,7 +403,9 @@ apiRoutes.get('/media/audio/:audioId', async (c) => {
   if (!(await verifyAudioToken(c.env, c.req.query('token') ?? '', audioId))) return c.json({ detail: 'Invalid or expired audio token' }, 401);
   const audio = await c.env.DB.prepare('SELECT r2_key FROM audios WHERE id=? AND is_active=1').bind(audioId).first<{ r2_key: string }>();
   if (!audio) return c.json({ detail: 'Audio not found' }, 404);
+  const startedAt = Date.now();
   const object = await c.env.AUDIO_R2.get(audio.r2_key);
+  console.log(`[media] audio=${audioId} size=${object?.size ?? 0} range=${c.req.header('range') ?? '-'} ms=${Date.now() - startedAt}`);
   if (!object) return c.json({ detail: 'Audio object not found' }, 404);
   return new Response(object.body, {
     headers: {

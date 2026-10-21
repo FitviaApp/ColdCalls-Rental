@@ -2,6 +2,7 @@ import { beforeAll, afterAll, describe, expect, it } from 'vitest';
 import { env, exports } from 'cloudflare:workers';
 import { encryptFernet } from '../src/auth';
 import { createProviderCallbackToken } from '../src/services/provider_callback_token';
+import { providerAudioUrl } from '../src/services/media_token';
 
 async function twilioSignature(url: string, body: URLSearchParams, token: string): Promise<string> {
   let payload = url;
@@ -20,6 +21,16 @@ beforeAll(() => { env.AUDIO_PUBLIC_URL = ''; });
 afterAll(() => { env.AUDIO_PUBLIC_URL = originalAudioPublicUrl; });
 
 describe('provider callback authentication', () => {
+  it('prefers the Worker media URL for IllyVoip even when a public R2 URL exists', async () => {
+    await env.DB.prepare(
+      "INSERT INTO audios(id,user_id,name,r2_key,r2_url,is_active) VALUES(2,1,'prompt','audios/prompt.wav','https://pub.example.test/audios/prompt.wav',1)",
+    ).run();
+    const workerUrl = await providerAudioUrl(env, 2, true);
+    expect(workerUrl).toContain('/api/media/audio/2?token=');
+    expect(workerUrl).not.toContain('pub.example.test');
+    expect(await providerAudioUrl(env, 2, false)).toBe('https://pub.example.test/audios/prompt.wav');
+  });
+
   it('serves press-1 LaML and private R2 audio through scoped signed URLs', async () => {
     await env.DB.batch([
       env.DB.prepare("INSERT INTO users(id,email,password_hash,is_admin,is_active,transfer_number) VALUES(1,'owner@example.com','x',0,1,'+15550000003')"),

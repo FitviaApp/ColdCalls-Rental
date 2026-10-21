@@ -236,7 +236,9 @@ export function IllyvoipService(env: Env, apiKey: string) {
         'UPDATE campaign_numbers SET error_message = NULL, outcome_reason = NULL, updated_at = ? WHERE id = ?',
       ).bind(now(), campaignNumberId).run();
     }
-    const audioUrl = row.audio_id ? await providerAudioUrl(env, row.audio_id) : null;
+    // Prefer the Worker media route for IllyVoIP: the public r2.dev host is a
+    // development endpoint and can be slow/rate-limited from provider networks.
+    const audioUrl = row.audio_id ? await providerAudioUrl(env, row.audio_id, true) : null;
     if (audioUrl) console.log(`[IllyVoIP] playback audio_url=${audioUrl}`);
     const playback: Record<string, unknown>[] = audioUrl
       ? [{ type: 'playback', audio_url: audioUrl }]
