@@ -49,7 +49,6 @@ interface CallControlRow {
   status: string;
   provider_sequence: number;
   dispatch_attempt_id: string | null;
-  destination_answered_at: string | null;
   error_message: string | null;
   audio_id: number | null;
   press_1_to_talk_with_agent: number;
@@ -180,17 +179,6 @@ export function IllyvoipService(env: Env, apiKey: string) {
     }
 
     if (campaignNumberId && (answeredAt || ANSWERED_STATES.has(raw))) {
-      // Fallback: if the webhook didn't set destination_answered_at, set it from the API poll
-      // This ensures playback triggers even if the webhook fails
-      if (campaignNumberId) {
-        const now = new Date().toISOString();
-        await env.DB.prepare(`
-          UPDATE campaign_numbers
-          SET destination_answered_at = COALESCE(destination_answered_at, ?), updated_at = ?
-          WHERE id = ? AND destination_answered_at IS NULL
-        `).bind(answeredAt ?? now, now, campaignNumberId).run();
-      }
-      
       try {
         await driveAnsweredCall(campaignNumberId, callSid);
       } catch (error) {
@@ -227,15 +215,13 @@ export function IllyvoipService(env: Env, apiKey: string) {
   // status poll never replays an action.
   async function driveAnsweredCall(campaignNumberId: number, callControlId: string): Promise<void> {
     const row = await env.DB.prepare(
-      `SELECT cn.status, cn.provider_sequence, cn.dispatch_attempt_id, cn.destination_answered_at,
+      `SELECT cn.status, cn.provider_sequence, cn.dispatch_attempt_id,
               cn.error_message, c.audio_id, c.press_1_to_talk_with_agent, u.transfer_number
          FROM campaign_numbers cn JOIN campaigns c ON c.id = cn.campaign_id
          JOIN users u ON u.id = c.user_id
         WHERE cn.id = ?`,
     ).bind(campaignNumberId).first<CallControlRow>();
-    // The control session can answer before the PSTN destination; only the call
-    // report webhook records the real answer, so never play into ringing.
-    if (!row || row.status !== 'calling' || !row.destination_answered_at) return;
+    if (!row || row.status !== 'calling') return;
 
     const step = Number(row.provider_sequence ?? -1);
     if (step > 0) return;
