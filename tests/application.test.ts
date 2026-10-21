@@ -134,7 +134,7 @@ describe('application persistence and tenant boundaries', () => {
   it('stores audio in R2 and serves it only through an authenticated owner route', async () => {
     const token = await seedUser(1, 'one@example.com');
     await env.AUDIO_R2.put('audios/test.mp3', new Uint8Array([1, 2, 3]), { httpMetadata: { contentType: 'audio/mpeg' } });
-    await env.DB.prepare("INSERT INTO audios(id,user_id,name,r2_key,r2_url,is_active) VALUES(1,1,'test','audios/test.mp3','',1)").run();
+    await env.DB.prepare("INSERT INTO audios(id,user_id,name,r2_key,r2_url,is_active) VALUES(1,1,'test','audios/test.mp3','https://pub-example.r2.dev/audios/test.mp3',1)").run();
     const unauthenticated = await exports.default.fetch(new Request('https://example.test/assets/audios/1/content'));
     expect(unauthenticated.status).toBe(401);
     const authenticated = await exports.default.fetch(request('/assets/audios/1/content', token));

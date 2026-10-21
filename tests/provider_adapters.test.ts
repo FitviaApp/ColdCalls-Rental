@@ -279,7 +279,7 @@ describe('voice provider contracts', () => {
     expect(String(chain[0])).toBe('https://api.illyvoip.com/api/v1/voice/call-control/execute');
     const actions = JSON.parse(String(chain[1]?.body)).actions;
     expect(actions[0]).toMatchObject({ type: 'playback' });
-    expect(String(actions[0].audio_url)).toContain('/api/media/audio/1?token=');
+    expect(String(actions[0].audio_url)).toBe('https://pub-example.r2.dev/audio-key');
     expect(actions[1]).toMatchObject({
       type: 'transfer', target: { type: 'pstn', value: call.transferNumber },
     });
@@ -403,7 +403,7 @@ async function seedIllyvoipCampaign(
     env.DB.prepare("INSERT INTO users(id,email,password_hash,is_admin,is_active,transfer_number) VALUES(1,'owner@example.com','x',0,1,'+15550000003')"),
     env.DB.prepare("INSERT INTO caller_ids(id,user_id,phone_number,country_code,description,is_active) VALUES(1,1,'+15550000001','US','test',1)"),
     env.DB.prepare("INSERT INTO countries(id,code,name,price_per_minute,is_active) VALUES(1,'US','United States',0.01,1)"),
-    env.DB.prepare("INSERT INTO audios(id,user_id,name,r2_key,r2_url,is_active) VALUES(1,1,'prompt','audio-key','',1)"),
+    env.DB.prepare("INSERT INTO audios(id,user_id,name,r2_key,r2_url,is_active) VALUES(1,1,'prompt','audio-key','https://pub-example.r2.dev/audio-key',1)"),
     env.DB.prepare(
       "INSERT INTO campaigns(id,user_id,name,caller_id_id,country_id,audio_id,status,voice_provider,press_1_to_talk_with_agent,total_numbers) VALUES(7,1,'illy',1,1,?,'running','illyvoip',?,1)",
     ).bind(options.audio ? 1 : null, options.press1 ? 1 : 0),

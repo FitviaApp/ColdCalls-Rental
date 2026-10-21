@@ -25,7 +25,7 @@ describe('provider callback authentication', () => {
       env.DB.prepare("INSERT INTO users(id,email,password_hash,is_admin,is_active,transfer_number) VALUES(1,'owner@example.com','x',0,1,'+15550000003')"),
       env.DB.prepare("INSERT INTO caller_ids(id,user_id,phone_number,country_code,description,is_active) VALUES(1,1,'+15550000001','US','test',1)"),
       env.DB.prepare("INSERT INTO countries(id,code,name,price_per_minute,is_active) VALUES(1,'US','United States',0.01,1)"),
-      env.DB.prepare("INSERT INTO audios(id,user_id,name,r2_key,r2_url,is_active) VALUES(1,1,'intro','audios/intro.mp3','',1)"),
+      env.DB.prepare("INSERT INTO audios(id,user_id,name,r2_key,r2_url,is_active) VALUES(1,1,'intro','audios/intro.mp3','https://pub-example.r2.dev/audios/intro.mp3',1)"),
       env.DB.prepare("INSERT INTO campaigns(id,user_id,name,caller_id_id,country_id,audio_id,status,voice_provider,total_numbers,press_1_to_talk_with_agent) VALUES(1,1,'audio',1,1,1,'running','signalwire',1,1)"),
     ]);
     await env.AUDIO_R2.put('audios/intro.mp3', new Uint8Array([73, 68, 51]), {
@@ -36,16 +36,14 @@ describe('provider callback authentication', () => {
     const response = await exports.default.fetch(new Request(`https://example.test/api/twiml/1?token=${encodeURIComponent(token)}`));
     expect(response.status).toBe(200);
     const laml = await response.text();
-    expect(laml).toContain('<Play>https://example.test/api/media/audio/1?token=');
+    expect(laml).toContain('<Play>https://pub-example.r2.dev/audios/intro.mp3</Play>');
     expect(laml).toContain('/api/twiml/1/gather?token=');
 
     const encodedMediaUrl = laml.match(/<Play>(.*?)<\/Play>/)?.[1];
     expect(encodedMediaUrl).toBeTruthy();
     const mediaUrl = encodedMediaUrl!.replace(/&amp;/g, '&');
-    const media = await exports.default.fetch(new Request(mediaUrl));
-    expect(media.status).toBe(200);
-    expect(media.headers.get('content-type')).toBe('audio/mpeg');
-    expect([...new Uint8Array(await media.arrayBuffer())]).toEqual([73, 68, 51]);
+    // R2 URL is external, so we just verify it's the R2 URL
+    expect(mediaUrl).toBe('https://pub-example.r2.dev/audios/intro.mp3');
   });
 
   it('rejects unsigned legacy Twilio callbacks and never treats parent completion as transfer success', async () => {

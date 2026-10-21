@@ -41,7 +41,7 @@ async function seedBasicCall(numberId = 1, press1 = true, contentType = 'audio/m
     env.DB.prepare("INSERT INTO users(id,email,password_hash,is_admin,is_active,transfer_number) VALUES(1,'twilio@example.com','x',0,1,'+15550000003')"),
     env.DB.prepare("INSERT INTO caller_ids(id,user_id,phone_number,country_code,description,is_active) VALUES(1,1,'+15550000001','US','twilio',1)"),
     env.DB.prepare("INSERT INTO countries(id,code,name,price_per_minute,is_active) VALUES(1,'US','United States',0.01,1)"),
-    env.DB.prepare('INSERT INTO audios(id,user_id,name,r2_key,r2_url,content_type,is_active) VALUES(1,1,\'intro\',\'audios/intro.mp3\',\'\',?,1)').bind(contentType),
+    env.DB.prepare('INSERT INTO audios(id,user_id,name,r2_key,r2_url,content_type,is_active) VALUES(1,1,\'intro\',\'audios/intro.mp3\',\'https://pub-example.r2.dev/audios/intro.mp3\',?,1)').bind(contentType),
     env.DB.prepare("INSERT INTO user_twilio_credentials(user_id,account_sid_encrypted,auth_token_encrypted,verification_status,verified_at) VALUES(1,?,?,'verified',?)")
       .bind(encryptFernet(env.ENCRYPTION_KEY, ACCOUNT_SID), encryptFernet(env.ENCRYPTION_KEY, AUTH_TOKEN), new Date().toISOString()),
     env.DB.prepare("INSERT INTO campaigns(id,user_id,name,caller_id_id,country_id,audio_id,campaign_mode,status,press_1_to_talk_with_agent,voice_provider,total_numbers) VALUES(1,1,'basic',1,1,1,'audio','running',?,'twilio',1)").bind(press1 ? 1 : 0),
