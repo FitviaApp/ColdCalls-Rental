@@ -125,7 +125,7 @@ apiRoutes.on(['GET', 'POST'], '/twiml/:campaignId', async (c) => {
       `/api/twiml/${campaign.id}/gather?token=${encodeURIComponent(callbackToken)}`,
       c.req.url,
     ).toString();
-    return xml(`<Response><Gather numDigits="1" timeout="10" action="${escapeXml(gatherAction)}" method="POST">${play}<Say>Press 1 to talk with an agent.</Say></Gather><Hangup/></Response>`);
+    return xml(`<Response><Gather numDigits="1" timeout="10" action="${escapeXml(gatherAction)}" method="POST">${play}</Gather><Hangup/></Response>`);
   }
   return xml(`<Response>${play}<Dial callerId="${escapeXml(campaign.caller_number)}" timeout="30"><Number>${escapeXml(campaign.transfer_number)}</Number></Dial></Response>`);
 });

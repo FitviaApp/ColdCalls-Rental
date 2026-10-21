@@ -465,12 +465,11 @@ export function IllyvoipService(env: Env, apiKey: string) {
     try {
       if (row.press_1_to_talk_with_agent) {
         // Gather must start after the prompt finishes, so chain it with playback.
-        // The campaign audio is short (~10s): re-prompt with TTS and listen longer,
-        // otherwise a "1" pressed during playback falls outside the gather window.
+        // The campaign audio is short (~10s), so listen longer after it ends;
+        // no TTS prompt, the callee just presses 1 once the audio finishes.
         const gather = {
           type: 'gather',
           input: 'dtmf',
-          prompt_text: 'Press 1 to talk with an agent.',
           timeout_ms: 20_000,
         };
         const results = await execute([...playback, gather], key('gather'));

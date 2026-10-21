@@ -314,7 +314,7 @@ describe('voice provider contracts', () => {
     const chain = fetchMock.mock.calls[1];
     expect(String(chain[0])).toBe('https://api.illyvoip.com/api/v1/voice/call-control/execute');
     expect(JSON.parse(String(chain[1]?.body)).actions).toMatchObject([
-      { type: 'gather', input: 'dtmf', prompt_text: 'Press 1 to talk with an agent.' },
+      { type: 'gather', input: 'dtmf', timeout_ms: 20_000 },
     ]);
     const hangup = fetchMock.mock.calls[2];
     expect(String(hangup[0])).toBe('https://api.illyvoip.com/api/v1/voice/call-control/hangup');
@@ -348,7 +348,7 @@ describe('voice provider contracts', () => {
     const chain = fetchMock.mock.calls[1];
     expect(JSON.parse(String(chain[1]?.body)).actions).toMatchObject([
       { type: 'playback' },
-      { type: 'gather', input: 'dtmf', prompt_text: 'Press 1 to talk with an agent.', timeout_ms: 20_000 },
+      { type: 'gather', input: 'dtmf', timeout_ms: 20_000 },
     ]);
     const transfer = fetchMock.mock.calls[2];
     expect(String(transfer[0])).toBe('https://api.illyvoip.com/api/v1/voice/call-control/transfer');

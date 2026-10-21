@@ -81,7 +81,6 @@ def _build_press_1_gather_block(base_url: str, campaign_id: int) -> str:
     return (
         f'<Gather input="dtmf" numDigits="1" timeout="8" '
         f'action="{base_url}/api/twiml/{campaign_id}/gather" method="POST" actionOnEmptyResult="true">'
-        "<Say voice=\"alice\">Press 1 to talk with an agent.</Say>"
         "</Gather>"
     )
 

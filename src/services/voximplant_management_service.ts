@@ -195,7 +195,6 @@ function connectTransfer() {
 }
 
 function promptForAgent() {
-  outboundCall.say("Press 1 to talk with an agent.");
   outboundCall.handleTones(true);
   gatherTimer = setTimeout(function() {
     if (!pressOneSatisfied) {

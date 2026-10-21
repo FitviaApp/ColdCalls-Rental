@@ -147,7 +147,7 @@ export async function handleTwilioAnswer(env: Env, request: Request, numberId: n
     purpose: 'gather',
   });
   const gatherAction = `${(env.BASE_URL ?? '').replace(/\/+$/, '')}/api/twilio/calls/${row.id}/gather?token=${encodeURIComponent(gatherToken)}`;
-  return xml(`<Response><Gather numDigits="1" timeout="10" actionOnEmptyResult="true" action="${escapeXml(gatherAction)}" method="POST">${play}<Say>Press 1 to talk with an agent.</Say></Gather><Hangup/></Response>`);
+  return xml(`<Response><Gather numDigits="1" timeout="10" actionOnEmptyResult="true" action="${escapeXml(gatherAction)}" method="POST">${play}</Gather><Hangup/></Response>`);
 }
 
 export async function handleTwilioGather(env: Env, request: Request, numberId: number): Promise<Response> {
